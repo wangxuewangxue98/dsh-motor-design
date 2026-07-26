@@ -1214,6 +1214,12 @@ async function runAgentWorkflow() {
             })
         });
 
+        if (!resp.ok) {
+            const errData = await resp.json().catch(() => ({}));
+            showToast('AI 团队启动失败: ' + (errData.error || resp.statusText), 'error');
+            return;
+        }
+
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';

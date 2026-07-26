@@ -3,7 +3,7 @@ title Motor-AI Control Panel
 
 echo ============================================================
 echo   Motor-AI - Motor Design AI Assistant
-echo   Version: 1.01.01  |  Updated: 2026-07-27
+echo   Version: 1.02.01  |  Updated: 2026-07-27
 echo ============================================================
 echo.
 
