@@ -23,7 +23,7 @@ except ImportError:
 
 
 class DevilsAdvocate(BaseAgent):
-    """魔鬼代言人 - 写方案的"遗书""""
+    """魔鬼代言人 - 写方案的'遗书'"""
 
     def __init__(self):
         super().__init__(

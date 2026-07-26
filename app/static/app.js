@@ -84,6 +84,8 @@ function switchTab(tabName) {
     if (tabName === 'report') loadReports();
     if (tabName === 'evolution') loadEvolutionDashboard();
     if (tabName === 'audit') loadAuditLogs();
+    if (tabName === 'radar') loadRadar();
+    if (tabName === 'sandbox') loadSandboxCandidates();
 }
 
 // ============================================================

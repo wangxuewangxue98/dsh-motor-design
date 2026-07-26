@@ -214,7 +214,7 @@ def run_simulation(solution: dict, specs: dict, n_trials: int = 1000,
         "survival_rate": survival_rate,
         "verdict": verdict,
         "failure_modes": {m: c for m, c in mode_counts.items() if c > 0},
-        "failure_mode_labels": {m: FAILURE_MODES[m]["label"] for m in mode_counts if c > 0} if False else {m: FAILURE_MODES[m]["label"] for m, c in mode_counts.items() if c > 0},
+        "failure_mode_labels": {m: FAILURE_MODES[m]["label"] for m, c in mode_counts.items() if c > 0},
         "worst_case": worst_case,
         "percentiles": {
             "efficiency": {"p5": _pct(eff_samples, 5), "p50": _pct(eff_samples, 50), "p95": _pct(eff_samples, 95)},
