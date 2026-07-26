@@ -109,6 +109,12 @@ try:
 except Exception:
     FEEDBACK_OK = False
 
+FLYWHEEL_OK = True
+try:
+    from flywheel import on_adopt as _flywheel_adopt, on_reject as _flywheel_reject, get_flywheel_status
+except Exception as e:
+    FLYWHEEL_OK = False
+
 
 # ============================================================
 # 辅助函数
@@ -1209,7 +1215,7 @@ def api_workflow_run():
 
     def generate():
         try:
-            yield f"data: {json.dumps({'type': 'start', 'message': 'Workflow started', 'steps': ['parse_requirement', 'generate_designs', 'review_solutions', 'generate_report']}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'start', 'message': 'Workflow started (辩证制衡双轨)', 'steps': ['parse_requirement', 'generate_designs', 'review_solutions', 'convergence_review', 'decision_gate', 'generate_report']}, ensure_ascii=False)}\n\n"
 
             for update in _orchestrator.run_streaming(
                 raw_text, solve_count=solve_count,
@@ -1238,13 +1244,22 @@ def api_workflow_run():
                     elif "error" in update:
                         yield f"data: {json.dumps({'type': 'step_error', 'step': 'review_solutions', 'error': update['error']}, ensure_ascii=False)}\n\n"
 
+                elif step == "convergence_review":
+                    if "con_report" in update:
+                        yield f"data: {json.dumps({'type': 'step_done', 'step': 'convergence_review', 'con_report': update['con_report'], 'convergence_findings': update.get('convergence_findings', {})}, ensure_ascii=False)}\n\n"
+                    elif "error" in update:
+                        yield f"data: {json.dumps({'type': 'step_error', 'step': 'convergence_review', 'error': update['error']}, ensure_ascii=False)}\n\n"
+
+                elif step == "decision_gate":
+                    yield f"data: {json.dumps({'type': 'step_done', 'step': 'decision_gate', 'pro_report': update.get('pro_report', ''), 'con_report': update.get('con_report', ''), 'ready_for_confirm': update.get('ready_for_confirm', False)}, ensure_ascii=False)}\n\n"
+
                 elif step == "generate_report":
                     if "report" in update:
                         yield f"data: {json.dumps({'type': 'step_done', 'step': 'generate_report', 'report': update['report'], 'report_filepath': update.get('report_filepath', ''), 'report_filename': update.get('report_filename', '')}, ensure_ascii=False)}\n\n"
                     elif "error" in update:
                         yield f"data: {json.dumps({'type': 'step_error', 'step': 'generate_report', 'error': update['error']}, ensure_ascii=False)}\n\n"
 
-            yield f"data: {json.dumps({'type': 'done', 'message': 'Workflow completed'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'message': 'Workflow completed (双轨辩证完成)'})}\n\n"
 
         except Exception as e:
             yield f"data: {json.dumps({'type': 'fatal', 'error': str(e)}, ensure_ascii=False)}\n\n"
@@ -1261,10 +1276,7 @@ def api_workflow_run():
 # ============================================================
 @app.route("/api/feedback", methods=["POST"])
 def api_feedback():
-    """记录方案采纳/拒绝反馈"""
-    if not FEEDBACK_OK:
-        return jsonify({"error": "Feedback system not available"}), 500
-
+    """记录方案采纳/拒绝反馈 (驱动数据飞轮)"""
     data = request.get_json()
     design_id = data.get("design_id")
     action = data.get("action", "")  # "adopt" or "reject"
@@ -1275,12 +1287,26 @@ def api_feedback():
     if not design_id or action not in ("adopt", "reject"):
         return jsonify({"error": "design_id and action (adopt/reject) required"}), 400
 
+    # 优先走飞轮引擎 (创建技能模板 + 挖掘规则 + 沉淀失败特征)
+    if FLYWHEEL_OK:
+        try:
+            if action == "adopt":
+                result = _flywheel_adopt(design_id, specs, reason, project_id)
+            else:
+                result = _flywheel_reject(design_id, specs, reason, project_id)
+            return jsonify(result)
+        except Exception as e:
+            # 飞轮失败, 降级到原始反馈记录
+            pass
+
+    if not FEEDBACK_OK:
+        return jsonify({"error": "Feedback system not available"}), 500
+
     result = record_feedback(design_id, action, reason, project_id, specs)
 
-    # 如果采纳，创建技能模板
+    # 降级路径: 采纳时创建技能模板
     if action == "adopt" and EVOLUTION_OK:
         try:
-            # 从数据库获取方案详情
             from db_tools import get_all_results
             all_results = get_all_results()
             solution = next((r for r in all_results if r["id"] == design_id), None)
@@ -1354,6 +1380,89 @@ def api_evolution_create_skill():
 
     template = create_skill_template(project_id, specs, solution, feedback)
     return jsonify({"template": template, "message": "Skill template created"})
+
+
+# ============================================================
+# API：数据飞轮
+# ============================================================
+@app.route("/api/flywheel/status")
+def api_flywheel_status():
+    """飞轮健康度: 采纳率/技能数/规则数/失败特征/AI接管率"""
+    if not FLYWHEEL_OK:
+        return jsonify({"error": "Flywheel engine not available"}), 500
+    return jsonify(get_flywheel_status())
+
+
+# ============================================================
+# API：蒙特卡洛沙盘推演
+# ============================================================
+@app.route("/api/sandbox/simulate", methods=["POST"])
+def api_sandbox_simulate():
+    """对方案做蒙特卡洛推演, 返回失败率/分位/最惨情形"""
+    try:
+        from monte_carlo import run_simulation, run_batch
+    except Exception as e:
+        return jsonify({"error": f"monte_carlo module not available: {e}"}), 500
+
+    data = request.get_json()
+    solutions = data.get("solutions", [])
+    specs = data.get("specs", {})
+    n_trials = int(data.get("n_trials", 1000))
+
+    if not solutions:
+        return jsonify({"error": "solutions required"}), 400
+
+    if len(solutions) == 1:
+        result = run_simulation(solutions[0], specs, n_trials=n_trials)
+    else:
+        result = run_batch(solutions, specs, n_trials=n_trials)
+    return jsonify({"result": result})
+
+
+# ============================================================
+# API：辩证制衡独立触发 (对已有结果跑收敛阵营)
+# ============================================================
+@app.route("/api/convergence/run", methods=["POST"])
+def api_convergence_run():
+    """对已有结果独立触发收敛阵营 (4个收敛agent)"""
+    if not AGENT_OK or not _orchestrator:
+        return jsonify({"error": "Agent system not available"}), 500
+
+    data = request.get_json()
+    results = data.get("results", [])
+    specs = data.get("specs", {})
+
+    if not results:
+        return jsonify({"error": "results required"}), 400
+
+    try:
+        rev = _orchestrator.reverse_reviewer.safe_run(results=results, specs=specs)
+        real = _orchestrator.reality_checker.safe_run(results=results, specs=specs)
+        sand = _orchestrator.sandbox_simulator.safe_run(results=results, specs=specs)
+        dev = _orchestrator.devils_advocate.safe_run(
+            results=results, specs=specs,
+            convergence_findings={
+                "reverse": rev.get("con_report", "")[:200],
+                "reality": real.get("con_report", "")[:200],
+                "sandbox": sand.get("con_report", "")[:200],
+            })
+        con_report = _orchestrator._assemble_con_report({
+            "reverse": rev.get("con_report", ""),
+            "reality": real.get("con_report", ""),
+            "sandbox": sand.get("con_report", ""),
+            "devils_advocate": dev.get("con_report", ""),
+        })
+        return jsonify({
+            "con_report": con_report,
+            "findings": {
+                "reverse": rev.get("con_report", ""),
+                "reality": real.get("con_report", ""),
+                "sandbox": sand.get("con_report", ""),
+                "devils_advocate": dev.get("con_report", ""),
+            },
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ============================================================

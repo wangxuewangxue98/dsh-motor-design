@@ -1340,3 +1340,70 @@ body {
     border-left: 3px solid var(--primary);
 }
 
+
+/* ============================================================
+   v1.02.01 辩证制衡 + 战略雷达 + 沙盘推演 样式
+   ============================================================ */
+
+/* 轨道标签 */
+.track-tag { display:inline-block; font-size:11px; padding:1px 8px; border-radius:10px; margin-left:6px; font-weight:500; }
+.track-pro { background:rgba(46,160,67,0.15); color:#2ea043; }
+.track-con { background:rgba(248,81,73,0.15); color:#f85149; }
+
+/* 双轨流水线分叉 */
+.pipeline-fork { display:flex; flex-direction:column; gap:10px; }
+.pipeline-pro .pipeline-icon { background:rgba(46,160,67,0.2); color:#2ea043; }
+.pipeline-con .pipeline-icon { background:rgba(248,81,73,0.2); color:#f85149; }
+.pipeline-step[data-status="done"] .pipeline-icon { background:var(--success); color:#fff; }
+.pipeline-step[data-status="running"] .pipeline-icon { background:var(--accent); color:#fff; animation:pulse 1.2s infinite; }
+
+/* 辩证报告双栏 */
+.dialectic-reports { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin:16px 0; }
+.dialectic-col { border-radius:var(--radius); overflow:hidden; }
+.dialectic-pro { border:1px solid rgba(46,160,67,0.4); }
+.dialectic-con { border:1px solid rgba(248,81,73,0.4); }
+.dialectic-pro .dialectic-header { background:rgba(46,160,67,0.08); border-bottom:1px solid rgba(46,160,67,0.2); }
+.dialectic-con .dialectic-header { background:rgba(248,81,73,0.08); border-bottom:1px solid rgba(248,81,73,0.2); }
+.dialectic-header { padding:10px 14px; display:flex; justify-content:space-between; align-items:center; }
+.dialectic-header h3 { margin:0; font-size:14px; }
+.dialectic-hint { font-size:12px; color:var(--text-secondary); }
+.dialectic-col .markdown-body { padding:14px; font-size:13px; line-height:1.7; max-height:420px; overflow-y:auto; }
+
+/* 决策门 */
+.decision-gate { margin:16px 0; padding:16px; border:2px solid var(--accent); border-radius:var(--radius); background:rgba(255,193,7,0.06); }
+.gate-notice { font-size:14px; margin-bottom:12px; }
+.gate-status { font-size:12px; padding:2px 10px; border-radius:10px; margin-left:8px; }
+.gate-pending { background:rgba(255,193,7,0.2); color:#b8860b; }
+.gate-ready { background:rgba(46,160,67,0.2); color:#2ea043; }
+.gate-confirm-row { display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+.gate-checkbox { display:flex; align-items:center; gap:6px; font-size:13px; cursor:pointer; }
+.gate-checkbox input { width:16px; height:16px; cursor:pointer; }
+.gate-confirm-row button:disabled { opacity:0.4; cursor:not-allowed; }
+
+/* 战略雷达 */
+.radar-controls { display:flex; gap:12px; margin-bottom:16px; }
+.radar-metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:16px; }
+.radar-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+.radar-section { background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius); padding:14px; }
+.radar-section h3 { margin:0 0 10px; font-size:14px; }
+.radar-list .radar-item { padding:10px; margin-bottom:8px; border-radius:6px; background:var(--bg); border-left:3px solid var(--accent); font-size:13px; }
+.radar-item .item-title { font-weight:500; margin-bottom:4px; }
+.radar-item .item-desc { color:var(--text-secondary); font-size:12px; }
+
+/* 沙盘推演 */
+.sandbox-controls { display:flex; gap:16px; align-items:flex-end; margin-bottom:16px; flex-wrap:wrap; }
+.sandbox-candidates { margin-bottom:16px; }
+.sandbox-results { margin-top:16px; }
+.sandbox-summary { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:16px; }
+.sandbox-summary .sb-card { padding:14px; border-radius:var(--radius); background:var(--bg-secondary); border:1px solid var(--border); }
+.sandbox-summary .sb-label { font-size:12px; color:var(--text-secondary); margin-bottom:4px; }
+.sandbox-summary .sb-value { font-size:20px; font-weight:600; }
+.sb-fail-low { color:#2ea043; }
+.sb-fail-mid { color:#d39b00; }
+.sb-fail-high { color:#f85149; }
+.sandbox-detail { font-size:13px; line-height:1.7; }
+.sandbox-detail .sim-row { padding:10px; margin-bottom:8px; border-radius:6px; background:var(--bg-secondary); border-left:3px solid var(--border); }
+.sandbox-detail .sim-row.verdict-稳健 { border-left-color:#2ea043; }
+.sandbox-detail .sim-row.verdict-高风险, .sandbox-detail .sim-row.verdict-极危险 { border-left-color:#f85149; }
+
+@keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.6;} }

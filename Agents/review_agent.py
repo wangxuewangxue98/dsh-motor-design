@@ -35,8 +35,9 @@ class ReviewAgent(BaseAgent):
             **({"num_gpu": 0} if not use_gpu else {})
         )
 
-        # 云端客户端（按需）
-        self.cloud_available = bool(os.getenv("DEEPSEEK_API_KEY"))
+        # 云端客户端（按需）— v1.02.01: 严格排除占位符, 确保全本地零上云
+        _ds_key = os.getenv("DEEPSEEK_API_KEY", "")
+        self.cloud_available = bool(_ds_key) and _ds_key != "sk-your-key-here"
         if self.cloud_available:
             from openai import OpenAI
             self.cloud_client = OpenAI(

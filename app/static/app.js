@@ -1190,11 +1190,15 @@ async function runAgentWorkflow() {
     const useCloudReview = document.getElementById('agentUseCloudReview').checked;
     const useCloudReport = document.getElementById('agentUseCloudReport').checked;
 
-    // 重置 pipeline
-    ['parse_requirement', 'generate_designs', 'review_solutions', 'generate_report'].forEach(s => {
+    // 重置 pipeline (双轨)
+    ['parse_requirement', 'generate_designs', 'review_solutions',
+     'convergence_review', 'decision_gate', 'generate_report'].forEach(s => {
         updatePipelineStep(s, 'pending', '等待中');
     });
     document.getElementById('agentResults').style.display = 'none';
+    document.getElementById('decisionGate').style.display = 'none';
+    document.getElementById('gateReadPro').checked = false;
+    document.getElementById('gateReadCon').checked = false;
     document.getElementById('agentRunBtn').disabled = true;
     document.getElementById('agentRunBtn').textContent = '运行中...';
 
@@ -1237,18 +1241,26 @@ async function runAgentWorkflow() {
 
 function handleWorkflowEvent(data) {
     if (data.type === 'start') {
-        showToast('AI 团队已启动', 'info');
+        showToast('AI 团队已启动 (辩证双轨)', 'info');
     } else if (data.type === 'step_done') {
         const stepMap = {
             'parse_requirement': { name: '需求解析完成', next: 'generate_designs' },
             'generate_designs': { name: '方案生成完成', next: 'review_solutions' },
-            'review_solutions': { name: '评审完成', next: 'generate_report' },
+            'review_solutions': { name: '支持报告完成', next: 'decision_gate' },
+            'convergence_review': { name: '反对报告完成', next: 'decision_gate' },
+            'decision_gate': { name: '决策门就绪', next: 'generate_report' },
             'generate_report': { name: '报告生成完成', next: null }
         };
         const info = stepMap[data.step];
         if (info) {
             updatePipelineStep(data.step, 'done', info.name);
-            if (info.next) updatePipelineStep(info.next, 'running', '执行中');
+            // 双轨: generate_designs 完成后同时启动 review 和 convergence
+            if (data.step === 'generate_designs' && info.next) {
+                updatePipelineStep('review_solutions', 'running', '执行中');
+                updatePipelineStep('convergence_review', 'running', '收敛阵营执行中');
+            } else if (info.next && !(data.step === 'review_solutions' || data.step === 'convergence_review')) {
+                updatePipelineStep(info.next, 'running', '执行中');
+            }
         }
 
         if (data.step === 'parse_requirement' && data.specs) {
@@ -1257,6 +1269,21 @@ function handleWorkflowEvent(data) {
         }
         if (data.step === 'review_solutions' && data.review) {
             document.getElementById('agentReviewDisplay').innerHTML = renderMarkdown(data.review);
+        }
+        if (data.step === 'convergence_review' && data.con_report) {
+            document.getElementById('agentConReportDisplay').innerHTML = renderMarkdown(data.con_report);
+        }
+        if (data.step === 'decision_gate') {
+            document.getElementById('decisionGate').style.display = 'block';
+            const ready = data.ready_for_confirm;
+            const gs = document.getElementById('gateStatus');
+            if (ready) {
+                gs.textContent = '双报告已齐备，请阅读后确认';
+                gs.className = 'gate-status gate-ready';
+            } else {
+                gs.textContent = '报告未齐备';
+                gs.className = 'gate-status gate-pending';
+            }
         }
         if (data.step === 'generate_report' && data.report) {
             document.getElementById('agentReportDisplay').innerHTML = renderMarkdown(data.report);
@@ -1270,9 +1297,69 @@ function handleWorkflowEvent(data) {
         updatePipelineStep(data.step, 'error', '错误: ' + (data.error || '').slice(0, 50));
         showToast('步骤错误: ' + data.step, 'warn');
     } else if (data.type === 'done') {
-        showToast('AI 团队工作流完成', 'success');
+        showToast('辩证制衡工作流完成', 'success');
     } else if (data.type === 'fatal') {
         showToast('致命错误: ' + data.error, 'error');
+    }
+}
+
+// 决策门: 检查是否双报告都已阅读
+function checkGateReady() {
+    const readPro = document.getElementById('gateReadPro').checked;
+    const readCon = document.getElementById('gateReadCon').checked;
+    const ready = readPro && readCon;
+    document.getElementById('gateAdoptBtn').disabled = !ready;
+    document.getElementById('gateRejectBtn').disabled = !ready;
+}
+
+// 决策门: 采纳
+async function gateAdopt() {
+    const specsText = document.getElementById('agentSpecsDisplay').textContent;
+    let specs = {};
+    try { specs = JSON.parse(specsText); } catch (e) {}
+    // 取 Top1 方案 id (从工作流结果中, 简化用最近一条)
+    showToast('采纳决策已记录，飞轮正在沉淀技能模板...', 'info');
+    try {
+        const resp = await fetch('/api/results/top?n=1');
+        const data = await resp.json();
+        const top = (data.results || [])[0];
+        if (top) {
+            const fb = await fetch('/api/feedback', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ design_id: top.id, action: 'adopt', specs: specs, reason: '决策门采纳' })
+            });
+            const result = await fb.json();
+            if (result.skill_template) {
+                showToast('技能模板已生成: ' + (result.template_name || result.skill_template), 'success');
+            } else {
+                showToast('采纳已记录', 'success');
+            }
+        }
+    } catch (e) {
+        showToast('采纳记录失败: ' + e.message, 'error');
+    }
+}
+
+// 决策门: 拒绝
+async function gateReject() {
+    const reason = prompt('请简要说明拒绝原因 (供飞轮学习):');
+    if (reason === null) return;
+    const specsText = document.getElementById('agentSpecsDisplay').textContent;
+    let specs = {};
+    try { specs = JSON.parse(specsText); } catch (e) {}
+    try {
+        const resp = await fetch('/api/results/top?n=1');
+        const data = await resp.json();
+        const top = (data.results || [])[0];
+        if (top) {
+            await fetch('/api/feedback', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ design_id: top.id, action: 'reject', specs: specs, reason: reason })
+            });
+            showToast('拒绝已记录，失败特征已沉淀', 'success');
+        }
+    } catch (e) {
+        showToast('拒绝记录失败: ' + e.message, 'error');
     }
 }
 
@@ -1305,6 +1392,14 @@ async function loadEvolutionDashboard() {
         document.getElementById('evoAdoptionRate').textContent = (m.adoption_rate || 0) + '%';
         document.getElementById('evoSkills').textContent = m.skill_templates_count || 0;
         document.getElementById('evoRules').textContent = m.rules_count || 0;
+
+        // 飞轮指标 (AI接管率 + 失败特征)
+        try {
+            const fwResp = await fetch('/api/flywheel/status');
+            const fw = await fwResp.json();
+            document.getElementById('evoAiRate').textContent = (fw.ai_intervention_rate || 0) + '%';
+            document.getElementById('evoFailures').textContent = fw.failure_patterns_count || 0;
+        } catch (e) { /* 飞轮不可用时保持默认 */ }
 
         // 技能模板
         const skillList = document.getElementById('skillTemplatesList');

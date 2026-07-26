@@ -12,7 +12,7 @@
     <aside class="sidebar">
         <div class="sidebar-header">
             <div class="logo">Motor-AI</div>
-            <div class="subtitle">电机设计AI辅助系统 v1.01.01</div>
+            <div class="subtitle">电机设计AI辅助系统 v1.02.01</div>
         </div>
         <nav class="nav">
             <a class="nav-item active" data-tab="dashboard">仪表盘</a>
@@ -23,7 +23,9 @@
             <a class="nav-item" data-tab="history">历史记录</a>
             <a class="nav-item" data-tab="settings">系统设置</a>
             <div class="nav-divider"></div>
+            <a class="nav-item" data-tab="radar">战略雷达</a>
             <a class="nav-item" data-tab="agents">AI 团队</a>
+            <a class="nav-item" data-tab="sandbox">沙盘推演</a>
             <a class="nav-item" data-tab="evolution">进化仪表盘</a>
             <a class="nav-item" data-tab="audit">审计日志</a>
         </nav>
@@ -32,7 +34,7 @@
                 <span class="status-dot status-dot--checking"></span>
                 <span id="sidebarStatusText">检查中...</span>
             </div>
-            <div class="version-info" style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">v1.01.01 | 2026-07-27</div>
+            <div class="version-info" style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">v1.02.01 | 2026-07-27</div>
         </div>
     </aside>
 
@@ -43,7 +45,7 @@
         <section class="tab-content active" id="tab-dashboard">
             <div class="page-header">
                 <h2>系统仪表盘 <span style="font-size:14px;color:var(--text-secondary);font-weight:normal;">Motor-AI</span></h2>
-                <p class="page-desc">电机设计AI辅助系统 v1.01.01 (2026-07-27) — 本地 AI 设计辅助系统运行状态总览</p>
+                <p class="page-desc">电机设计AI辅助系统 v1.02.01 (2026-07-27) — 辩证制衡双轨 + 数据飞轮 + 全本地零上云</p>
             </div>
             <div class="status-grid" id="statusGrid">
                 <div class="status-card" id="cardOllama">
@@ -534,16 +536,33 @@
                     </div>
                 </div>
                 <div class="pipeline-arrow"></div>
-                <div class="pipeline-step" id="step-review_solutions" data-status="pending">
-                    <div class="pipeline-icon">3</div>
+                <div class="pipeline-fork">
+                    <div class="pipeline-step pipeline-pro" id="step-review_solutions" data-status="pending">
+                        <div class="pipeline-icon">3</div>
+                        <div class="pipeline-body">
+                            <div class="pipeline-name">评审推荐师 <span class="track-tag track-pro">放大</span></div>
+                            <div class="pipeline-desc" id="step-desc-review_solutions">等待启动</div>
+                        </div>
+                    </div>
+                    <div class="pipeline-step pipeline-con" id="step-convergence_review" data-status="pending">
+                        <div class="pipeline-icon">3</div>
+                        <div class="pipeline-body">
+                            <div class="pipeline-name">收敛阵营 <span class="track-tag track-con">收敛</span></div>
+                            <div class="pipeline-desc" id="step-desc-convergence_review">逆向/现实/沙盘/魔鬼</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="pipeline-arrow"></div>
+                <div class="pipeline-step" id="step-decision_gate" data-status="pending">
+                    <div class="pipeline-icon">4</div>
                     <div class="pipeline-body">
-                        <div class="pipeline-name">评审推荐师</div>
-                        <div class="pipeline-desc" id="step-desc-review_solutions">等待启动</div>
+                        <div class="pipeline-name">决策门</div>
+                        <div class="pipeline-desc" id="step-desc-decision_gate">双报告必读</div>
                     </div>
                 </div>
                 <div class="pipeline-arrow"></div>
                 <div class="pipeline-step" id="step-generate_report" data-status="pending">
-                    <div class="pipeline-icon">4</div>
+                    <div class="pipeline-icon">5</div>
                     <div class="pipeline-body">
                         <div class="pipeline-name">报告撰写员</div>
                         <div class="pipeline-desc" id="step-desc-generate_report">等待启动</div>
@@ -555,12 +574,40 @@
                     <h3>解析结果</h3>
                     <div id="agentSpecsDisplay" class="specs-display"></div>
                 </div>
-                <div class="agent-result-section">
-                    <h3>评审意见</h3>
-                    <div id="agentReviewDisplay" class="markdown-body"></div>
+                <div class="dialectic-reports">
+                    <div class="dialectic-col dialectic-pro">
+                        <div class="dialectic-header">
+                            <h3>支持报告 <span class="track-tag track-pro">放大系统</span></h3>
+                            <span class="dialectic-hint">评审推荐师 · 强化信念</span>
+                        </div>
+                        <div id="agentReviewDisplay" class="markdown-body"></div>
+                    </div>
+                    <div class="dialectic-col dialectic-con">
+                        <div class="dialectic-header">
+                            <h3>反对报告 <span class="track-tag track-con">收敛系统</span></h3>
+                            <span class="dialectic-hint">逆向/现实/沙盘/魔鬼 · 举起镜子</span>
+                        </div>
+                        <div id="agentConReportDisplay" class="markdown-body"></div>
+                    </div>
+                </div>
+                <div class="decision-gate" id="decisionGate" style="display:none">
+                    <div class="gate-notice">
+                        <strong>决策门</strong>：你必须同时阅读支持报告与反对报告，才能确认方案。
+                        <span id="gateStatus" class="gate-status gate-pending">等待双报告齐备</span>
+                    </div>
+                    <div class="gate-confirm-row">
+                        <label class="gate-checkbox">
+                            <input type="checkbox" id="gateReadPro" onchange="checkGateReady()"> 我已阅读支持报告
+                        </label>
+                        <label class="gate-checkbox">
+                            <input type="checkbox" id="gateReadCon" onchange="checkGateReady()"> 我已阅读反对报告
+                        </label>
+                        <button class="btn btn-success" id="gateAdoptBtn" disabled onclick="gateAdopt()">采纳方案</button>
+                        <button class="btn btn-danger" id="gateRejectBtn" disabled onclick="gateReject()">拒绝并记录</button>
+                    </div>
                 </div>
                 <div class="agent-result-section">
-                    <h3>报告</h3>
+                    <h3>正式报告</h3>
                     <div id="agentReportDisplay" class="markdown-body"></div>
                     <button class="btn btn-secondary btn-sm" id="agentReportBtn" style="display:none" onclick="downloadAgentReport()">下载报告</button>
                 </div>
@@ -587,12 +634,20 @@
                     <div class="metric-label">采纳率</div>
                 </div>
                 <div class="metric-card">
+                    <div class="metric-value" id="evoAiRate">0%</div>
+                    <div class="metric-label">AI 接管率</div>
+                </div>
+                <div class="metric-card">
                     <div class="metric-value" id="evoSkills">0</div>
                     <div class="metric-label">技能模板</div>
                 </div>
                 <div class="metric-card">
                     <div class="metric-value" id="evoRules">0</div>
                     <div class="metric-label">设计规则</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="evoFailures">0</div>
+                    <div class="metric-label">失败特征</div>
                 </div>
             </div>
             <div class="evolution-actions">
@@ -618,6 +673,69 @@
                 <div id="evolutionHistoryList" class="history-list">
                     <div class="empty-hint">加载中...</div>
                 </div>
+            </div>
+        </section>
+
+        <!-- ========== 战略雷达 ========== -->
+        <section class="tab-content" id="tab-radar">
+            <div class="page-header">
+                <h2>战略雷达</h2>
+                <p class="page-desc">扫描本地知识库与历史项目，发现被低估的机会与能力盲点。在逆共识处下注</p>
+            </div>
+            <div class="radar-controls">
+                <button class="btn btn-primary" onclick="runRadarScan()">扫描机会</button>
+                <button class="btn btn-secondary" onclick="loadRadar()">刷新</button>
+            </div>
+            <div class="radar-metrics" id="radarMetrics">
+                <div class="metric-card"><div class="metric-value" id="radarProjects">0</div><div class="metric-label">历史项目</div></div>
+                <div class="metric-card"><div class="metric-value" id="radarAdopted">0</div><div class="metric-label">采纳方案</div></div>
+                <div class="metric-card"><div class="metric-value" id="radarSkills">0</div><div class="metric-label">技能模板</div></div>
+                <div class="metric-card"><div class="metric-value" id="radarGaps">0</div><div class="metric-label">能力盲点</div></div>
+            </div>
+            <div class="radar-grid">
+                <div class="radar-section">
+                    <h3>机会信号</h3>
+                    <div id="radarOpportunities" class="radar-list"><div class="empty-hint">点击"扫描机会"分析</div></div>
+                </div>
+                <div class="radar-section">
+                    <h3>能力盲点</h3>
+                    <div id="radarGapsList" class="radar-list"><div class="empty-hint">基于失败特征分析</div></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========== 沙盘推演 ========== -->
+        <section class="tab-content" id="tab-sandbox">
+            <div class="page-header">
+                <h2>沙盘推演</h2>
+                <p class="page-desc">蒙特卡洛 1000 次参数扰动模拟，展示最惨失败情形。防止信念变固执</p>
+            </div>
+            <div class="sandbox-controls">
+                <div class="control-group">
+                    <label>选择方案来源</label>
+                    <select id="sandboxSource" class="select" onchange="loadSandboxCandidates()">
+                        <option value="top">Top 方案 (从数据库)</option>
+                        <option value="last">上次工作流结果</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label>模拟次数</label>
+                    <select id="sandboxTrials" class="select">
+                        <option value="100">100 (快速)</option>
+                        <option value="500">500</option>
+                        <option value="1000" selected>1000 (标准)</option>
+                    </select>
+                </div>
+                <button class="btn btn-primary btn-lg" id="sandboxRunBtn" onclick="runSandbox()">开始推演</button>
+            </div>
+            <div class="sandbox-candidates" id="sandboxCandidates" style="display:none">
+                <h3>候选方案</h3>
+                <div class="table-wrap"><table class="data-table" id="sandboxTable"></table></div>
+            </div>
+            <div class="sandbox-results" id="sandboxResults" style="display:none">
+                <h3>推演结果</h3>
+                <div id="sandboxSummary" class="sandbox-summary"></div>
+                <div id="sandboxDetail" class="sandbox-detail"></div>
             </div>
         </section>
 
@@ -674,5 +792,6 @@
 </div>
 
 <script src="/static/app.js"></script>
+<script src="/static/v102.js"></script>
 </body>
 </html>
