@@ -1,0 +1,273 @@
+{
+  "version": "1.0.0",
+  "last_updated": "2026-07-26",
+  "description": "Motor-AI 知识本体 - 定义电机设计领域的实体、关系与约束",
+  "entities": {
+    "CustomerRequirement": {
+      "description": "客户提出的电机设计需求",
+      "properties": {
+        "power_kw": {
+          "type": "number",
+          "unit": "kW",
+          "required": true
+        },
+        "voltage_v": {
+          "type": "number",
+          "unit": "V",
+          "required": true
+        },
+        "speed_rpm": {
+          "type": "number",
+          "unit": "rpm",
+          "required": false,
+          "default": 3000
+        },
+        "cooling": {
+          "type": "enum",
+          "values": [
+            "自然风冷",
+            "水冷",
+            "油冷",
+            "未知"
+          ],
+          "default": "未知"
+        },
+        "efficiency_target": {
+          "type": "number",
+          "unit": "%",
+          "required": false
+        },
+        "stator_od_limit": {
+          "type": "number",
+          "unit": "mm",
+          "required": false
+        },
+        "application": {
+          "type": "string",
+          "examples": [
+            "叉车",
+            "无人机",
+            "电动汽车",
+            "工业泵",
+            "家电"
+          ]
+        }
+      }
+    },
+    "MotorDesign": {
+      "description": "一组电机设计方案",
+      "properties": {
+        "stator_od": {
+          "type": "number",
+          "unit": "mm"
+        },
+        "poles": {
+          "type": "integer",
+          "values": [
+            4,
+            6,
+            8,
+            10,
+            12,
+            14,
+            16
+          ]
+        },
+        "voltage": {
+          "type": "number",
+          "unit": "V"
+        },
+        "speed": {
+          "type": "number",
+          "unit": "rpm"
+        },
+        "efficiency": {
+          "type": "number",
+          "unit": "%"
+        },
+        "max_temp": {
+          "type": "number",
+          "unit": "K"
+        },
+        "torque": {
+          "type": "number",
+          "unit": "N·m"
+        },
+        "torque_density": {
+          "type": "number",
+          "unit": "N·m/kg"
+        }
+      }
+    },
+    "Material": {
+      "description": "电机材料库",
+      "categories": {
+        "magnetic_steel": [
+          "35WW250",
+          "35WW300",
+          "50WW350",
+          "50WW470"
+        ],
+        "magnet": [
+          "N35SH",
+          "N38SH",
+          "N40UH",
+          "N42SH"
+        ],
+        "winding": [
+          "铜线 1.0mm",
+          "铜线 1.5mm",
+          "铜扁线"
+        ],
+        "insulation": [
+          "F级",
+          "H级",
+          "C级"
+        ]
+      }
+    },
+    "DesignRule": {
+      "description": "设计约束规则，从历史项目中提炼",
+      "rules": [
+        {
+          "id": "RULE_001",
+          "condition": "efficiency_target > 94",
+          "constraint": "气隙长度建议 < 0.5mm",
+          "confidence": 0.8,
+          "source_projects": 3,
+          "last_validated": "2026-07-24"
+        },
+        {
+          "id": "RULE_002",
+          "condition": "cooling == '自然风冷' AND power_kw > 5",
+          "constraint": "需增加散热翅片面积，温升可能超限",
+          "confidence": 0.9,
+          "source_projects": 2,
+          "last_validated": "2026-07-24"
+        },
+        {
+          "id": "RULE_003",
+          "condition": "voltage_v <= 48",
+          "constraint": "推荐 8极或10极 IPM 结构",
+          "confidence": 0.85,
+          "source_projects": 5,
+          "last_validated": "2026-07-24"
+        },
+        {
+          "id": "RULE_004",
+          "condition": "speed_rpm > 6000",
+          "constraint": "需考虑转子强度，推荐表贴式或内嵌式优化",
+          "confidence": 0.7,
+          "source_projects": 1,
+          "last_validated": "2026-07-24"
+        },
+        {
+          "id": "RULE_005",
+          "condition": "application == '叉车'",
+          "constraint": "推荐水冷 IPM，极数 8-10，外径 200-260mm",
+          "confidence": 0.9,
+          "source_projects": 4,
+          "last_validated": "2026-07-24"
+        }
+      ]
+    },
+    "SkillTemplate": {
+      "description": "从成功项目中抽象的设计技能模板",
+      "templates": [
+        {
+          "template_id": "SKILL_20260724231405",
+          "name": "通用_10kW_48V",
+          "application": "通用",
+          "file": "D:\\MotorDesign\\Knowledge\\skill_templates\\SKILL_20260724231405.json"
+        }
+      ]
+    },
+    "Project": {
+      "description": "设计项目记录",
+      "properties": {
+        "project_id": {
+          "type": "string"
+        },
+        "created_time": {
+          "type": "datetime"
+        },
+        "status": {
+          "type": "enum",
+          "values": [
+            "draft",
+            "running",
+            "completed",
+            "archived"
+          ]
+        },
+        "requirement_hash": {
+          "type": "string"
+        },
+        "specs": {
+          "type": "object"
+        },
+        "solution_count": {
+          "type": "integer"
+        },
+        "adopted_solution_id": {
+          "type": "integer",
+          "required": false
+        },
+        "feedback": {
+          "type": "string",
+          "required": false
+        }
+      }
+    }
+  },
+  "relations": {
+    "constrains": {
+      "from": "CustomerRequirement",
+      "to": "MotorDesign",
+      "description": "需求约束方案"
+    },
+    "references": {
+      "from": "MotorDesign",
+      "to": "Material",
+      "description": "方案引用材料"
+    },
+    "recommends": {
+      "from": "DesignRule",
+      "to": "MotorDesign",
+      "description": "规则推荐参数"
+    },
+    "generates": {
+      "from": "Project",
+      "to": "MotorDesign",
+      "description": "项目生成方案"
+    },
+    "adopts": {
+      "from": "Project",
+      "to": "MotorDesign",
+      "description": "项目采纳方案"
+    },
+    "derived_from": {
+      "from": "SkillTemplate",
+      "to": "Project",
+      "description": "技能源自项目"
+    }
+  },
+  "evolution_history": [
+    {
+      "date": "2026-07-24",
+      "version": "1.0.0",
+      "change": "初始本体创建",
+      "rules_count": 5,
+      "templates_count": 0
+    }
+  ],
+  "metrics": {
+    "total_projects": 0,
+    "total_designs": 176,
+    "adopted_designs": 1,
+    "adoption_rate": 0.6,
+    "skill_templates_count": 1,
+    "rules_count": 5,
+    "ai_intervention_rate": 0.0
+  }
+}

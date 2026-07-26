@@ -1,0 +1,112 @@
+{
+  "timestamp": "2026-07-26 12:14:04",
+  "mc_pid": 30264,
+  "main_hwnd": 15935952,
+  "tab_map": {
+    "几何": {
+      "x_range": "0-50",
+      "buttons": [
+        "重绘"
+      ]
+    },
+    "绕组": {
+      "x_range": "60-110",
+      "buttons": [
+        "重绘"
+      ]
+    },
+    "输入数据": {
+      "x_range": "120-190",
+      "buttons": [
+        "检查数据"
+      ]
+    },
+    "求解设置": {
+      "x_range": "200-280",
+      "buttons": [
+        "求解热模型"
+      ]
+    },
+    "温度": {
+      "x_range": "290-330",
+      "buttons": []
+    },
+    "输出数据": {
+      "x_range": "340-420",
+      "buttons": []
+    },
+    "参数相关性": {
+      "x_range": "430-510",
+      "buttons": [
+        "保存变化值",
+        "保存变化值及结果",
+        "停止参数学习",
+        "加载变化值",
+        "加载变化值及结果",
+        "开始参数学习",
+        "清除学习及结果"
+      ]
+    },
+    "脚本": {
+      "x_range": "520-570",
+      "buttons": [
+        "Load",
+        "Pause",
+        "Run",
+        "Save",
+        "Stop"
+      ]
+    },
+    "流体": {
+      "x_range": "580-990",
+      "buttons": [
+        "复位图像"
+      ]
+    }
+  },
+  "solve_em_btn": null,
+  "solve_thermal_btn": {
+    "title": "求解热模型",
+    "hwnd": 17703798,
+    "ctrl_id": 17703798,
+    "enabled": 1,
+    "rect": [
+      477,
+      346,
+      727,
+      385
+    ]
+  },
+  "fe_dir": "D:\\Motor-CAD\\11_1_5\\FEResultsData",
+  "fe_files": [
+    "Cogging_result_1.mes",
+    "Cogging_result_1.ugf",
+    "Inductance_result_1.mes",
+    "Inductance_result_1.ugf",
+    "OnLoadLoss_result_1.mes",
+    "OnLoadTorque_result_1.mes",
+    "OnLoadTorque_result_1.ugf",
+    "OpenCircuitLoss_result_1.mes",
+    "OpenCircuitTransient_result_1.mes",
+    "OpenCircuitTransient_result_1.ugf",
+    "StaticLoad_result_1.mes",
+    "StaticLoad_result_1.ugf",
+    "StaticOC_result_1.mes",
+    "StaticOC_result_1.ugf",
+    "TorqueSpeed_result_1_0.mes",
+    "TorqueSpeed_result_1_0.ugf",
+    "TorqueSpeed_result_1_1.mes",
+    "TorqueSpeed_result_1_1.ugf",
+    "TorqueSpeed_result_1_2.mes",
+    "TorqueSpeed_result_1_2.ugf",
+    "TorqueSpeed_result_1_3.mes",
+    "TorqueSpeed_result_1_3.ugf",
+    "TorqueSpeed_result_1_4.mes",
+    "TorqueSpeed_result_1_4.ugf",
+    "TorqueSpeed_result_1_5.mes",
+    "TorqueSpeed_result_1_5.ugf",
+    "TorqueSpeed_result_1_6.mes",
+    "TorqueSpeed_result_1_6.ugf",
+    "autofile.bh"
+  ]
+}

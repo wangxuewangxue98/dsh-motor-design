@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Motor-AI 电机设计AI辅助系统</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+    <!-- ============ 侧边栏 ============ -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <div class="logo">Motor-AI</div>
+            <div class="subtitle">电机设计AI辅助系统 v1.01.01</div>
+        </div>
+        <nav class="nav">
+            <a class="nav-item active" data-tab="dashboard">仪表盘</a>
+            <a class="nav-item" data-tab="parse">需求解析</a>
+            <a class="nav-item" data-tab="solve">批量求解</a>
+            <a class="nav-item" data-tab="compare">方案对比</a>
+            <a class="nav-item" data-tab="report">报告中心</a>
+            <a class="nav-item" data-tab="history">历史记录</a>
+            <a class="nav-item" data-tab="settings">系统设置</a>
+            <div class="nav-divider"></div>
+            <a class="nav-item" data-tab="agents">AI 团队</a>
+            <a class="nav-item" data-tab="evolution">进化仪表盘</a>
+            <a class="nav-item" data-tab="audit">审计日志</a>
+        </nav>
+        <div class="sidebar-footer">
+            <div class="status-line" id="sidebarStatus">
+                <span class="status-dot status-dot--checking"></span>
+                <span id="sidebarStatusText">检查中...</span>
+            </div>
+            <div class="version-info" style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">v1.01.01 | 2026-07-27</div>
+        </div>
+    </aside>
+
+    <!-- ============ 主内容区 ============ -->
+    <main class="main">
+
+        <!-- ========== 仪表盘 ========== -->
+        <section class="tab-content active" id="tab-dashboard">
+            <div class="page-header">
+                <h2>系统仪表盘 <span style="font-size:14px;color:var(--text-secondary);font-weight:normal;">Motor-AI</span></h2>
+                <p class="page-desc">电机设计AI辅助系统 v1.01.01 (2026-07-27) — 本地 AI 设计辅助系统运行状态总览</p>
+            </div>
+            <div class="status-grid" id="statusGrid">
+                <div class="status-card" id="cardOllama">
+                    <div class="status-card-icon">AI</div>
+                    <div class="status-card-body">
+                        <div class="status-card-title">本地 AI 引擎</div>
+                        <div class="status-card-value" id="ollamaStatus">检查中</div>
+                        <div class="status-card-detail" id="ollamaDetail">-</div>
+                    </div>
+                </div>
+                <div class="status-card" id="cardCloud">
+                    <div class="status-card-icon">CL</div>
+                    <div class="status-card-body">
+                        <div class="status-card-title">云端 AI</div>
+                        <div class="status-card-value" id="cloudStatus">检查中</div>
+                        <div class="status-card-detail" id="cloudDetail">-</div>
+                    </div>
+                </div>
+                <div class="status-card" id="cardDb">
+                    <div class="status-card-icon">DB</div>
+                    <div class="status-card-body">
+                        <div class="status-card-title">方案数据库</div>
+                        <div class="status-card-value" id="dbStatus">0 组</div>
+                        <div class="status-card-detail" id="dbDetail">-</div>
+                    </div>
+                </div>
+                <div class="status-card" id="cardMotor">
+                    <div class="status-card-icon">MC</div>
+                    <div class="status-card-body">
+                        <div class="status-card-title">Motor-CAD</div>
+                        <div class="status-card-value" id="motorStatus">检查中</div>
+                        <div class="status-card-detail" id="motorDetail">-</div>
+                    </div>
+                </div>
+            </div>
+            <div class="quick-actions">
+                <h3>快捷操作</h3>
+                <div class="action-buttons">
+                    <button class="btn btn-primary" onclick="switchTab('parse')">新建需求解析</button>
+                    <button class="btn btn-secondary" onclick="switchTab('history')">查看历史记录</button>
+                    <button class="btn btn-secondary" onclick="switchTab('settings')">系统设置</button>
+                </div>
+            </div>
+            <div class="workflow-guide">
+                <h3>工作流程</h3>
+                <div class="workflow-steps">
+                    <div class="workflow-step">
+                        <div class="step-num">1</div>
+                        <div class="step-text">粘贴客户需求，AI 自动提取规格参数</div>
+                    </div>
+                    <div class="workflow-arrow">→</div>
+                    <div class="workflow-step">
+                        <div class="step-num">2</div>
+                        <div class="step-text">生成参数矩阵，批量求解存入数据库</div>
+                    </div>
+                    <div class="workflow-arrow">→</div>
+                    <div class="workflow-step">
+                        <div class="step-num">3</div>
+                        <div class="step-text">本地点评 + 云端深度分析，对比方案</div>
+                    </div>
+                    <div class="workflow-arrow">→</div>
+                    <div class="workflow-step">
+                        <div class="step-num">4</div>
+                        <div class="step-text">生成报告，导出 CSV，交付客户</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========== 需求解析 ========== -->
+        <section class="tab-content" id="tab-parse">
+            <div class="page-header">
+                <h2>需求解析</h2>
+                <p class="page-desc">粘贴客户需求描述，本地 AI 自动提取电机规格参数（离线运行，数据不出机）</p>
+            </div>
+            <div class="parse-layout">
+                <div class="parse-left">
+                    <label class="field-label">客户需求描述</label>
+                    <textarea class="textarea" id="parseInput" rows="10" placeholder="粘贴客户邮件、需求文档内容...&#10;&#10;示例：我们要一台电动叉车驱动电机，额定功率10kW，48V电池供电，水冷，希望效率不低于93%，安装空间外径限制250mm。"></textarea>
+                    <div class="example-buttons">
+                        <span class="example-label">示例：</span>
+                        <button class="btn-tag" onclick="loadTestCase(0)">叉车电机</button>
+                        <button class="btn-tag" onclick="loadTestCase(1)">伺服电机</button>
+                        <button class="btn-tag" onclick="loadTestCase(2)">无人机电机</button>
+                        <button class="btn-tag" onclick="loadTestCase(3)">矿用电机</button>
+                        <button class="btn-tag" onclick="loadTestCase(4)">家电电机</button>
+                    </div>
+                    <button class="btn btn-primary btn-lg" id="parseBtn" onclick="parseRequirements()">
+                        AI 解析需求
+                    </button>
+                </div>
+                <div class="parse-right">
+                    <label class="field-label">解析结果（可编辑）</label>
+                    <div class="specs-form" id="specsForm">
+                        <div class="specs-empty">解析结果将显示在此处</div>
+                    </div>
+                    <button class="btn btn-primary" id="parseNextBtn" onclick="goToSolve()" style="display:none">
+                        下一步：批量求解 →
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========== 批量求解 ========== -->
+        <section class="tab-content" id="tab-solve">
+            <div class="page-header">
+                <h2>批量求解</h2>
+                <p class="page-desc">生成参数扫描矩阵，通过 Motor-CAD 11.1.5 求解。COM 自动化不可用时，使用手动工作流：导出参数 → Motor-CAD GUI 求解 → 导入结果</p>
+            </div>
+
+            <!-- Demo/授权提示 -->
+            <div class="solve-warning-banner" id="solveMotorcadNotice" style="display:none;margin-bottom:16px;">
+                <strong>⚠️ Motor-CAD COM 自动化不可用</strong><br>
+                <span id="solveMotorcadNoticeText">Motor-CAD v11.1.5 (32位) 的 COM 自动化在 64 位 Python 下存在兼容性问题。请使用"手动求解工作流"：导出参数 → 在 Motor-CAD GUI 中手动求解 → 导入结果。</span>
+            </div>
+
+            <!-- 手动求解工作流面板 -->
+            <div class="panel" id="manualWorkflowPanel" style="margin-bottom:16px;border-left:4px solid var(--accent);">
+                <div class="panel-header">
+                    <h3>🔧 手动求解工作流</h3>
+                    <span class="panel-hint">COM 不可用时的替代方案</span>
+                </div>
+                <div class="panel-body">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+                        <!-- 步骤 1: 导出参数 -->
+                        <div style="padding:12px;border:1px solid var(--border);border-radius:8px;">
+                            <h4 style="margin-bottom:8px;color:var(--accent);">步骤 1: 导出参数表</h4>
+                            <p style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;">生成参数扫描矩阵 CSV，包含每组方案的定子外径、极数、槽数等参数</p>
+                            <button class="btn btn-primary" onclick="exportParamsCsv()">📥 导出参数 CSV</button>
+                        </div>
+                        <!-- 步骤 2: Motor-CAD 操作 -->
+                        <div style="padding:12px;border:1px solid var(--border);border-radius:8px;">
+                            <h4 style="margin-bottom:8px;color:var(--accent);">步骤 2: 在 Motor-CAD 中求解</h4>
+                            <p style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;">按参数表在 Motor-CAD GUI 中设置参数，运行 EMag + Thermal 计算，记录结果</p>
+                            <button class="btn btn-secondary" onclick="showMotorcadGuide()">📖 查看操作指南</button>
+                        </div>
+                    </div>
+                    <!-- 步骤 3: 导入结果 -->
+                    <div style="padding:12px;border:2px dashed var(--border);border-radius:8px;">
+                        <h4 style="margin-bottom:8px;color:var(--accent);">步骤 3: 导入求解结果</h4>
+                        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;">将 Motor-CAD 结果填入导出的 CSV 模板（或自定义 CSV），上传导入</p>
+                        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+                            <input type="file" id="resultCsvFile" accept=".csv" style="font-size:13px;flex:1;min-width:200px;">
+                            <button class="btn btn-primary" onclick="uploadResultCsv()">📤 上传并导入</button>
+                        </div>
+                        <div style="margin-top:8px;">
+                            <span style="font-size:12px;color:var(--text-tertiary);">或通过路径导入：</span>
+                            <input type="text" class="input" id="importCsvPath" placeholder="D:\\MotorDesign\\uploads\\results.csv" style="margin-top:4px;font-size:13px;">
+                            <button class="btn btn-secondary" onclick="importMotorcadCsv()" style="margin-top:4px;">导入 CSV</button>
+                        </div>
+                    </div>
+                    <!-- 单条 JSON 导入 (折叠) -->
+                    <details style="margin-top:12px;">
+                        <summary style="cursor:pointer;font-size:13px;color:var(--text-secondary);">单条 JSON 结果导入 (高级)</summary>
+                        <div style="margin-top:8px;">
+                            <textarea class="input" id="importJsonData" rows="6" placeholder='{&#10;  "params": {"stator_od": 200, "poles": 10, "slots_stator": 36, "slots_rotor": 28, "turns_per_coil": 12, "voltage": 48, "speed": 3000},&#10;  "result": {"Efficiency": 92.5, "Winding_Temperature_Max": 75, "Average_Torque": 25.5, "Output_Power": 8.0}&#10;}'></textarea>
+                            <button class="btn btn-secondary" onclick="importMotorcadJson()" style="margin-top:8px;">导入 JSON</button>
+                        </div>
+                    </details>
+                </div>
+            </div>
+
+            <!-- 半自动求解工作流面板 -->
+            <div class="panel" id="semiAutoPanel" style="margin-bottom:16px;border-left:4px solid #4CAF50;">
+                <div class="panel-header">
+                    <h3>🤖 半自动求解工作流</h3>
+                    <span class="panel-hint">自动修改参数→启动Motor-CAD→用户手动求解→自动监控读取</span>
+                </div>
+                <div class="panel-body">
+                    <div style="margin-bottom:12px;padding:10px;background:rgba(76,175,80,0.08);border-radius:8px;">
+                        <p style="font-size:13px;color:var(--text-secondary);margin:0;">
+                            工作流: 自动修改.mot文件参数 → 自动启动Motor-CAD加载文件 → 自动切换到求解标签 → 
+                            <strong style="color:#4CAF50;">用户手动点击"求解热模型"按钮</strong> → 
+                            自动监控计算完成 → 自动读取结果
+                        </p>
+                    </div>
+                    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:12px;">
+                        <div>
+                            <label style="font-size:12px;color:var(--text-tertiary);">转速 (RPM)</label>
+                            <input type="number" class="input" id="saSpeed" value="3000" style="width:100%;font-size:14px;">
+                        </div>
+                        <div>
+                            <label style="font-size:12px;color:var(--text-tertiary);">铜损 (W)</label>
+                            <input type="number" class="input" id="saCopperLoss" value="400" style="width:100%;font-size:14px;">
+                        </div>
+                        <div>
+                            <label style="font-size:12px;color:var(--text-tertiary);">水套入口温度 (°C)</label>
+                            <input type="number" class="input" id="saWjTemp" value="40" style="width:100%;font-size:14px;">
+                        </div>
+                        <div>
+                            <label style="font-size:12px;color:var(--text-tertiary);">水套流量 (L/min)</label>
+                            <input type="number" class="input" id="saWjFlow" value="5" step="0.1" style="width:100%;font-size:14px;">
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+                        <button class="btn btn-primary" onclick="startSemiAutoSolve()" id="saStartBtn">🚀 启动半自动求解</button>
+                        <button class="btn btn-secondary" onclick="cancelSemiAutoSolve()" id="saCancelBtn" style="display:none;">❌ 取消</button>
+                        <span id="saStatusText" style="font-size:13px;color:var(--text-secondary);"></span>
+                    </div>
+                    <!-- 状态进度条 -->
+                    <div id="saProgressBar" style="display:none;margin-top:12px;">
+                        <div style="display:flex;gap:4px;margin-bottom:8px;">
+                            <div class="sa-step" id="saStep1" style="flex:1;padding:6px 8px;border-radius:4px;background:var(--border);font-size:12px;text-align:center;">1.修改参数</div>
+                            <div class="sa-step" id="saStep2" style="flex:1;padding:6px 8px;border-radius:4px;background:var(--border);font-size:12px;text-align:center;">2.启动MCAD</div>
+                            <div class="sa-step" id="saStep3" style="flex:1;padding:6px 8px;border-radius:4px;background:var(--border);font-size:12px;text-align:center;">3.等待求解</div>
+                            <div class="sa-step" id="saStep4" style="flex:1;padding:6px 8px;border-radius:4px;background:var(--border);font-size:12px;text-align:center;">4.监控计算</div>
+                            <div class="sa-step" id="saStep5" style="flex:1;padding:6px 8px;border-radius:4px;background:var(--border);font-size:12px;text-align:center;">5.读取结果</div>
+                        </div>
+                        <div id="saDetailStatus" style="font-size:13px;padding:8px;border-radius:4px;background:var(--bg-secondary);min-height:30px;"></div>
+                    </div>
+                    <!-- 结果区域 -->
+                    <div id="saResultArea" style="display:none;margin-top:12px;">
+                        <h4 style="margin-bottom:8px;color:var(--accent);">计算结果</h4>
+                        <div id="saResultContent" style="padding:12px;border:1px solid var(--border);border-radius:8px;font-size:13px;"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="solve-specs-bar" id="solveSpecsBar">
+                <span class="empty-hint">请先完成需求解析</span>
+            </div>
+            <div class="solve-controls">
+                <div class="control-group">
+                    <label>求解数量</label>
+                    <select id="solveCount" class="select">
+                        <option value="2">2 组（快速测试）</option>
+                        <option value="10">10 组</option>
+                        <option value="30" selected>30 组（标准）</option>
+                        <option value="50">50 组</option>
+                    </select>
+                </div>
+                <button class="btn btn-secondary" onclick="previewParams()">预览参数矩阵</button>
+                <button class="btn btn-primary btn-lg" id="solveStartBtn" onclick="startSolve()">开始求解</button>
+            </div>
+            <div class="preview-section" id="previewSection" style="display:none">
+                <h3>参数矩阵预览</h3>
+                <div class="table-wrap">
+                    <table class="data-table" id="previewTable"></table>
+                </div>
+            </div>
+            <div class="solve-progress" id="solveProgress" style="display:none">
+                <div class="progress-header">
+                    <span id="solveProgressText">准备中...</span>
+                    <span id="solveProgressCount"></span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-bar-fill" id="progressBarFill" style="width:0%"></div>
+                </div>
+                <div class="solve-log" id="solveLog"></div>
+            </div>
+            <div class="results-section" id="solveResultsSection" style="display:none">
+                <div class="section-header">
+                    <h3>求解结果</h3>
+                    <button class="btn btn-primary" onclick="goToCompare()">下一步：方案对比 →</button>
+                </div>
+                <div class="table-wrap">
+                    <table class="data-table sortable" id="solveResultsTable"></table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========== 方案对比 ========== -->
+        <section class="tab-content" id="tab-compare">
+            <div class="page-header">
+                <h2>方案对比</h2>
+                <p class="page-desc">查看 Top 方案，本地 AI 一句话点评，云端 AI 深度对比分析</p>
+            </div>
+            <div class="compare-controls">
+                <div class="control-group">
+                    <label>显示数量</label>
+                    <select id="compareTopN" class="select" onchange="loadTopSolutions()">
+                        <option value="5" selected>Top 5</option>
+                        <option value="10">Top 10</option>
+                        <option value="20">Top 20</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label>最低效率 (%)</label>
+                    <input type="number" class="input" id="compareMinEff" value="0" min="0" max="100" onchange="loadTopSolutions()">
+                </div>
+                <button class="btn btn-secondary" onclick="loadTopSolutions()">刷新</button>
+            </div>
+            <div class="table-wrap" id="compareTableWrap">
+                <table class="data-table" id="compareTable"></table>
+            </div>
+            <div class="feedback-section" id="feedbackSection" style="display:none">
+                <div class="feedback-header">
+                    <h3>方案反馈</h3>
+                    <span class="feedback-hint">采纳方案将自动生成技能模板，驱动数据飞轮</span>
+                </div>
+                <div class="feedback-row">
+                    <span id="feedbackSolutionInfo">-</span>
+                    <input type="text" class="input" id="feedbackReason" placeholder="反馈理由（可选）">
+                    <button class="btn btn-sm btn-success" onclick="submitFeedback('adopt')">采纳</button>
+                    <button class="btn btn-sm btn-danger" onclick="submitFeedback('reject')">拒绝</button>
+                </div>
+            </div>
+            <div class="compare-analysis">
+                <div class="analysis-card">
+                    <div class="analysis-header">
+                        <h3>本地 AI 点评</h3>
+                        <button class="btn btn-sm btn-primary" id="reviewBtn" onclick="doReview()">生成本地点评</button>
+                    </div>
+                    <div class="analysis-body" id="reviewDisplay">
+                        <div class="empty-hint">点击"生成本地点评"获取 AI 对方案的简要评价</div>
+                    </div>
+                </div>
+                <div class="analysis-card">
+                    <div class="analysis-header">
+                        <h3>云端深度分析</h3>
+                        <button class="btn btn-sm btn-primary" id="cloudBtn" onclick="doCloudAnalysis()">云端深度分析</button>
+                    </div>
+                    <div class="analysis-body" id="cloudDisplay">
+                        <div class="empty-hint">点击"云端深度分析"获取专业对比报告（需配置 API Key）</div>
+                    </div>
+                    <div class="desensitize-info" id="desensitizeInfo" style="display:none"></div>
+                </div>
+            </div>
+            <div class="compare-footer">
+                <button class="btn btn-primary btn-lg" onclick="goToReport()">下一步：生成报告 →</button>
+            </div>
+        </section>
+
+        <!-- ========== 报告中心 ========== -->
+        <section class="tab-content" id="tab-report">
+            <div class="page-header">
+                <h2>报告中心</h2>
+                <p class="page-desc">生成完整设计方案报告，预览、下载、管理历史报告</p>
+            </div>
+            <div class="report-controls">
+                <button class="btn btn-primary btn-lg" id="reportGenBtn" onclick="generateReport()">生成报告</button>
+                <button class="btn btn-secondary" onclick="loadReports()">刷新报告列表</button>
+            </div>
+            <div class="report-layout">
+                <div class="report-preview" id="reportPreview">
+                    <div class="empty-hint">点击"生成报告"创建设计方案报告</div>
+                </div>
+                <div class="report-list-section">
+                    <h3>历史报告</h3>
+                    <div class="report-list" id="reportList">
+                        <div class="empty-hint">暂无报告</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========== 历史记录 ========== -->
+        <section class="tab-content" id="tab-history">
+            <div class="page-header">
+                <h2>历史记录</h2>
+                <p class="page-desc">查看所有求解结果，导出 CSV 备份</p>
+            </div>
+            <div class="history-stats" id="historyStats">
+                <div class="stat-item"><span class="stat-label">总方案数</span><span class="stat-value" id="histTotal">0</span></div>
+                <div class="stat-item"><span class="stat-label">最高效率</span><span class="stat-value" id="histMaxEff">-</span></div>
+                <div class="stat-item"><span class="stat-label">平均效率</span><span class="stat-value" id="histAvgEff">-</span></div>
+            </div>
+            <div class="section-header">
+                <h3>全部结果</h3>
+                <button class="btn btn-secondary" onclick="exportCSV()">导出 CSV</button>
+            </div>
+            <div class="table-wrap">
+                <table class="data-table" id="historyTable"></table>
+            </div>
+        </section>
+
+        <!-- ========== 系统设置 ========== -->
+        <section class="tab-content" id="tab-settings">
+            <div class="page-header">
+                <h2>系统设置</h2>
+                <p class="page-desc">配置本地模型、云端 API、Motor-CAD 路径</p>
+            </div>
+            <div class="settings-form" id="settingsForm">
+                <div class="settings-section">
+                    <h3>本地 AI 模型</h3>
+                    <div class="form-row">
+                        <label>模型名称</label>
+                        <input type="text" class="input" id="setModelName" list="modelList" placeholder="选择或输入模型名称">
+                        <datalist id="modelList">
+                            <option value="qwen2.5:7b">4.7GB, 需 CPU 模式</option>
+                            <option value="qwen2.5:3b-instruct-q4_K_M">2.5GB, 可用 GPU</option>
+                            <option value="qwen3.5:4b">3.4GB, 可用 GPU</option>
+                            <option value="deepseek-r1:7b">4.7GB, 推理模型</option>
+                            <option value="deepseek-r1:8b">4.9GB, 推理模型</option>
+                        </datalist>
+                    </div>
+                    <div class="form-row">
+                        <label>GPU 加速</label>
+                        <div class="toggle-row">
+                            <input type="checkbox" id="setUseGpu">
+                            <span class="toggle-label" id="gpuHint">7B 模型建议关闭（4GB 显存不够）</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="settings-section">
+                    <h3>云端 AI (DeepSeek)</h3>
+                    <div class="form-row">
+                        <label>API Key</label>
+                        <input type="text" class="input" id="setApiKey" placeholder="sk-xxxxxxxxxxxxxxxx">
+                    </div>
+                    <div class="form-row">
+                        <label>模型名称</label>
+                        <input type="text" class="input" id="setCloudModel" value="deepseek-chat">
+                    </div>
+                </div>
+                <div class="settings-section">
+                    <h3>Motor-CAD 11.1.5</h3>
+                    <div class="form-row">
+                        <label>EXE 路径</label>
+                        <input type="text" class="input" id="setMotorcadPath" placeholder="D:\Motor-CAD\11_1_5\Motor-CAD_11_1_5.exe" readonly>
+                    </div>
+                    <div class="form-row">
+                        <label>COM 接口</label>
+                        <input type="text" class="input" id="setMotorcadProgId" placeholder="MotorCAD.MotorCAD" readonly>
+                    </div>
+                    <div class="form-row">
+                        <label>使用模式</label>
+                        <select class="input" id="setMotorcadUseMode" style="width:auto;min-width:200px;">
+                            <option value="auto">自动 (尝试 COM 自动化)</option>
+                            <option value="manual">手动导入 (不用 COM，导入求解结果)</option>
+                            <option value="simulation">纯模拟 (跳过 COM，用经验模型)</option>
+                        </select>
+                    </div>
+                    <div class="form-row">
+                        <label>连接状态</label>
+                        <span id="motorcadConnStatus" style="font-size:13px;color:var(--text-secondary);">检查中...</span>
+                    </div>
+                    <div class="form-row">
+                        <div id="motorcadDemoNotice" class="solve-warning-banner" style="display:none;flex:1;">
+                            <strong>⚠️ Demo 版本限制</strong><br>
+                            当前检测到 Motor-CAD Demo 版，COM 自动化通常被禁用。
+                            建议将"使用模式"设为"手动导入"或"纯模拟"。
+                            如需真实求解，请购买正式授权或申请试用。
+                        </div>
+                    </div>
+                </div>
+                <div class="settings-actions">
+                    <button class="btn btn-primary btn-lg" onclick="saveSettings()">保存设置</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========== AI 团队（多智能体工作流） ========== -->
+        <section class="tab-content" id="tab-agents">
+            <div class="page-header">
+                <h2>AI 团队</h2>
+                <p class="page-desc">多智能体协同工作流：需求分析 → 方案生成 → 评审推荐 → 报告生成，一键启动全自动</p>
+            </div>
+            <div class="agent-workflow-input">
+                <div class="form-group">
+                    <label>客户需求描述</label>
+                    <textarea class="textarea" id="agentInputText" rows="3" placeholder="粘贴客户需求，AI 团队自动完成全流程..."></textarea>
+                </div>
+                <div class="agent-controls">
+                    <div class="control-group">
+                        <label>方案数量</label>
+                        <select id="agentSolveCount" class="select">
+                            <option value="2">2 (快速测试)</option>
+                            <option value="10" selected>10 (常规)</option>
+                            <option value="30">30 (详细)</option>
+                            <option value="50">50 (全面)</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label>云端评审</label>
+                        <input type="checkbox" id="agentUseCloudReview">
+                    </div>
+                    <div class="control-group">
+                        <label>云端报告</label>
+                        <input type="checkbox" id="agentUseCloudReport">
+                    </div>
+                    <button class="btn btn-primary btn-lg" id="agentRunBtn" onclick="runAgentWorkflow()">启动 AI 团队</button>
+                </div>
+            </div>
+            <div class="agent-pipeline" id="agentPipeline">
+                <div class="pipeline-step" id="step-parse_requirement" data-status="pending">
+                    <div class="pipeline-icon">1</div>
+                    <div class="pipeline-body">
+                        <div class="pipeline-name">需求分析师</div>
+                        <div class="pipeline-desc" id="step-desc-parse_requirement">等待启动</div>
+                    </div>
+                </div>
+                <div class="pipeline-arrow"></div>
+                <div class="pipeline-step" id="step-generate_designs" data-status="pending">
+                    <div class="pipeline-icon">2</div>
+                    <div class="pipeline-body">
+                        <div class="pipeline-name">方案生成师</div>
+                        <div class="pipeline-desc" id="step-desc-generate_designs">等待启动</div>
+                    </div>
+                </div>
+                <div class="pipeline-arrow"></div>
+                <div class="pipeline-step" id="step-review_solutions" data-status="pending">
+                    <div class="pipeline-icon">3</div>
+                    <div class="pipeline-body">
+                        <div class="pipeline-name">评审推荐师</div>
+                        <div class="pipeline-desc" id="step-desc-review_solutions">等待启动</div>
+                    </div>
+                </div>
+                <div class="pipeline-arrow"></div>
+                <div class="pipeline-step" id="step-generate_report" data-status="pending">
+                    <div class="pipeline-icon">4</div>
+                    <div class="pipeline-body">
+                        <div class="pipeline-name">报告撰写员</div>
+                        <div class="pipeline-desc" id="step-desc-generate_report">等待启动</div>
+                    </div>
+                </div>
+            </div>
+            <div class="agent-results" id="agentResults" style="display:none">
+                <div class="agent-result-section">
+                    <h3>解析结果</h3>
+                    <div id="agentSpecsDisplay" class="specs-display"></div>
+                </div>
+                <div class="agent-result-section">
+                    <h3>评审意见</h3>
+                    <div id="agentReviewDisplay" class="markdown-body"></div>
+                </div>
+                <div class="agent-result-section">
+                    <h3>报告</h3>
+                    <div id="agentReportDisplay" class="markdown-body"></div>
+                    <button class="btn btn-secondary btn-sm" id="agentReportBtn" style="display:none" onclick="downloadAgentReport()">下载报告</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========== 进化仪表盘 ========== -->
+        <section class="tab-content" id="tab-evolution">
+            <div class="page-header">
+                <h2>进化仪表盘</h2>
+                <p class="page-desc">数据飞轮运行状态、技能库成熟度、知识图谱增长、组织代谢指标</p>
+            </div>
+            <div class="evolution-metrics" id="evolutionMetrics">
+                <div class="metric-card">
+                    <div class="metric-value" id="evoTotalDesigns">0</div>
+                    <div class="metric-label">总方案数</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="evoAdopted">0</div>
+                    <div class="metric-label">采纳方案</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="evoAdoptionRate">0%</div>
+                    <div class="metric-label">采纳率</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="evoSkills">0</div>
+                    <div class="metric-label">技能模板</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="evoRules">0</div>
+                    <div class="metric-label">设计规则</div>
+                </div>
+            </div>
+            <div class="evolution-actions">
+                <button class="btn btn-primary" onclick="mineRule()">挖掘新规则</button>
+                <button class="btn btn-secondary" onclick="loadEvolutionDashboard()">刷新</button>
+            </div>
+            <div class="evolution-grid">
+                <div class="evolution-section">
+                    <h3>技能模板库</h3>
+                    <div id="skillTemplatesList" class="skill-list">
+                        <div class="empty-hint">暂无技能模板，采纳方案后将自动生成</div>
+                    </div>
+                </div>
+                <div class="evolution-section">
+                    <h3>设计规则</h3>
+                    <div id="designRulesList" class="rules-list">
+                        <div class="empty-hint">加载中...</div>
+                    </div>
+                </div>
+            </div>
+            <div class="evolution-section full-width">
+                <h3>进化历史</h3>
+                <div id="evolutionHistoryList" class="history-list">
+                    <div class="empty-hint">加载中...</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========== 审计日志 ========== -->
+        <section class="tab-content" id="tab-audit">
+            <div class="page-header">
+                <h2>审计日志</h2>
+                <p class="page-desc">全流程操作可溯源，每个智能体的每一步操作都有记录</p>
+            </div>
+            <div class="audit-stats" id="auditStats">
+                <div class="metric-card">
+                    <div class="metric-value" id="auditTotal">0</div>
+                    <div class="metric-label">总日志</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="auditToday">0</div>
+                    <div class="metric-label">今日</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="auditAgents">0</div>
+                    <div class="metric-label">活跃智能体</div>
+                </div>
+            </div>
+            <div class="audit-controls">
+                <button class="btn btn-secondary" onclick="loadAuditLogs()">刷新日志</button>
+            </div>
+            <div class="table-wrap">
+                <table class="data-table" id="auditTable">
+                    <thead>
+                        <tr>
+                            <th>时间</th>
+                            <th>智能体</th>
+                            <th>操作</th>
+                            <th>状态</th>
+                            <th>耗时(ms)</th>
+                            <th>详情</th>
+                        </tr>
+                    </thead>
+                    <tbody id="auditTableBody"></tbody>
+                </table>
+            </div>
+        </section>
+
+    </main>
+</div>
+
+<!-- Toast 通知 -->
+<div class="toast-container" id="toastContainer"></div>
+
+<!-- 加载遮罩 -->
+<div class="loading-overlay" id="loadingOverlay" style="display:none">
+    <div class="loading-spinner"></div>
+    <div class="loading-text" id="loadingText">处理中...</div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

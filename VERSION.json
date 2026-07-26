@@ -1,0 +1,37 @@
+{
+    "system_name": "Motor-AI",
+    "version": "1.01.01",
+    "version_date": "2026-07-27 01:00",
+    "description": "电机设计AI辅助系统",
+    "version_scheme": "主版本.次版本.修订号 (X.YY.ZZ)",
+    "changelog_file": "CHANGELOG.md",
+    "changelog": [
+        {
+            "version": "1.01.01",
+            "date": "2026-07-27 01:00",
+            "tag": "v1.01.01",
+            "summary": "首个正式版本快照 — 完整流程跑通 (COM自动化+批量求解+报告生成)",
+            "changes": [
+                "Motor-CAD COM 自动化引擎 (motorcad_auto 包): 电磁分析+热分析+耦合分析",
+                "预启动模式绕过 Dispatch 60s 超时 (CO_E_SERVER_EXEC_FAILURE)",
+                "Web UI 单连接复用模式, SSE 流式进度推送",
+                "变量白名单机制, 防止 GetVariable 无限挂起",
+                "模板自动管理 + COM 诊断工具",
+                "本地 AI 模型集成 (Ollama + Qwen2.5-3B)",
+                "反馈闭环 + 审计日志 + 知识库",
+                "版本号迁移到三段式 (X.YY.ZZ)"
+            ]
+        },
+        {
+            "version": "1.00.01",
+            "date": "2026-07-24 23:00",
+            "tag": "v1.00.01",
+            "summary": "初始项目骨架",
+            "changes": [
+                "初始项目骨架, 包含 Motor-CAD 批量求解脚本和本地 3B 模型测试",
+                "Web 界面基础框架 (Flask + SSE)",
+                "数据库存储 (SQLite)"
+            ]
+        }
+    ]
+}

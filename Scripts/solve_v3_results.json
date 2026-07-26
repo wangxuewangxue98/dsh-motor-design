@@ -1,0 +1,35 @@
+{
+  "timestamp": "2026-07-26 12:22:10",
+  "mc_pid": 30264,
+  "main_hwnd": 15935952,
+  "solve_em_btn": null,
+  "solve_thermal_btn": {
+    "title": "求解热模型",
+    "hwnd": 17703798,
+    "ctrl_id": 17703798,
+    "enabled": 1,
+    "rect": [
+      477,
+      346,
+      727,
+      385
+    ],
+    "class": "TButton"
+  },
+  "script_run_btn": {
+    "title": "Run",
+    "hwnd": 14953718,
+    "ctrl_id": 14953718,
+    "enabled": 1,
+    "rect": [
+      474,
+      268,
+      549,
+      293
+    ],
+    "class": "TBitBtn"
+  },
+  "new_files": [],
+  "mot_modified": false,
+  "fe_files_count": 29
+}

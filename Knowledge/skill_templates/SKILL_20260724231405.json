@@ -1,0 +1,22 @@
+{
+  "template_id": "SKILL_20260724231405",
+  "name": "通用_10kW_48V",
+  "application": "通用",
+  "power_kw": 10,
+  "voltage_v": 48,
+  "cooling": null,
+  "recommended_params": {
+    "stator_od": 180,
+    "poles": 8,
+    "speed": null
+  },
+  "performance": {
+    "efficiency": 84.33,
+    "max_temp": 61.8,
+    "torque": 13.21
+  },
+  "feedback": "test adoption",
+  "created_time": "2026-07-24T23:14:05.754422",
+  "usage_count": 0,
+  "success_rate": 1.0
+}

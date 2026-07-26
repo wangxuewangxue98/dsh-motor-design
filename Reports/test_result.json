@@ -1,0 +1,26 @@
+{
+  "timestamp": "2026-07-26 18:59:06",
+  "model_info": {
+    "Program_Version": "11.1.5.1",
+    "Program_Module": "BPM-Therm",
+    "Pole_Number": 6,
+    "Slot_Number": 18,
+    "DCBusVoltage": 350.0,
+    "PeakCurrent": 100.0,
+    "WindingConnection": 0
+  },
+  "params_set": {
+    "DCBusVoltage": true,
+    "PeakCurrent": true
+  },
+  "thermal": {
+    "T_[Winding_Average]": 57.50443588247687,
+    "T_[Winding_Max]": 60.19186325214519
+  },
+  "emag": {},
+  "thermal_return": 0,
+  "emag_return": null,
+  "thermal_elapsed_s": 7.32,
+  "emag_elapsed_s": 0.0,
+  "errors": []
+}

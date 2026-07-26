@@ -1,0 +1,602 @@
+[
+  {
+    "menu": "文件(&Z)",
+    "item": "新建",
+    "id": 22,
+    "enabled": true
+  },
+  {
+    "menu": "文件(&Z)",
+    "item": "打开\tCtrl+O",
+    "id": 23,
+    "enabled": true
+  },
+  {
+    "menu": "文件(&Z)",
+    "item": "保存\tCtrl+S",
+    "id": 24,
+    "enabled": true
+  },
+  {
+    "menu": "文件(&Z)",
+    "item": "另存为",
+    "id": 25,
+    "enabled": true
+  },
+  {
+    "menu": "文件(&Z) > 加载",
+    "item": "电磁分析",
+    "id": 28,
+    "enabled": true
+  },
+  {
+    "menu": "文件(&Z) > 保存结果",
+    "item": "电磁分析",
+    "id": 30,
+    "enabled": true
+  },
+  {
+    "menu": "文件(&Z) > 导出结果",
+    "item": "稳态分析",
+    "id": 36,
+    "enabled": true
+  },
+  {
+    "menu": "文件(&Z) > 导出结果",
+    "item": "瞬态分析",
+    "id": 37,
+    "enabled": true
+  },
+  {
+    "menu": "文件(&Z) > 导出结果",
+    "item": "优化分析",
+    "id": 38,
+    "enabled": true
+  },
+  {
+    "menu": "文件(&Z) > 导出结果",
+    "item": "电磁方案",
+    "id": 39,
+    "enabled": true
+  },
+  {
+    "menu": "文件(&Z)",
+    "item": "矩阵输出\tCtrl+A",
+    "id": 40,
+    "enabled": true
+  },
+  {
+    "menu": "文件(&Z)",
+    "item": "Export Force Data",
+    "id": 41,
+    "enabled": true
+  },
+  {
+    "menu": "文件(&Z)",
+    "item": "截屏\tShift+Ctrl+C",
+    "id": 43,
+    "enabled": true
+  },
+  {
+    "menu": "文件(&Z)",
+    "item": "导出几何模型\tCtrl+E",
+    "id": 45,
+    "enabled": true
+  },
+  {
+    "menu": "文件(&Z)",
+    "item": "导入几何模型\tCtrl+I",
+    "id": 46,
+    "enabled": true
+  },
+  {
+    "menu": "文件(&Z)",
+    "item": "属性",
+    "id": 48,
+    "enabled": true
+  },
+  {
+    "menu": "文件(&Z)",
+    "item": "更改内容概览\tCtrl+D",
+    "id": 49,
+    "enabled": true
+  },
+  {
+    "menu": "文件(&Z)",
+    "item": "标记",
+    "id": 50,
+    "enabled": true
+  },
+  {
+    "menu": "文件(&Z)",
+    "item": "退出",
+    "id": 52,
+    "enabled": true
+  },
+  {
+    "menu": "编辑(&Y)",
+    "item": "撤销\tCtrl+Z",
+    "id": 55,
+    "enabled": true
+  },
+  {
+    "menu": "编辑(&Y)",
+    "item": "还原\tCtrl+Y",
+    "id": 56,
+    "enabled": true
+  },
+  {
+    "menu": "电机类型(&W)",
+    "item": "无刷永磁(内)电机",
+    "id": 62,
+    "enabled": true
+  },
+  {
+    "menu": "电机类型(&W)",
+    "item": "感应电机",
+    "id": 63,
+    "enabled": true
+  },
+  {
+    "menu": "电机类型(&W)",
+    "item": "开关磁阻电机",
+    "id": 64,
+    "enabled": true
+  },
+  {
+    "menu": "电机类型(&W)",
+    "item": "无刷永磁(外)电机",
+    "id": 65,
+    "enabled": true
+  },
+  {
+    "menu": "电机类型(&W)",
+    "item": "直流永磁有刷电机",
+    "id": 66,
+    "enabled": true
+  },
+  {
+    "menu": "电机类型(&W)",
+    "item": "电励磁同步电机",
+    "id": 67,
+    "enabled": true
+  },
+  {
+    "menu": "电机类型(&W)",
+    "item": "爪极电机",
+    "id": 68,
+    "enabled": true
+  },
+  {
+    "menu": "电机类型(&W)",
+    "item": "单相异步电机",
+    "id": 69,
+    "enabled": true
+  },
+  {
+    "menu": "电机类型(&W)",
+    "item": "有刷直流电机",
+    "id": 70,
+    "enabled": true
+  },
+  {
+    "menu": "电机类型(&W)",
+    "item": "磁阻同步电机",
+    "id": 71,
+    "enabled": true
+  },
+  {
+    "menu": "选项(&U) > 信息栏",
+    "item": "信息栏管理",
+    "id": 74,
+    "enabled": true
+  },
+  {
+    "menu": "选项(&U) > 信息栏",
+    "item": "显示信息栏",
+    "id": 75,
+    "enabled": true
+  },
+  {
+    "menu": "选项(&U)",
+    "item": "显示文本",
+    "id": 76,
+    "enabled": true
+  },
+  {
+    "menu": "选项(&U)",
+    "item": "显示图标",
+    "id": 77,
+    "enabled": true
+  },
+  {
+    "menu": "选项(&U)",
+    "item": "显示工具栏",
+    "id": 78,
+    "enabled": true
+  },
+  {
+    "menu": "选项(&U)",
+    "item": "显示电机类型",
+    "id": 79,
+    "enabled": true
+  },
+  {
+    "menu": "选项(&U)",
+    "item": "显示标题",
+    "id": 80,
+    "enabled": true
+  },
+  {
+    "menu": "选项(&U)",
+    "item": "显示文件路径",
+    "id": 81,
+    "enabled": true
+  },
+  {
+    "menu": "选项(&U)",
+    "item": "显示最近文件列表",
+    "id": 82,
+    "enabled": true
+  },
+  {
+    "menu": "默认设置(&T)",
+    "item": "简化界面",
+    "id": 84,
+    "enabled": true
+  },
+  {
+    "menu": "默认设置(&T)",
+    "item": "语言选项",
+    "id": 85,
+    "enabled": true
+  },
+  {
+    "menu": "默认设置(&T)",
+    "item": "用户自定义",
+    "id": 86,
+    "enabled": true
+  },
+  {
+    "menu": "默认设置(&T)",
+    "item": "单位",
+    "id": 87,
+    "enabled": true
+  },
+  {
+    "menu": "默认设置(&T)",
+    "item": "字体",
+    "id": 88,
+    "enabled": true
+  },
+  {
+    "menu": "默认设置(&T)",
+    "item": "分辨率",
+    "id": 89,
+    "enabled": true
+  },
+  {
+    "menu": "默认设置(&T)",
+    "item": "电机类型",
+    "id": 90,
+    "enabled": true
+  },
+  {
+    "menu": "默认设置(&T)",
+    "item": "保存路径",
+    "id": 91,
+    "enabled": true
+  },
+  {
+    "menu": "默认设置(&T) > 控件注册",
+    "item": "多客户端设置",
+    "id": 93,
+    "enabled": true
+  },
+  {
+    "menu": "默认设置(&T) > 控件注册",
+    "item": "单客户端设置",
+    "id": 94,
+    "enabled": true
+  },
+  {
+    "menu": "默认设置(&T) > 控件注册",
+    "item": "免注册",
+    "id": 95,
+    "enabled": true
+  },
+  {
+    "menu": "默认设置(&T) > 模拟试验链接扩展",
+    "item": "Motor-CAD电磁计算",
+    "id": 97,
+    "enabled": true
+  },
+  {
+    "menu": "默认设置(&T) > 模拟试验链接扩展",
+    "item": "SPEED PC-BDC",
+    "id": 98,
+    "enabled": true
+  },
+  {
+    "menu": "默认设置(&T) > 模拟试验链接扩展",
+    "item": "Ansys",
+    "id": 99,
+    "enabled": true
+  },
+  {
+    "menu": "默认设置(&T) > 模拟试验链接扩展",
+    "item": "自定义",
+    "id": 100,
+    "enabled": true
+  },
+  {
+    "menu": "默认设置(&T) > 模拟试验链接扩展",
+    "item": "高级自定义",
+    "id": 101,
+    "enabled": true
+  },
+  {
+    "menu": "编辑器(&S)",
+    "item": "径向截面",
+    "id": 104,
+    "enabled": true
+  },
+  {
+    "menu": "编辑器(&S)",
+    "item": "轴向截面",
+    "id": 105,
+    "enabled": true
+  },
+  {
+    "menu": "编辑器(&S)",
+    "item": "绕组",
+    "id": 106,
+    "enabled": true
+  },
+  {
+    "menu": "编辑器(&S)",
+    "item": "数据输入",
+    "id": 107,
+    "enabled": true
+  },
+  {
+    "menu": "编辑器(&S)",
+    "item": "图表编辑\tCtrl+G",
+    "id": 108,
+    "enabled": true
+  },
+  {
+    "menu": "编辑器(&S)",
+    "item": "有限元编辑",
+    "id": 109,
+    "enabled": true
+  },
+  {
+    "menu": "视图(&V)",
+    "item": "恢复视图\tShift+Ctrl+R",
+    "id": 111,
+    "enabled": true
+  },
+  {
+    "menu": "视图(&V)",
+    "item": "放大\tShift+Ctrl+O",
+    "id": 112,
+    "enabled": true
+  },
+  {
+    "menu": "视图(&V)",
+    "item": "缩小\tShift+Ctrl+I",
+    "id": 113,
+    "enabled": true
+  },
+  {
+    "menu": "结果(&R)",
+    "item": "热路图",
+    "id": 115,
+    "enabled": true
+  },
+  {
+    "menu": "结果(&R)",
+    "item": "节点温度",
+    "id": 116,
+    "enabled": true
+  },
+  {
+    "menu": "结果(&R)",
+    "item": "数据输出",
+    "id": 117,
+    "enabled": true
+  },
+  {
+    "menu": "结果(&R)",
+    "item": "瞬态曲线",
+    "id": 118,
+    "enabled": true
+  },
+  {
+    "menu": "结果(&R)",
+    "item": "运行求解\tCtrl+R",
+    "id": 119,
+    "enabled": true
+  },
+  {
+    "menu": "结果(&R)",
+    "item": "退出求解\tCtrl+K",
+    "id": 120,
+    "enabled": true
+  },
+  {
+    "menu": "结果(&R)",
+    "item": "复制结果进行对比\tCtrl+M",
+    "id": 121,
+    "enabled": true
+  },
+  {
+    "menu": "工具(&Q)",
+    "item": "热路编辑",
+    "id": 123,
+    "enabled": true
+  },
+  {
+    "menu": "工具(&Q)",
+    "item": "参数优化",
+    "id": 124,
+    "enabled": true
+  },
+  {
+    "menu": "工具(&Q) > Ansys Electronics Desktop",
+    "item": "输出",
+    "id": 126,
+    "enabled": true
+  },
+  {
+    "menu": "工具(&Q) > RMXprt",
+    "item": "导入/导出",
+    "id": 128,
+    "enabled": true
+  },
+  {
+    "menu": "工具(&Q) > Romax",
+    "item": "Romax设计结果输出\tAlt+R",
+    "id": 130,
+    "enabled": true
+  },
+  {
+    "menu": "工具(&Q) > SPEED",
+    "item": "导入/导出",
+    "id": 132,
+    "enabled": true
+  },
+  {
+    "menu": "工具(&Q) > SPEED",
+    "item": "材料导入",
+    "id": 133,
+    "enabled": true
+  },
+  {
+    "menu": "工具(&Q) > SPEED",
+    "item": "稳态对比\tCtrl+D",
+    "id": 134,
+    "enabled": true
+  },
+  {
+    "menu": "工具(&Q) > SPEED",
+    "item": "瞬态对比\tCtrl+G",
+    "id": 135,
+    "enabled": true
+  },
+  {
+    "menu": "工具(&Q) > 简化节点分析",
+    "item": "显示/隐藏简化模型",
+    "id": 137,
+    "enabled": true
+  },
+  {
+    "menu": "工具(&Q)",
+    "item": "自定义输出编辑",
+    "id": 138,
+    "enabled": true
+  },
+  {
+    "menu": "许可证(&O)",
+    "item": "诊断",
+    "id": 140,
+    "enabled": true
+  },
+  {
+    "menu": "许可证(&O)",
+    "item": "更新",
+    "id": 141,
+    "enabled": true
+  },
+  {
+    "menu": "许可证(&O)",
+    "item": "配置",
+    "id": 142,
+    "enabled": true
+  },
+  {
+    "menu": "许可证(&O)",
+    "item": "高级",
+    "id": 143,
+    "enabled": true
+  },
+  {
+    "menu": "许可证(&O)",
+    "item": "监视器",
+    "id": 144,
+    "enabled": false
+  },
+  {
+    "menu": "打印(&P)",
+    "item": "打印\tCtrl+P",
+    "id": 146,
+    "enabled": true
+  },
+  {
+    "menu": "打印(&P)",
+    "item": "打印设置",
+    "id": 147,
+    "enabled": true
+  },
+  {
+    "menu": "帮助(&N)",
+    "item": "帮助手册（F1）",
+    "id": 149,
+    "enabled": true
+  },
+  {
+    "menu": "帮助(&N)",
+    "item": "搜索",
+    "id": 150,
+    "enabled": true
+  },
+  {
+    "menu": "帮助(&N)",
+    "item": "手册使用说明",
+    "id": 151,
+    "enabled": true
+  },
+  {
+    "menu": "帮助(&N)",
+    "item": "控件命令",
+    "id": 153,
+    "enabled": true
+  },
+  {
+    "menu": "帮助(&N)",
+    "item": "控件参数名",
+    "id": 154,
+    "enabled": true
+  },
+  {
+    "menu": "帮助(&N)",
+    "item": "控件名\tF2",
+    "id": 155,
+    "enabled": true
+  },
+  {
+    "menu": "帮助(&N)",
+    "item": "网卡地址",
+    "id": 157,
+    "enabled": true
+  },
+  {
+    "menu": "帮助(&N)",
+    "item": "图形显示",
+    "id": 159,
+    "enabled": true
+  },
+  {
+    "menu": "帮助(&N)",
+    "item": "联系我们",
+    "id": 161,
+    "enabled": true
+  },
+  {
+    "menu": "帮助(&N)",
+    "item": "关于...",
+    "id": 163,
+    "enabled": true
+  }
+]

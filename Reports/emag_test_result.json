@@ -1,0 +1,12 @@
+{
+  "test": "emag_analysis",
+  "mot_file": "D:\\MotorDesign\\Templates\\160kw_assm_2222.mot",
+  "timestamp": "2026-07-26 20:07:17",
+  "connect_time_s": 94.4,
+  "initial_module": "(0, 'BPM-Therm')",
+  "after_mag_context_module": "(0, 'BPM-Therm')",
+  "magnetic_calc_result": "0",
+  "magnetic_calc_time_s": 201.3,
+  "coupled_calc_result": "0",
+  "coupled_calc_time_s": 194.5
+}

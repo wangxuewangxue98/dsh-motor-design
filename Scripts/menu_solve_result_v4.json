@@ -1,0 +1,15 @@
+{
+  "timestamp": "2026-07-26 15:46:01",
+  "main_hwnd": 1772000,
+  "solve_button": {
+    "title": "求解热模型",
+    "ctrl_id": 14890600,
+    "hwnd": 14890600,
+    "vis": 0,
+    "parent": 12522778
+  },
+  "visible_texts_count": 14,
+  "temp_texts": [
+    "Temperatures"
+  ]
+}
