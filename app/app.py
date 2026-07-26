@@ -1,6 +1,6 @@
 """
 Motor-AI Web 界面后端
-版本: 1.01.01 | 更新时间: 2026-07-27 01:00
+版本: 1.02.01 | 更新时间: 2026-07-27 07:00
 Flask 应用，提供所有 API 端点，连接现有的 ai_tools / motor_tools / db_tools 模块
 """
 import os
@@ -15,8 +15,8 @@ from flask import Flask, render_template, request, jsonify, Response, stream_wit
 # 系统版本信息 (三段式: 主版本.次版本.修订号)
 # ============================================================
 SYSTEM_NAME = "Motor-AI"
-SYSTEM_VERSION = "1.01.01"
-VERSION_DATE = "2026-07-27 01:00"
+SYSTEM_VERSION = "1.02.01"
+VERSION_DATE = "2026-07-27 07:00"
 
 # ============================================================
 # 路径配置
@@ -1000,7 +1000,7 @@ def api_report():
         full_report = f"""# 电机设计方案报告
 
 **生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-**系统版本**: Motor-AI (v1.01.01)
+**系统版本**: Motor-AI (v1.02.01)
 
 ---
 
@@ -1039,7 +1039,7 @@ def api_report():
 
 ---
 
-*本报告由 Motor-AI v1.01.01 自动生成 | {datetime.now().strftime('%Y-%m-%d %H:%M')}*
+*本报告由 Motor-AI v1.02.01 自动生成 | {datetime.now().strftime('%Y-%m-%d %H:%M')}*
 """
 
         # 保存报告
@@ -1122,8 +1122,8 @@ def api_settings_get():
         "motorcad_progid": env.get("MOTORCAD_PROGID", "MotorCAD.MotorCAD"),
         "motorcad_use_mode": env.get("MOTORCAD_USE_MODE", "auto"),
         "system_name": env.get("SYSTEM_NAME", "Motor-AI"),
-        "system_version": env.get("SYSTEM_VERSION", "1.01.01"),
-        "version_date": env.get("VERSION_DATE", "2026-07-27 01:00"),
+        "system_version": env.get("SYSTEM_VERSION", "1.02.01"),
+        "version_date": env.get("VERSION_DATE", "2026-07-27 07:00"),
     })
 
 

@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "last_updated": "2026-07-26",
+  "last_updated": "2026-07-27",
   "description": "Motor-AI 知识本体 - 定义电机设计领域的实体、关系与约束",
   "entities": {
     "CustomerRequirement": {
@@ -263,9 +263,9 @@
   ],
   "metrics": {
     "total_projects": 0,
-    "total_designs": 176,
+    "total_designs": 268,
     "adopted_designs": 1,
-    "adoption_rate": 0.6,
+    "adoption_rate": 0.4,
     "skill_templates_count": 1,
     "rules_count": 5,
     "ai_intervention_rate": 0.0
