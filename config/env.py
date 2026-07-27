@@ -45,7 +45,7 @@ class Config:
     # ---- 系统版本 (按环境分离) ----
     # dev 使用新版本号 (2.x), trial 使用冻结版本号 (1.x)
     SYSTEM_NAME = "Motor-AI"
-    SYSTEM_VERSION = "2.03.02" if IS_DEV else "2.02.02"
+    SYSTEM_VERSION = "2.03.02" if IS_DEV else "2.02.03"
     VERSION_DATE = "2026-07-28 01:45"
     VERSION_LABEL = f"{SYSTEM_VERSION}-dev" if IS_DEV else f"{SYSTEM_VERSION}-trial"
 

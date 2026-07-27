@@ -156,10 +156,10 @@ async function loadStatus() {
         if (devTitleBadge) {
             devTitleBadge.style.display = isDev ? 'inline-block' : 'none';
         }
-        // 任务调度面板仅调试版可见
+        // 任务调度面板 (dev + trial 均可见)
         const navTasks = document.getElementById('navTasks');
         if (navTasks) {
-            navTasks.style.display = isDev ? '' : 'none';
+            navTasks.style.display = '';
         }
         // 调试版顶部渐变条
         if (isDev && !document.getElementById('devTopBar')) {

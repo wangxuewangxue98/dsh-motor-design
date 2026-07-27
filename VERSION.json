@@ -11,6 +11,19 @@
     "changelog_file": "CHANGELOG.md",
     "changelog": [
         {
+            "version": "2.02.03",
+            "date": "2026-07-28 02:25",
+            "tag": "v2.02.03-trial",
+            "env": "trial",
+            "summary": "试用版任务调度面板开放",
+            "changes": [
+                "解除 trial 环境下任务调度面板的隐藏限制，使其与 dev 环境一致可见",
+                "任务管理 API /api/tasks、/api/tasks/active、/api/task/{id}/cancel 在 trial 下完整可用",
+                "任务调度面板支持全部/运行中/排队中/已完成/已取消筛选和 2 秒自动刷新",
+                "保留 trial 安全限制：禁用 Debug、禁用云端 API、Motor-CAD 模拟模式"
+            ]
+        },
+        {
             "version": "2.03.02",
             "date": "2026-07-28 01:45",
             "tag": "v2.03.02-dev",

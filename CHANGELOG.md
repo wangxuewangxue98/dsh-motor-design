@@ -5,6 +5,24 @@
 
 ---
 
+## [2.02.03] - 2026-07-28 (TRIAL)
+
+### 试用版任务调度面板开放
+
+#### Added
+- 解除 trial 环境下「任务调度」导航入口的隐藏限制，任务调度面板在 dev + trial 双环境均可见
+- 任务调度面板支持：任务状态筛选（全部/运行中/排队中/已完成/已取消）、实时进度条、2 秒自动刷新、终止任务按钮
+
+#### Changed
+- `app/static/app.js`：移除 `navTasks.style.display = isDev ? '' : 'none'` 的 trial 隐藏逻辑
+- `app/templates/index.html`：更新任务调度面板注释，去掉"仅调试版"限定
+
+#### Security
+- 保留 trial 环境原有安全限制：禁用 Flask Debug 模式、禁用云端 API、Motor-CAD 默认模拟模式
+- 任务取消 API 仍通过 ProgressHub 广播终止信号，确保运行中任务可优雅停止
+
+---
+
 ## [2.03.02] - 2026-07-28 (DEV)
 
 ### 修复登录界面 + fetch 自动认证
