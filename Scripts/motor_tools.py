@@ -422,6 +422,16 @@ def generate_param_matrix(specs: dict, count: int = 30) -> list:
     """
     根据需求规格生成参数扫描矩阵
     返回参数字典列表，包含结构参数和电气参数
+
+    结构参数 (v1.02.03 扩展):
+      - stator_od: 定子外径 (mm)
+      - stator_id: 定子内径 (mm) — 经验比例 0.55-0.65 × OD
+      - rotor_od:  转子外径 (mm) = 定子内径 - 2 × 气隙
+      - core_length: 铁心长度 (mm) — 经验 50-150mm
+      - air_gap: 气隙长度 (mm) — 0.5-1.0mm
+      - tooth_width: 齿宽 (mm) — 由槽数和内径推导
+      - yoke_thickness: 轭厚 (mm) — 由外径和内径推导
+      - shaft_dia: 轴径 (mm) — 转子内径的 0.3-0.4 倍
     """
     voltage = specs.get("voltage_v") or 48
     speed = specs.get("speed_rpm") or 3000
@@ -446,11 +456,44 @@ def generate_param_matrix(specs: dict, count: int = 30) -> list:
                 base_turns = max(6, int(voltage * 0.3 + (250 - od) * 0.05))
                 turns = base_turns + random.choice([-2, 0, 2])
 
+                # ---- 结构参数推导 (基于电机设计经验公式) ----
+                # 定子内径: OD 的 0.55-0.65 倍 (极数越多比例略大)
+                id_ratio = 0.58 + (pole - 8) * 0.02 + random.uniform(-0.02, 0.02)
+                stator_id = round(od * id_ratio, 1)
+
+                # 气隙长度: 0.5-1.0mm (外径越大气隙略大)
+                air_gap = round(0.5 + (od - 180) * 0.002 + random.uniform(-0.05, 0.1), 2)
+                air_gap = max(0.3, min(1.2, air_gap))
+
+                # 转子外径 = 定子内径 - 2 × 气隙
+                rotor_od = round(stator_id - 2 * air_gap, 1)
+
+                # 铁心长度: 基于功率和转速估算, 50-150mm
+                base_length = 60 + power_kw * 2.5 + (od - 180) * 0.3
+                core_length = round(max(40, min(200, base_length + random.uniform(-10, 10))), 1)
+
+                # 齿宽: 由定子内径、槽数推导 (近似齿宽 = π × ID / (2 × slots))
+                tooth_width = round(3.14159 * stator_id / (2 * slots_s), 2)
+
+                # 轭厚 (定子轭): (OD - ID) / 2 - 齿高, 近似 (OD-ID)/2 × 0.35
+                slot_depth = round((od - stator_id) / 2 * 0.65, 1)  # 槽高
+                yoke_thickness = round((od - stator_id) / 2 - slot_depth, 1)
+
+                # 轴径: 转子内径的 0.3-0.4 倍 (转子为空心时)
+                shaft_dia = round(rotor_od * 0.35, 1)
+
                 designs.append({
                     "stator_od": od,
+                    "stator_id": stator_id,
+                    "rotor_od": rotor_od,
+                    "core_length": core_length,
+                    "air_gap": air_gap,
+                    "tooth_width": tooth_width,
+                    "yoke_thickness": yoke_thickness,
+                    "shaft_dia": shaft_dia,
                     "poles": pole,
                     "voltage": voltage,
-                    "peak_current": random.choice([50, 80, 100]),  # 已验证安全的值范围
+                    "peak_current": random.choice([50, 80, 100]),
                     "speed": speed,
                     "slots_stator": slots_s,
                     "slots_rotor": slots_r,
@@ -547,6 +590,7 @@ def _run_simulated(params: dict) -> dict:
     """
     模拟求解 - 生成丰富的电机性能数据
     基于电机设计经验公式近似计算，方便测试完整流程
+    结构参数从 params 中直接传递 (v1.02.03)
     """
     od = params["stator_od"]
     poles = params["poles"]
@@ -555,6 +599,15 @@ def _run_simulated(params: dict) -> dict:
     slots_s = params.get("slots_stator", 36)
     slots_r = params.get("slots_rotor", 28)
     turns = params.get("turns_per_coil", 10)
+
+    # ---- 结构参数 (从 params 传递, 带默认值) ----
+    stator_id = params.get("stator_id", round(od * 0.6, 1))
+    rotor_od = params.get("rotor_od", round(stator_id - 1.0, 1))
+    core_length = params.get("core_length", 80.0)
+    air_gap = params.get("air_gap", 0.6)
+    tooth_width = params.get("tooth_width", round(3.14159 * stator_id / (2 * slots_s), 2))
+    yoke_thickness = params.get("yoke_thickness", round((od - stator_id) / 2 * 0.35, 1))
+    shaft_dia = params.get("shaft_dia", round(rotor_od * 0.35, 1))
 
     # ---- 效率 (基于尺寸和极数的经验模型) ----
     base_eff = 85.0 + (od - 180) * 0.04 + (poles - 8) * 1.2
@@ -597,7 +650,15 @@ def _run_simulated(params: dict) -> dict:
         "max_temp": max_temp,
         "torque": torque,
         "power": power,
-        # 结构参数
+        # 结构参数 (v1.02.03 扩展)
+        "stator_od": od,
+        "stator_id": stator_id,
+        "rotor_od": rotor_od,
+        "core_length": core_length,
+        "air_gap": air_gap,
+        "tooth_width": tooth_width,
+        "yoke_thickness": yoke_thickness,
+        "shaft_dia": shaft_dia,
         "slots_stator": slots_s,
         "slots_rotor": slots_r,
         "turns_per_coil": turns,
@@ -619,10 +680,11 @@ def _run_simulated(params: dict) -> dict:
     }
 
 
-def batch_solve(param_list: list, verbose: bool = True) -> list:
+def batch_solve(param_list: list, verbose: bool = True, progress_cb=None) -> list:
     """
     批量求解，返回结果列表
     每个结果包含 solve_mode 标记和完整性能数据
+    progress_cb: 可选回调函数 (index, total, params, result) → None
     """
     reset_solve_log()
     results = []
@@ -686,6 +748,13 @@ def batch_solve(param_list: list, verbose: bool = True) -> list:
                 _log(f"[{i+1}/{total}] {mode_tag} OD={params['stator_od']}mm, "
                      f"Poles={params['poles']}, Eff={res['efficiency']:.2f}%, "
                      f"Temp={res['max_temp']:.0f}K")
+
+            # 进度回调
+            if progress_cb:
+                try:
+                    progress_cb(i + 1, total, params, res)
+                except Exception:
+                    pass
         except Exception as e:
             _log(f"[{i+1}/{total}] FAILED: {e}", "error")
 
@@ -861,7 +930,15 @@ def _run_motorcad_with_instance(connector, params: dict) -> dict:
         "max_temp": round(winding_max_temp if winding_max_temp > 0 else winding_avg_temp, 1),
         "torque": round(torque_nm, 2),
         "power": round(output_power / 1000, 2),  # W → kW
-        # 结构参数
+        # 结构参数 (v1.02.03 扩展 - 从 params 传递)
+        "stator_od": params.get("stator_od", 200),
+        "stator_id": params.get("stator_id", round(params.get("stator_od", 200) * 0.6, 1)),
+        "rotor_od": params.get("rotor_od", round(params.get("stator_id", 120) - 1.0, 1)),
+        "core_length": params.get("core_length", 80.0),
+        "air_gap": params.get("air_gap", 0.6),
+        "tooth_width": params.get("tooth_width", 5.0),
+        "yoke_thickness": params.get("yoke_thickness", 10.0),
+        "shaft_dia": params.get("shaft_dia", 30.0),
         "slots_stator": params.get("slots_stator", 36),
         "slots_rotor": params.get("slots_rotor", 28),
         "turns_per_coil": params.get("turns_per_coil", 10),

@@ -1222,42 +1222,57 @@ def api_workflow_run():
                 use_cloud_review=use_cloud_review,
                 use_cloud_report=use_cloud_report
             ):
-                step = update.get("step", "")
-                status = update.get("status", "")
+                event_type = update.get("type", "")
 
-                if step == "parse_requirement":
-                    if "specs" in update:
-                        yield f"data: {json.dumps({'type': 'step_done', 'step': 'parse_requirement', 'specs': update['specs'], 'confidence': update.get('confidence', 0), 'project_id': update.get('project_id', '')}, ensure_ascii=False)}\n\n"
-                    elif "error" in update:
-                        yield f"data: {json.dumps({'type': 'step_error', 'step': 'parse_requirement', 'error': update['error']}, ensure_ascii=False)}\n\n"
+                # ---- step_start: 节点开始 ----
+                if event_type == "step_start":
+                    yield f"data: {json.dumps({'type': 'step_start', 'step': update.get('step', ''), 'message': update.get('message', '')}, ensure_ascii=False)}\n\n"
 
-                elif step == "generate_designs":
-                    if "results" in update:
-                        results = update["results"]
-                        yield f"data: {json.dumps({'type': 'step_done', 'step': 'generate_designs', 'results_count': len(results), 'top_results': results[:5], 'matched_templates': update.get('matched_templates', [])}, ensure_ascii=False)}\n\n"
-                    elif "error" in update:
-                        yield f"data: {json.dumps({'type': 'step_error', 'step': 'generate_designs', 'error': update['error']}, ensure_ascii=False)}\n\n"
+                # ---- progress: 子步骤进度 ----
+                elif event_type == "progress":
+                    yield f"data: {json.dumps({'type': 'progress', 'step': update.get('step', ''), 'message': update.get('message', ''), 'level': update.get('level', 'info'), 'timestamp': update.get('timestamp', '')}, ensure_ascii=False)}\n\n"
 
-                elif step == "review_solutions":
-                    if "review" in update:
-                        yield f"data: {json.dumps({'type': 'step_done', 'step': 'review_solutions', 'review': update['review'], 'recommendation': update.get('recommendation', ''), 'top_solutions': update.get('top_solutions', [])}, ensure_ascii=False)}\n\n"
-                    elif "error" in update:
-                        yield f"data: {json.dumps({'type': 'step_error', 'step': 'review_solutions', 'error': update['error']}, ensure_ascii=False)}\n\n"
+                # ---- step_done: 节点完成 ----
+                elif event_type == "step_done":
+                    step = update.get("step", "")
 
-                elif step == "convergence_review":
-                    if "con_report" in update:
-                        yield f"data: {json.dumps({'type': 'step_done', 'step': 'convergence_review', 'con_report': update['con_report'], 'convergence_findings': update.get('convergence_findings', {})}, ensure_ascii=False)}\n\n"
-                    elif "error" in update:
-                        yield f"data: {json.dumps({'type': 'step_error', 'step': 'convergence_review', 'error': update['error']}, ensure_ascii=False)}\n\n"
+                    if step == "parse_requirement":
+                        if "specs" in update:
+                            yield f"data: {json.dumps({'type': 'step_done', 'step': 'parse_requirement', 'specs': update['specs'], 'confidence': update.get('confidence', 0), 'project_id': update.get('project_id', '')}, ensure_ascii=False)}\n\n"
+                        elif "errors" in update:
+                            yield f"data: {json.dumps({'type': 'step_error', 'step': 'parse_requirement', 'error': update['errors'][0] if update['errors'] else 'unknown'}, ensure_ascii=False)}\n\n"
 
-                elif step == "decision_gate":
-                    yield f"data: {json.dumps({'type': 'step_done', 'step': 'decision_gate', 'pro_report': update.get('pro_report', ''), 'con_report': update.get('con_report', ''), 'ready_for_confirm': update.get('ready_for_confirm', False)}, ensure_ascii=False)}\n\n"
+                    elif step == "generate_designs":
+                        if "results" in update:
+                            results = update["results"]
+                            yield f"data: {json.dumps({'type': 'step_done', 'step': 'generate_designs', 'results_count': len(results), 'top_results': results[:5], 'matched_templates': update.get('matched_templates', [])}, ensure_ascii=False)}\n\n"
+                        elif "errors" in update:
+                            yield f"data: {json.dumps({'type': 'step_error', 'step': 'generate_designs', 'error': update['errors'][0] if update['errors'] else 'unknown'}, ensure_ascii=False)}\n\n"
 
-                elif step == "generate_report":
-                    if "report" in update:
-                        yield f"data: {json.dumps({'type': 'step_done', 'step': 'generate_report', 'report': update['report'], 'report_filepath': update.get('report_filepath', ''), 'report_filename': update.get('report_filename', '')}, ensure_ascii=False)}\n\n"
-                    elif "error" in update:
-                        yield f"data: {json.dumps({'type': 'step_error', 'step': 'generate_report', 'error': update['error']}, ensure_ascii=False)}\n\n"
+                    elif step == "review_solutions":
+                        if "review" in update:
+                            yield f"data: {json.dumps({'type': 'step_done', 'step': 'review_solutions', 'review': update['review'], 'recommendation': update.get('recommendation', ''), 'top_solutions': update.get('top_solutions', [])}, ensure_ascii=False)}\n\n"
+                        elif "errors" in update:
+                            yield f"data: {json.dumps({'type': 'step_error', 'step': 'review_solutions', 'error': update['errors'][0] if update['errors'] else 'unknown'}, ensure_ascii=False)}\n\n"
+
+                    elif step == "convergence_review":
+                        if "con_report" in update:
+                            yield f"data: {json.dumps({'type': 'step_done', 'step': 'convergence_review', 'con_report': update['con_report'], 'convergence_findings': update.get('convergence_findings', {})}, ensure_ascii=False)}\n\n"
+                        elif "errors" in update:
+                            yield f"data: {json.dumps({'type': 'step_error', 'step': 'convergence_review', 'error': update['errors'][0] if update['errors'] else 'unknown'}, ensure_ascii=False)}\n\n"
+
+                    elif step == "decision_gate":
+                        yield f"data: {json.dumps({'type': 'step_done', 'step': 'decision_gate', 'pro_report': update.get('pro_report', ''), 'con_report': update.get('con_report', ''), 'ready_for_confirm': update.get('ready_for_confirm', False)}, ensure_ascii=False)}\n\n"
+
+                    elif step == "generate_report":
+                        if "report" in update:
+                            yield f"data: {json.dumps({'type': 'step_done', 'step': 'generate_report', 'report': update['report'], 'report_filepath': update.get('report_filepath', ''), 'report_filename': update.get('report_filename', '')}, ensure_ascii=False)}\n\n"
+                        elif "errors" in update:
+                            yield f"data: {json.dumps({'type': 'step_error', 'step': 'generate_report', 'error': update['errors'][0] if update['errors'] else 'unknown'}, ensure_ascii=False)}\n\n"
+
+                # ---- fatal: 致命错误 ----
+                elif event_type == "fatal":
+                    yield f"data: {json.dumps({'type': 'fatal', 'error': update.get('error', 'unknown')}, ensure_ascii=False)}\n\n"
 
             yield f"data: {json.dumps({'type': 'done', 'message': 'Workflow completed (双轨辩证完成)'})}\n\n"
 

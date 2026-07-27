@@ -579,6 +579,10 @@ function renderSolveResultsTable(results) {
                 <th>排名</th>
                 <th>模式</th>
                 <th>外径 (mm)</th>
+                <th>内径 (mm)</th>
+                <th>转子外径 (mm)</th>
+                <th>铁心长 (mm)</th>
+                <th>气隙 (mm)</th>
                 <th>极数</th>
                 <th>定子槽</th>
                 <th>转子槽</th>
@@ -604,6 +608,10 @@ function renderSolveResultsTable(results) {
                             ? '<span class="mode-badge mode-badge--pend">PEND</span>'
                             : '<span class="mode-badge mode-badge--sim">SIM</span>')}</td>
                     <td>${r.params.stator_od}</td>
+                    <td>${r.stator_id || r.params.stator_id || '-'}</td>
+                    <td>${r.rotor_od || r.params.rotor_od || '-'}</td>
+                    <td>${r.core_length || r.params.core_length || '-'}</td>
+                    <td>${r.air_gap || r.params.air_gap || '-'}</td>
                     <td>${r.params.poles}</td>
                     <td>${r.slots_stator || r.params.slots_stator || '-'}</td>
                     <td>${r.slots_rotor || r.params.slots_rotor || '-'}</td>
@@ -665,7 +673,7 @@ function renderCompareTable(results) {
             <tr>
                 <th rowspan="2">排名</th>
                 <th rowspan="2">模式</th>
-                <th colspan="5">结构参数</th>
+                <th colspan="9">结构参数</th>
                 <th colspan="4">性能参数</th>
                 <th colspan="4">电磁参数</th>
                 <th colspan="3">损耗 (W)</th>
@@ -674,6 +682,10 @@ function renderCompareTable(results) {
             </tr>
             <tr>
                 <th>外径(mm)</th>
+                <th>内径(mm)</th>
+                <th>转子外径(mm)</th>
+                <th>铁心长(mm)</th>
+                <th>气隙(mm)</th>
                 <th>极数</th>
                 <th>定子槽</th>
                 <th>转子槽</th>
@@ -701,6 +713,10 @@ function renderCompareTable(results) {
                             ? '<span class="mode-badge mode-badge--pend">PEND</span>'
                             : '<span class="mode-badge mode-badge--sim">SIM</span>')}</td>
                     <td>${r.stator_od || '-'}</td>
+                    <td>${r.stator_id || '-'}</td>
+                    <td>${r.rotor_od || '-'}</td>
+                    <td>${r.core_length || '-'}</td>
+                    <td>${r.air_gap || '-'}</td>
                     <td>${r.poles || '-'}</td>
                     <td>${r.slots_stator || '-'}</td>
                     <td>${r.slots_rotor || '-'}</td>
@@ -954,6 +970,9 @@ async function loadHistory() {
                 <tr>
                     <th>ID</th>
                     <th>外径 (mm)</th>
+                    <th>内径 (mm)</th>
+                    <th>转子外径 (mm)</th>
+                    <th>铁心长 (mm)</th>
                     <th>极数</th>
                     <th>电压 (V)</th>
                     <th>转速 (rpm)</th>
@@ -969,6 +988,9 @@ async function loadHistory() {
                     <tr>
                         <td>${r.id}</td>
                         <td>${r.stator_od || '-'}</td>
+                        <td>${r.stator_id || '-'}</td>
+                        <td>${r.rotor_od || '-'}</td>
+                        <td>${r.core_length || '-'}</td>
                         <td>${r.poles || '-'}</td>
                         <td>${r.voltage_v || '-'}</td>
                         <td>${r.speed_rpm || '-'}</td>
@@ -1258,6 +1280,18 @@ function handleWorkflowEvent(data) {
         if (data.steps && data.steps.length) {
             addMsgBar('info', '预期步骤: ' + data.steps.join(' → '));
         }
+    } else if (data.type === 'step_start') {
+        var startMap = {
+            'parse_requirement': '需求分析师',
+            'generate_designs': '方案生成师',
+            'review_solutions': '评审推荐师',
+            'convergence_review': '收敛阵营',
+            'decision_gate': '决策门',
+            'generate_report': '报告撰写员',
+        };
+        var sName = startMap[data.step] || data.step;
+        updatePipelineStep(data.step, 'running', '执行中');
+        addMsgBar('step', '[' + sName + '] ' + (data.message || '开始执行...'));
     } else if (data.type === 'step_done') {
         const stepMap = {
             'parse_requirement': { name: '需求解析完成', next: 'generate_designs' },
@@ -1327,7 +1361,9 @@ function handleWorkflowEvent(data) {
         showToast('步骤错误: ' + data.step, 'warn');
         addMsgBar('error', '步骤[' + data.step + ']错误: ' + (data.error || '未知错误'));
     } else if (data.type === 'progress') {
-        addMsgBar(data.level || 'info', data.message || '');
+        var level = data.level || 'info';
+        var ts = data.timestamp ? data.timestamp + ' ' : '';
+        addMsgBar(level, ts + (data.message || ''));
     } else if (data.type === 'done') {
         showToast('辩证制衡工作流完成', 'success');
         addMsgBar('success', '======= 工作流全部完成 =======');

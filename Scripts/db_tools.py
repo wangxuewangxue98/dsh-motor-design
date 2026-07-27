@@ -33,6 +33,14 @@ NEW_COLUMNS = [
     ("thermal_factor", "REAL"),
     ("copper_temp", "REAL"),
     ("magnet_temp", "REAL"),
+    # v1.02.03 结构参数扩展
+    ("stator_id", "REAL"),
+    ("rotor_od", "REAL"),
+    ("core_length", "REAL"),
+    ("air_gap", "REAL"),
+    ("tooth_width", "REAL"),
+    ("yoke_thickness", "REAL"),
+    ("shaft_dia", "REAL"),
 ]
 
 
@@ -83,8 +91,10 @@ def save_result(params: dict, result: dict):
                 rotor_yoke_flux_density, air_gap_flux_density,
                 current_density, power_factor,
                 copper_loss, iron_loss, total_loss,
-                thermal_factor, copper_temp, magnet_temp
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                thermal_factor, copper_temp, magnet_temp,
+                stator_id, rotor_od, core_length, air_gap,
+                tooth_width, yoke_thickness, shaft_dia
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             params.get("power_kw"),
             params.get("voltage"),
@@ -112,6 +122,13 @@ def save_result(params: dict, result: dict):
             result.get("thermal_factor"),
             result.get("copper_temp"),
             result.get("magnet_temp"),
+            result.get("stator_id") or params.get("stator_id"),
+            result.get("rotor_od") or params.get("rotor_od"),
+            result.get("core_length") or params.get("core_length"),
+            result.get("air_gap") or params.get("air_gap"),
+            result.get("tooth_width") or params.get("tooth_width"),
+            result.get("yoke_thickness") or params.get("yoke_thickness"),
+            result.get("shaft_dia") or params.get("shaft_dia"),
         ))
         conn.commit()
         return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -150,7 +167,8 @@ def export_csv(filepath: str = None) -> str:
 
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     fieldnames = [
-        "id", "stator_od", "poles", "slots_stator", "slots_rotor", "turns_per_coil",
+        "id", "stator_od", "stator_id", "rotor_od", "core_length", "air_gap",
+        "poles", "slots_stator", "slots_rotor", "turns_per_coil",
         "voltage_v", "speed_rpm",
         "efficiency", "max_temp", "torque", "power", "power_factor",
         "stator_tooth_flux_density", "stator_yoke_flux_density",
