@@ -1,7 +1,7 @@
 {
     "system_name": "Motor-AI",
-    "version": "2.03.01",
-    "version_date": "2026-07-28 01:10",
+    "version": "2.03.02",
+    "version_date": "2026-07-28 01:45",
     "description": "电机设计AI辅助系统",
     "version_scheme": "主版本.次版本.修订号 (X.YY.ZZ)",
     "version_suffix": {
@@ -10,6 +10,29 @@
     },
     "changelog_file": "CHANGELOG.md",
     "changelog": [
+        {
+            "version": "2.03.02",
+            "date": "2026-07-28 01:45",
+            "tag": "v2.03.02-dev",
+            "env": "dev",
+            "summary": "修复登录界面 CSS 变量缺失 + fetch 自动附加 JWT token",
+            "changes": [
+                "修复登录/注册模态框输入框不可见 (CSS 变量 --border-color/--bg-secondary/--text-primary/--accent 未定义)",
+                "全局 fetch 拦截自动附加 Authorization: Bearer token, 解决 trial 登录后状态不更新",
+                "登录/注册输入框统一使用 .input 类样式"
+            ]
+        },
+        {
+            "version": "2.02.02",
+            "date": "2026-07-28 01:45",
+            "tag": "v2.02.02-trial",
+            "env": "trial",
+            "summary": "试用版登录界面紧急修复",
+            "changes": [
+                "修复 trial 登录模态框输入框不可见",
+                "修复 trial 登录后 token 未随请求发送导致用户状态不更新"
+            ]
+        },
         {
             "version": "2.03.01",
             "date": "2026-07-28 01:10",

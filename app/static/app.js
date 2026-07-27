@@ -18,6 +18,31 @@ const state = {
     sortAsc: true,
 };
 
+// v2.03.01: 全局 fetch 拦截 — 自动附加 JWT token (如果 localStorage 中有)
+// 这样所有 apiFetch 调用都无需手动添加 Authorization header
+const _originalFetch = window.fetch;
+window.fetch = async function(...args) {
+    let [url, options] = args;
+    options = options || {};
+    const token = localStorage.getItem('motorai_token');
+    if (token) {
+        if (!options.headers) {
+            options.headers = {};
+        }
+        if (options.headers instanceof Headers) {
+            if (!options.headers.has('Authorization')) {
+                options.headers.set('Authorization', 'Bearer ' + token);
+            }
+        } else if (typeof options.headers === 'object') {
+            const headers = options.headers;
+            if (!headers.Authorization && !headers.authorization) {
+                headers.Authorization = 'Bearer ' + token;
+            }
+        }
+    }
+    return _originalFetch(url, options);
+};
+
 // ============================================================
 // 初始化
 // ============================================================

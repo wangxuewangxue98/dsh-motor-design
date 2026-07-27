@@ -5,6 +5,28 @@
 
 ---
 
+## [2.03.02] - 2026-07-28 (DEV)
+
+### 修复登录界面 + fetch 自动认证
+
+#### Fixed
+- 修复登录/注册模态框输入框不可见：原内联样式使用了未定义的 CSS 变量（`--border-color`、`--bg-secondary`、`--text-primary`、`--accent`）
+- 在 `:root` 中补充兼容性别名，并将登录/注册输入框统一为 `.input` 类
+- 修复 trial 登录成功后用户状态不更新：前端未将 JWT token 附加到后续 API 请求
+- 新增全局 `fetch` 拦截，自动从 `localStorage` 读取 `motorai_token` 并附加 `Authorization: Bearer <token>`
+
+---
+
+## [2.02.02] - 2026-07-28 (TRIAL)
+
+### 试用版登录界面紧急修复
+
+#### Fixed
+- 修复 trial 环境登录模态框输入框不可见的问题
+- 修复 trial 登录后 token 未随请求发送，导致侧边栏用户卡不显示的问题
+
+---
+
 ## [2.03.01] - 2026-07-28 (DEV)
 
 ### 调试版继续开发 — 后续修改调试仅限 dev 环境

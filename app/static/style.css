@@ -15,6 +15,12 @@
     --text-light: #94a3b8;
     --border: #e2e8f0;
     --border-dark: #cbd5e1;
+    /* 兼容性别名 (v2.03.01): 统一 HTML/JS 中使用的变量名 */
+    --accent: var(--primary);
+    --border-color: var(--border);
+    --bg-secondary: var(--surface-hover);
+    --bg-tertiary: var(--primary-light);
+    --text-primary: var(--text);
     --success: #16a34a;
     --success-light: #dcfce7;
     --warning: #f59e0b;

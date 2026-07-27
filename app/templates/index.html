@@ -978,14 +978,14 @@
             <div id="loginForm">
                 <div class="form-group" style="margin-bottom:12px;">
                     <label style="font-size:12px;color:var(--text-secondary);">用户名 / 邮箱</label>
-                    <input type="text" id="loginUsername" class="form-input" placeholder="输入用户名或邮箱" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);">
+                    <input type="text" id="loginUsername" class="input" placeholder="输入用户名或邮箱">
                 </div>
                 <div class="form-group" style="margin-bottom:16px;">
                     <label style="font-size:12px;color:var(--text-secondary);">密码</label>
-                    <input type="password" id="loginPassword" class="form-input" placeholder="输入密码" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);">
+                    <input type="password" id="loginPassword" class="input" placeholder="输入密码">
                 </div>
                 <button class="btn btn-primary" onclick="doLogin()" style="width:100%;">登录</button>
-                <div id="adminHint" style="display:none;margin-top:10px;padding:8px 12px;border-radius:6px;background:var(--bg-tertiary);border:1px dashed var(--border-color);font-size:12px;color:var(--text-secondary);text-align:center;">
+                <div id="adminHint" style="display:none;margin-top:10px;padding:8px 12px;border-radius:6px;background:var(--bg-tertiary);border:1px dashed var(--border-color);font-size:12px;color:var(--text);text-align:center;">
                     管理员账号: <strong>admin</strong> / <strong>admin123</strong>
                 </div>
                 <div style="text-align:center;margin-top:12px;font-size:13px;">
@@ -996,19 +996,19 @@
             <div id="registerForm" style="display:none;">
                 <div class="form-group" style="margin-bottom:12px;">
                     <label style="font-size:12px;color:var(--text-secondary);">用户名</label>
-                    <input type="text" id="regUsername" class="form-input" placeholder="3-20 个字符" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);">
+                    <input type="text" id="regUsername" class="input" placeholder="3-20 个字符">
                 </div>
                 <div class="form-group" style="margin-bottom:12px;">
                     <label style="font-size:12px;color:var(--text-secondary);">邮箱 (选填)</label>
-                    <input type="email" id="regEmail" class="form-input" placeholder="your@email.com" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);">
+                    <input type="email" id="regEmail" class="input" placeholder="your@email.com">
                 </div>
                 <div class="form-group" style="margin-bottom:12px;">
                     <label style="font-size:12px;color:var(--text-secondary);">密码 (至少 6 位)</label>
-                    <input type="password" id="regPassword" class="form-input" placeholder="设置密码" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);">
+                    <input type="password" id="regPassword" class="input" placeholder="设置密码">
                 </div>
                 <div class="form-group" style="margin-bottom:16px;">
                     <label style="font-size:12px;color:var(--text-secondary);">显示名称 (选填)</label>
-                    <input type="text" id="regDisplayName" class="form-input" placeholder="昵称" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);">
+                    <input type="text" id="regDisplayName" class="input" placeholder="昵称">
                 </div>
                 <button class="btn btn-primary" onclick="doRegister()" style="width:100%;">注册</button>
                 <div style="text-align:center;margin-top:12px;font-size:13px;">
