@@ -29,7 +29,22 @@
             <a class="nav-item" data-tab="evolution">进化仪表盘</a>
             <a class="nav-item" data-tab="audit">审计日志</a>
             <a class="nav-item" data-tab="tasks" id="navTasks">任务调度</a>
+            <div class="nav-divider"></div>
+            <a class="nav-item" data-tab="points">我的积分</a>
+            <a class="nav-item" data-tab="admin-users" id="navAdminUsers" style="display:none;">用户管理</a>
         </nav>
+        <!-- v2.02.01: 用户信息卡 -->
+        <div class="user-card" id="userCard" style="display:none;">
+            <div class="user-avatar" id="userAvatar">--</div>
+            <div class="user-info">
+                <div class="user-name" id="userName">未登录</div>
+                <div class="user-meta">
+                    <span class="user-role" id="userRole">--</span>
+                    <span class="user-points" id="userPoints">0 积分</span>
+                </div>
+            </div>
+            <button class="btn btn-sm" id="logoutBtn" onclick="doLogout()" style="display:none;">登出</button>
+        </div>
         <div class="sidebar-footer">
             <div class="status-line" id="sidebarStatus">
                 <span class="status-dot status-dot--checking"></span>
@@ -888,7 +903,112 @@
             </div>
         </section>
 
+        <!-- ========== 我的积分 (v2.02.01) ========== -->
+        <section class="tab-content" id="tab-points">
+            <div class="page-header">
+                <h2>我的积分 <span style="font-size:14px;color:var(--text-secondary);font-weight:normal;">会员中心</span></h2>
+                <p class="page-desc">积分余额、签到记录、会员权益</p>
+            </div>
+            <div class="status-grid" style="margin-bottom:16px;">
+                <div class="status-card">
+                    <div class="status-card-icon" style="background:linear-gradient(135deg,#f59e0b,#ef4444);">P</div>
+                    <div class="status-card-body">
+                        <div class="status-card-title">积分余额</div>
+                        <div class="status-card-value" id="pointsBalance">--</div>
+                    </div>
+                </div>
+                <div class="status-card">
+                    <div class="status-card-icon" style="background:linear-gradient(135deg,#3b82f6,#8b5cf6);">M</div>
+                    <div class="status-card-body">
+                        <div class="status-card-title">会员等级</div>
+                        <div class="status-card-value" id="pointsLevel">--</div>
+                    </div>
+                </div>
+                <div class="status-card">
+                    <div class="status-card-icon" style="background:linear-gradient(135deg,#10b981,#06b6d4);">D</div>
+                    <div class="status-card-body">
+                        <div class="status-card-title">今日签到</div>
+                        <div class="status-card-value" id="pointsCheckinStatus">--</div>
+                    </div>
+                </div>
+            </div>
+            <div style="margin-bottom:16px;">
+                <button class="btn btn-primary" onclick="doCheckin()" id="checkinBtn">每日签到 +10</button>
+            </div>
+            <div style="margin-bottom:8px;font-weight:600;font-size:14px;">积分变动记录</div>
+            <div id="pointsHistoryContainer" style="display:flex;flex-direction:column;gap:4px;max-height:400px;overflow-y:auto;">
+                <div style="text-align:center;padding:20px;color:var(--text-tertiary);">加载中...</div>
+            </div>
+        </section>
+
+        <!-- ========== 用户管理 (v2.02.01 admin only) ========== -->
+        <section class="tab-content" id="tab-admin-users">
+            <div class="page-header">
+                <h2>用户管理 <span style="font-size:14px;color:var(--text-secondary);font-weight:normal;">Admin</span></h2>
+                <p class="page-desc">管理所有注册用户、调整积分和权限</p>
+            </div>
+            <div style="margin-bottom:16px;display:flex;gap:16px;font-size:12px;color:var(--text-secondary);">
+                <span>总用户: <strong id="adminUserTotal">0</strong></span>
+                <span>VIP: <strong id="adminUserVip">0</strong></span>
+                <span>活跃: <strong id="adminUserActive">0</strong></span>
+                <button class="btn btn-sm" onclick="loadAdminUsers()" style="margin-left:auto;">刷新</button>
+            </div>
+            <div id="adminUsersContainer" style="display:flex;flex-direction:column;gap:8px;">
+                <div style="text-align:center;padding:20px;color:var(--text-tertiary);">加载中...</div>
+            </div>
+        </section>
+
     </main>
+</div>
+
+<!-- v2.02.01: 登录/注册模态框 -->
+<div class="modal-overlay" id="authModal" style="display:none;">
+    <div class="modal-box" style="max-width:400px;">
+        <div class="modal-header">
+            <h3 id="authModalTitle">登录</h3>
+            <button class="btn btn-sm" onclick="closeAuthModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <!-- 登录表单 -->
+            <div id="loginForm">
+                <div class="form-group" style="margin-bottom:12px;">
+                    <label style="font-size:12px;color:var(--text-secondary);">用户名 / 邮箱</label>
+                    <input type="text" id="loginUsername" class="form-input" placeholder="输入用户名或邮箱" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);">
+                </div>
+                <div class="form-group" style="margin-bottom:16px;">
+                    <label style="font-size:12px;color:var(--text-secondary);">密码</label>
+                    <input type="password" id="loginPassword" class="form-input" placeholder="输入密码" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);">
+                </div>
+                <button class="btn btn-primary" onclick="doLogin()" style="width:100%;">登录</button>
+                <div style="text-align:center;margin-top:12px;font-size:13px;">
+                    没有账号？<a href="javascript:showRegisterForm()" style="color:var(--accent);">注册</a>
+                </div>
+            </div>
+            <!-- 注册表单 -->
+            <div id="registerForm" style="display:none;">
+                <div class="form-group" style="margin-bottom:12px;">
+                    <label style="font-size:12px;color:var(--text-secondary);">用户名</label>
+                    <input type="text" id="regUsername" class="form-input" placeholder="3-20 个字符" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);">
+                </div>
+                <div class="form-group" style="margin-bottom:12px;">
+                    <label style="font-size:12px;color:var(--text-secondary);">邮箱 (选填)</label>
+                    <input type="email" id="regEmail" class="form-input" placeholder="your@email.com" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);">
+                </div>
+                <div class="form-group" style="margin-bottom:12px;">
+                    <label style="font-size:12px;color:var(--text-secondary);">密码 (至少 6 位)</label>
+                    <input type="password" id="regPassword" class="form-input" placeholder="设置密码" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);">
+                </div>
+                <div class="form-group" style="margin-bottom:16px;">
+                    <label style="font-size:12px;color:var(--text-secondary);">显示名称 (选填)</label>
+                    <input type="text" id="regDisplayName" class="form-input" placeholder="昵称" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary);">
+                </div>
+                <button class="btn btn-primary" onclick="doRegister()" style="width:100%;">注册</button>
+                <div style="text-align:center;margin-top:12px;font-size:13px;">
+                    已有账号？<a href="javascript:showLoginForm()" style="color:var(--accent);">登录</a>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 
 <!-- Toast 通知 -->

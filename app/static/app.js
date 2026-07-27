@@ -91,6 +91,8 @@ function switchTab(tabName) {
     if (tabName === 'radar') loadRadar();
     if (tabName === 'sandbox') loadSandboxCandidates();
     if (tabName === 'tasks') loadTasks();
+    if (tabName === 'points') loadPointsPanel();
+    if (tabName === 'admin-users') loadAdminUsers();
 }
 
 // ============================================================
@@ -140,6 +142,35 @@ async function loadStatus() {
             bar.id = 'devTopBar';
             bar.className = 'dev-top-bar';
             document.querySelector('.main').insertBefore(bar, document.querySelector('.main').firstChild);
+        }
+
+        // v2.02.01: 用户信息显示 + 角色权限
+        if (data.auth) {
+            const user = data.auth.user;
+            const userCard = document.getElementById('userCard');
+            if (user && userCard) {
+                userCard.style.display = 'flex';
+                document.getElementById('userAvatar').textContent = (user.display_name || user.username || '?').charAt(0).toUpperCase();
+                document.getElementById('userName').textContent = user.display_name || user.username;
+                const roleEl = document.getElementById('userRole');
+                if (roleEl) {
+                    roleEl.textContent = ({admin:'管理员', user:'用户', vip:'VIP', flagship:'旗舰', guest:'访客'})[user.role] || user.role;
+                    roleEl.className = 'user-role ' + (user.role || 'guest');
+                }
+                document.getElementById('userPoints').textContent = (user.points_balance || 0) + ' 积分';
+                // dev 自动登录不显示登出按钮
+                const logoutBtn = document.getElementById('logoutBtn');
+                if (logoutBtn) {
+                    logoutBtn.style.display = data.auth.auto_login ? 'none' : '';
+                }
+                // 管理员面板可见性
+                const navAdminUsers = document.getElementById('navAdminUsers');
+                if (navAdminUsers) {
+                    navAdminUsers.style.display = (user.role === 'admin') ? '' : 'none';
+                }
+                // 全局保存当前用户
+                state.currentUser = user;
+            }
         }
 
         // Ollama
@@ -2580,5 +2611,247 @@ async function cancelTask(taskId) {
         }
     } catch(e) {
         showToast('终止请求失败: ' + e.message, 'error');
+    }
+}
+
+// ============================================================
+// v2.02.01: 认证 — 登录 / 注册 / 登出
+// ============================================================
+function showAuthModal(mode) {
+    const modal = document.getElementById('authModal');
+    if (!modal) return;
+    modal.style.display = 'flex';
+    if (mode === 'register') showRegisterForm();
+    else showLoginForm();
+}
+
+function showLoginForm() {
+    document.getElementById('loginForm').style.display = '';
+    document.getElementById('registerForm').style.display = 'none';
+    document.getElementById('authModalTitle').textContent = '登录';
+}
+
+function showRegisterForm() {
+    document.getElementById('loginForm').style.display = 'none';
+    document.getElementById('registerForm').style.display = '';
+    document.getElementById('authModalTitle').textContent = '注册';
+}
+
+function closeAuthModal() {
+    document.getElementById('authModal').style.display = 'none';
+}
+
+async function doLogin() {
+    const username = document.getElementById('loginUsername').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    if (!username || !password) { showToast('请填写用户名和密码', 'error'); return; }
+    try {
+        const resp = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({username, password}),
+        });
+        const data = await resp.json();
+        if (resp.ok && data.status === 'ok') {
+            if (data.token) localStorage.setItem('motorai_token', data.token);
+            closeAuthModal();
+            showToast('登录成功: ' + (data.user?.display_name || data.user?.username), 'success');
+            loadStatus();
+        } else {
+            showToast('登录失败: ' + (data.error || ''), 'error');
+        }
+    } catch(e) {
+        showToast('请求失败: ' + e.message, 'error');
+    }
+}
+
+async function doRegister() {
+    const username = document.getElementById('regUsername').value.trim();
+    const email = document.getElementById('regEmail').value.trim();
+    const password = document.getElementById('regPassword').value;
+    const display_name = document.getElementById('regDisplayName').value.trim();
+    if (!username || !password) { showToast('用户名和密码不能为空', 'error'); return; }
+    if (password.length < 6) { showToast('密码至少 6 位', 'error'); return; }
+    try {
+        const resp = await fetch('/api/auth/register', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({username, email, password, display_name}),
+        });
+        const data = await resp.json();
+        if (resp.ok && data.status === 'ok') {
+            if (data.token) localStorage.setItem('motorai_token', data.token);
+            closeAuthModal();
+            showToast('注册成功! 赠送 100 积分', 'success');
+            loadStatus();
+        } else {
+            showToast('注册失败: ' + (data.error || ''), 'error');
+        }
+    } catch(e) {
+        showToast('请求失败: ' + e.message, 'error');
+    }
+}
+
+function doLogout() {
+    localStorage.removeItem('motorai_token');
+    showToast('已登出', 'info');
+    setTimeout(() => location.reload(), 500);
+}
+
+// ============================================================
+// v2.02.01: 积分面板
+// ============================================================
+async function loadPointsPanel() {
+    try {
+        const [balResp, memResp, histResp] = await Promise.all([
+            fetch('/api/points/balance'),
+            fetch('/api/points/membership'),
+            fetch('/api/points/history'),
+        ]);
+        const bal = await balResp.json();
+        const mem = await memResp.json();
+        const hist = await histResp.json();
+
+        document.getElementById('pointsBalance').textContent = (bal.balance || 0) + ' 分';
+        const memInfo = mem.membership || {};
+        document.getElementById('pointsLevel').textContent = memInfo.name || '试用用户';
+
+        // 签到状态
+        const checkinBtn = document.getElementById('checkinBtn');
+        if (mem.balance !== undefined) {
+            const today = new Date().toISOString().slice(0, 10);
+            const alreadyChecked = (hist.history || []).some(h => (h.reason || '').includes(today));
+            document.getElementById('pointsCheckinStatus').textContent = alreadyChecked ? '已签到' : '未签到';
+            if (checkinBtn) checkinBtn.disabled = alreadyChecked;
+        }
+
+        // 渲染历史记录
+        const container = document.getElementById('pointsHistoryContainer');
+        if (container) {
+            const records = hist.history || [];
+            if (records.length === 0) {
+                container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-tertiary);">暂无记录</div>';
+            } else {
+                container.innerHTML = records.map(r => {
+                    const isEarn = (r.type || 'earn') === 'earn';
+                    const amount = r.points > 0 ? '+' + r.points : r.points;
+                    return '<div class="points-row ' + (isEarn ? 'earn' : 'spend') + '">' +
+                        '<span style="font-size:12px;color:var(--text-secondary);">' + (r.reason || '') + '</span>' +
+                        '<span style="font-size:11px;color:var(--text-tertiary);">' + (r.created_time || '').slice(0,16) + '</span>' +
+                        '<span class="pr-amount ' + (isEarn ? 'earn' : 'spend') + '">' + amount + '</span>' +
+                    '</div>';
+                }).join('');
+            }
+        }
+    } catch(e) {
+        console.error('loadPointsPanel error:', e);
+    }
+}
+
+async function doCheckin() {
+    try {
+        const resp = await fetch('/api/points/checkin', { method: 'POST' });
+        const data = await resp.json();
+        if (data.success) {
+            showToast('签到成功! +' + data.points + ' 积分 (余额: ' + data.balance + ')', 'success');
+            loadPointsPanel();
+            loadStatus();
+        } else {
+            showToast(data.error || '签到失败', 'error');
+        }
+    } catch(e) {
+        showToast('请求失败: ' + e.message, 'error');
+    }
+}
+
+// ============================================================
+// v2.02.01: 用户管理 (admin)
+// ============================================================
+async function loadAdminUsers() {
+    try {
+        const resp = await fetch('/api/admin/users');
+        const data = await resp.json();
+        if (!resp.ok) {
+            showToast('无权访问: ' + (data.error || ''), 'error');
+            return;
+        }
+        const users = data.users || [];
+        document.getElementById('adminUserTotal').textContent = users.length;
+        document.getElementById('adminUserVip').textContent = users.filter(u => ['vip','flagship'].includes(u.membership_level)).length;
+        document.getElementById('adminUserActive').textContent = users.filter(u => u.status === 'active').length;
+
+        const container = document.getElementById('adminUsersContainer');
+        if (container) {
+            if (users.length === 0) {
+                container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-tertiary);">暂无用户</div>';
+            } else {
+                container.innerHTML = users.map(u => {
+                    const initials = (u.display_name || u.username || '?').charAt(0).toUpperCase();
+                    var roleMap = {admin:'管理员',user:'用户',vip:'VIP',flagship:'旗舰',guest:'访客'};
+                    var roleBadge = '<span class="user-role ' + (u.role || 'guest') + '" style="font-size:9px;">' + (roleMap[u.role] || u.role) + '</span>';
+                    var levelBadge = '<span class="user-role" style="font-size:9px;background:#3b82f6;">' + (u.membership_level || 'trial') + '</span>';
+                    return '<div class="admin-user-card">' +
+                        '<div class="au-avatar">' + initials + '</div>' +
+                        '<div class="au-info">' +
+                            '<div class="au-name">' + (u.display_name || u.username) + ' ' + roleBadge + ' ' + levelBadge + '</div>' +
+                            '<div class="au-meta">ID: ' + u.id + ' | ' + (u.email || '无邮箱') + ' | 积分: ' + (u.points_balance || 0) + ' | 注册: ' + (u.created_time || '').slice(0,10) + ' | 状态: ' + (u.status || 'active') + '</div>' +
+                        '</div>' +
+                        '<div class="au-actions">' +
+                            '<select onchange="updateUserRole(' + u.id + ', this.value)" style="font-size:11px;padding:2px 4px;border-radius:4px;background:var(--bg-primary);color:var(--text-primary);border:1px solid var(--border);">' +
+                                '<option value="user" ' + (u.role==='user'?'selected':'') + '>用户</option>' +
+                                '<option value="vip" ' + (u.role==='vip'?'selected':'') + '>VIP</option>' +
+                                '<option value="flagship" ' + (u.role==='flagship'?'selected':'') + '>旗舰</option>' +
+                                '<option value="admin" ' + (u.role==='admin'?'selected':'') + '>管理员</option>' +
+                            '</select>' +
+                            '<button class="btn btn-sm" onclick="adjustPoints(' + u.id + ')" title="调整积分">+/-</button>' +
+                        '</div>' +
+                    '</div>';
+                }).join('');
+            }
+        }
+    } catch(e) {
+        console.error('loadAdminUsers error:', e);
+    }
+}
+
+async function updateUserRole(userId, newRole) {
+    try {
+        const resp = await fetch('/api/admin/user/' + userId, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({role: newRole}),
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            showToast('用户 #' + userId + ' 角色已更新为 ' + newRole, 'success');
+        } else {
+            showToast('更新失败: ' + (data.error || ''), 'error');
+        }
+    } catch(e) {
+        showToast('请求失败: ' + e.message, 'error');
+    }
+}
+
+async function adjustPoints(userId) {
+    var amount = prompt('为用户 #' + userId + ' 调整积分\n正数=增加, 负数=减少');
+    if (amount === null) return;
+    var n = parseInt(amount);
+    if (isNaN(n)) { showToast('请输入数字', 'error'); return; }
+    var reason = prompt('调整原因:', '管理员调整') || '管理员调整';
+    try {
+        const resp = await fetch('/api/admin/user/' + userId + '/points', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({amount: n, reason: reason}),
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            showToast('积分调整成功, 新余额: ' + data.new_balance, 'success');
+            loadAdminUsers();
+        } else {
+            showToast('调整失败: ' + (data.error || ''), 'error');
+        }
+    } catch(e) {
+        showToast('请求失败: ' + e.message, 'error');
     }
 }

@@ -57,12 +57,9 @@ app = Flask(
 app.config["JSON_AS_ASCII"] = False
 
 # ============================================================
-# v1.03.01: 多租户预留 — 每次请求注入 g.user (当前为 None)
-# 未来引入用户认证时，只需修改此函数即可
+# v2.02.01: 多租户认证 — before_request 钩子在模块导入后定义
+# (见下方 AUTH_OK 定义之后)
 # ============================================================
-@app.before_request
-def _load_user_context():
-    g.user = None  # 预留: 未来从 session/token 解析用户
 
 # 环境信息注入模板上下文
 @app.context_processor
@@ -105,10 +102,47 @@ except Exception as e:
 
 DB_OK = True
 try:
-    from db_tools import init_db, save_result, get_all_results, get_top_solutions, export_csv, get_stats
+    from db_tools import (
+        init_db, save_result, get_all_results, get_top_solutions, export_csv, get_stats,
+        get_user_by_username, get_user_by_email, get_user_by_id, create_user,
+        get_all_users, update_user, get_product_lines, get_product_line_by_id,
+        create_project, get_projects_by_user, get_project_by_id,
+    )
     init_db()
 except Exception as e:
     DB_OK = False
+
+# ---- v2.02.01: 认证模块 ----
+AUTH_OK = True
+try:
+    from auth import (
+        load_user_context, generate_token, verify_token, hash_password,
+        verify_password, require_auth, require_role, require_admin,
+        current_user_id, current_user_dict, get_membership_info,
+        extract_token_from_request, is_path_public, ROLE_LEVELS, MEMBERSHIP_LEVELS,
+    )
+except Exception as e:
+    AUTH_OK = False
+    print(f"[WARNING] 认证模块加载失败: {e}")
+
+# ---- v2.02.01: 积分服务 ----
+POINTS_OK = True
+try:
+    from points_service import (
+        add_points, spend_points, get_balance, get_points_history,
+        check_daily_checkin, do_daily_checkin,
+        POINTS_DAILY_CHECKIN, POINTS_SOLVE_WEB,
+    )
+except Exception as e:
+    POINTS_OK = False
+
+# ---- v2.02.01: 注册 before_request 用户上下文钩子 ----
+@app.before_request
+def _load_user_context():
+    if AUTH_OK:
+        load_user_context()
+    else:
+        g.user = None
 
 # ---- 新增模块：多智能体 / 审计 / 进化引擎 / 反馈 ----
 AGENT_OK = True
@@ -257,6 +291,8 @@ def api_status():
         "cloud": {"configured": False, "model": "", "allowed": Config.ALLOW_CLOUD_API},
         "db": {"available": DB_OK, "total": 0, "max_efficiency": 0, "avg_efficiency": 0, "path": Config.DB_PATH},
         "motorcad": {"available": False, "simulation_mode": True, "version": "11.1.5", "exe_path": ""},
+        "auth": {"enabled": AUTH_OK, "user": current_user_dict() if AUTH_OK else None},
+        "points": {"enabled": POINTS_OK},
         "errors": [],
     }
 
@@ -511,7 +547,7 @@ def api_solve():
                     if DB_OK:
                         save_params = params.copy()
                         save_params["power_kw"] = specs.get("power_kw")
-                        save_result(save_params, result)
+                        save_result(save_params, result, user_id=current_user_id())
 
                     yield f"data: {json.dumps({'type': 'progress', 'index': i + 1, 'total': total, 'result': result}, ensure_ascii=False)}\n\n"
 
@@ -598,7 +634,7 @@ def api_motorcad_import():
             for res in imported:
                 params = res.get("params", {})
                 params["power_kw"] = specs.get("power_kw", params.get("power_kw"))
-                sid = save_result(params, res)
+                sid = save_result(params, res, user_id=current_user_id())
                 saved_ids.append(sid)
             return jsonify({
                 "success": True,
@@ -619,7 +655,7 @@ def api_motorcad_import():
         res = import_motorcad_result(params, result_data)
         save_params = params.copy()
         save_params["power_kw"] = specs.get("power_kw", params.get("power_kw"))
-        sid = save_result(save_params, res)
+        sid = save_result(save_params, res, user_id=current_user_id())
         return jsonify({
             "success": True,
             "saved_id": sid,
@@ -760,7 +796,7 @@ def api_motorcad_upload_csv():
         saved_ids = []
         for res in imported:
             params = res.get("params", {})
-            sid = save_result(params, res)
+            sid = save_result(params, res, user_id=current_user_id())
             saved_ids.append(sid)
 
         return jsonify({
@@ -820,12 +856,16 @@ def api_solve_log():
 # ============================================================
 @app.route("/api/results")
 def api_results():
-    """获取所有求解结果"""
+    """获取所有求解结果 (v2.02.01: 按 user_id 隔离)"""
     if not DB_OK:
         return jsonify({"error": "数据库不可用"}), 500
     try:
-        results = get_all_results()
-        stats = get_stats()
+        uid = current_user_id()
+        # admin 可看全部, 普通用户只看自己的
+        if g.user and g.user.get("role") == "admin":
+            uid = None
+        results = get_all_results(user_id=uid)
+        stats = get_stats(user_id=uid)
         return jsonify({"results": results, "stats": stats})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -833,13 +873,16 @@ def api_results():
 
 @app.route("/api/results/top")
 def api_results_top():
-    """获取 Top N 方案"""
+    """获取 Top N 方案 (v2.02.01: 按 user_id 隔离)"""
     n = int(request.args.get("n", 10))
     min_eff = float(request.args.get("min_eff", 0))
     if not DB_OK:
         return jsonify({"error": "数据库不可用"}), 500
     try:
-        results = get_top_solutions(n=n, min_efficiency=min_eff)
+        uid = current_user_id()
+        if g.user and g.user.get("role") == "admin":
+            uid = None
+        results = get_top_solutions(n=n, min_efficiency=min_eff, user_id=uid)
         return jsonify({"results": results})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -2010,6 +2053,353 @@ def api_network_config():
 
 
 # ============================================================
+# v2.02.01: 认证 API (注册 / 登录 / 验证 / 个人资料)
+# ============================================================
+@app.route("/api/auth/register", methods=["POST"])
+def api_auth_register():
+    """用户注册"""
+    data = request.get_json() or {}
+    username = (data.get("username") or "").strip()
+    email = (data.get("email") or "").strip()
+    password = data.get("password", "")
+    display_name = data.get("display_name", username)
+
+    if not username or not password:
+        return jsonify({"error": "用户名和密码不能为空"}), 400
+    if len(password) < 6:
+        return jsonify({"error": "密码至少 6 位"}), 400
+    if not AUTH_OK:
+        return jsonify({"error": "认证系统不可用"}), 500
+
+    if get_user_by_username(username):
+        return jsonify({"error": "用户名已存在"}), 409
+    if email and get_user_by_email(email):
+        return jsonify({"error": "邮箱已注册"}), 409
+
+    try:
+        user_id = create_user(
+            username=username,
+            email=email or None,
+            password_hash=hash_password(password),
+            display_name=display_name,
+        )
+        token = generate_token(user_id, username, "user", "trial")
+        return jsonify({
+            "status": "ok",
+            "user_id": user_id,
+            "username": username,
+            "token": token,
+            "role": "user",
+            "membership_level": "trial",
+            "points_balance": 100,
+        })
+    except Exception as e:
+        return jsonify({"error": f"注册失败: {str(e)}"}), 500
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def api_auth_login():
+    """用户登录, 返回 JWT"""
+    data = request.get_json() or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password", "")
+
+    if not username or not password:
+        return jsonify({"error": "用户名和密码不能为空"}), 400
+    if not AUTH_OK:
+        return jsonify({"error": "认证系统不可用"}), 500
+
+    user = get_user_by_username(username)
+    if not user:
+        # 也尝试用 email 登录
+        user = get_user_by_email(username)
+    if not user or not verify_password(password, user.get("password_hash", "")):
+        return jsonify({"error": "用户名或密码错误"}), 401
+    if user.get("status") != "active":
+        return jsonify({"error": "账号已被禁用"}), 403
+
+    # 更新最后登录时间
+    update_user(user["id"], last_login=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    token = generate_token(
+        user["id"], user["username"], user.get("role", "user"),
+        user.get("membership_level", "trial")
+    )
+    return jsonify({
+        "status": "ok",
+        "token": token,
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "email": user.get("email"),
+            "display_name": user.get("display_name"),
+            "role": user.get("role", "user"),
+            "membership_level": user.get("membership_level", "trial"),
+            "points_balance": user.get("points_balance", 0),
+        }
+    })
+
+
+@app.route("/api/auth/verify")
+def api_auth_verify():
+    """验证 token 有效性"""
+    if not AUTH_OK:
+        return jsonify({"valid": False})
+    token = extract_token_from_request()
+    if not token:
+        # dev 环境自动登录
+        if g.user:
+            return jsonify({"valid": True, "user": current_user_dict(), "auto_login": Config.IS_DEV})
+        return jsonify({"valid": False})
+    payload = verify_token(token)
+    if not payload:
+        return jsonify({"valid": False})
+    user = get_user_by_id(payload["user_id"])
+    if not user or user.get("status") != "active":
+        return jsonify({"valid": False})
+    return jsonify({"valid": True, "user": current_user_dict()})
+
+
+@app.route("/api/auth/profile")
+def api_auth_profile():
+    """获取当前用户资料"""
+    if not g.user:
+        return jsonify({"error": "未登录"}), 401
+    return jsonify({"user": current_user_dict(), "membership": get_membership_info(g.user.get("membership_level", "trial"))})
+
+
+@app.route("/api/auth/profile", methods=["PUT"])
+def api_auth_update_profile():
+    """更新个人资料"""
+    if not g.user:
+        return jsonify({"error": "未登录"}), 401
+    data = request.get_json() or {}
+    fields = {}
+    for k in ("display_name", "email", "phone"):
+        if k in data:
+            fields[k] = data[k]
+    if fields:
+        update_user(g.user["id"], **fields)
+    return jsonify({"status": "ok", "user": current_user_dict()})
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def api_auth_logout():
+    """登出 (无状态 JWT, 客户端删除 token 即可)"""
+    return jsonify({"status": "ok"})
+
+
+# ============================================================
+# v2.02.01: 管理员 API (用户管理)
+# ============================================================
+@app.route("/api/admin/users")
+def api_admin_users():
+    """管理员获取用户列表"""
+    if not g.user or g.user.get("role") != "admin":
+        return jsonify({"error": "需要管理员权限"}), 403
+    users = get_all_users()
+    return jsonify({"users": users, "total": len(users)})
+
+
+@app.route("/api/admin/user/<int:user_id>", methods=["PUT"])
+def api_admin_update_user(user_id):
+    """管理员修改用户 (角色/会员等级/状态)"""
+    if not g.user or g.user.get("role") != "admin":
+        return jsonify({"error": "需要管理员权限"}), 403
+    data = request.get_json() or {}
+    fields = {}
+    for k in ("role", "membership_level", "status", "display_name", "points_balance", "expires_at"):
+        if k in data:
+            fields[k] = data[k]
+    if not fields:
+        return jsonify({"error": "没有要更新的字段"}), 400
+    update_user(user_id, **fields)
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/admin/user/<int:user_id>/points", methods=["POST"])
+def api_admin_adjust_points(user_id):
+    """管理员调整用户积分"""
+    if not g.user or g.user.get("role") != "admin":
+        return jsonify({"error": "需要管理员权限"}), 403
+    data = request.get_json() or {}
+    amount = data.get("amount", 0)
+    reason = data.get("reason", "管理员调整")
+    if amount >= 0:
+        new_balance = add_points(user_id, amount, reason)
+    else:
+        result = spend_points(user_id, -amount, reason)
+        if not result["success"]:
+            return jsonify({"error": result.get("error", "操作失败")}), 400
+        new_balance = result["balance"]
+    return jsonify({"status": "ok", "new_balance": new_balance})
+
+
+# ============================================================
+# v2.02.01: 产品线配置 API
+# ============================================================
+@app.route("/api/product-lines")
+def api_product_lines():
+    """获取产品线列表"""
+    lines = get_product_lines()
+    # 解析 JSON 字段
+    for line in lines:
+        for k in ("flow_stages", "pricing_model"):
+            if line.get(k) and isinstance(line[k], str):
+                try:
+                    line[k] = json.loads(line[k])
+                except:
+                    pass
+    return jsonify({"product_lines": lines})
+
+
+@app.route("/api/product-line/<int:pl_id>")
+def api_product_line_detail(pl_id):
+    """获取产品线详情"""
+    line = get_product_line_by_id(pl_id)
+    if not line:
+        return jsonify({"error": "产品线不存在"}), 404
+    for k in ("flow_stages", "pricing_model"):
+        if line.get(k) and isinstance(line[k], str):
+            try:
+                line[k] = json.loads(line[k])
+            except:
+                pass
+    return jsonify({"product_line": line})
+
+
+@app.route("/api/product-lines", methods=["POST"])
+def api_create_product_line():
+    """创建产品线 (admin only)"""
+    if not g.user or g.user.get("role") != "admin":
+        return jsonify({"error": "需要管理员权限"}), 403
+    data = request.get_json() or {}
+    import sqlite3 as _sql
+    with _sql.connect(Config.DB_PATH) as conn:
+        conn.execute(
+            """INSERT INTO product_lines (code, name, description, flow_stages, design_template, pricing_model, convergence_intensity)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                data.get("code"),
+                data.get("name"),
+                data.get("description", ""),
+                json.dumps(data.get("flow_stages", []), ensure_ascii=False),
+                data.get("design_template", "Templates.mot"),
+                json.dumps(data.get("pricing_model", {}), ensure_ascii=False),
+                data.get("convergence_intensity", "standard"),
+            )
+        )
+        conn.commit()
+    return jsonify({"status": "ok"})
+
+
+# ============================================================
+# v2.02.01: 项目管理 API
+# ============================================================
+@app.route("/api/projects")
+def api_projects():
+    """获取当前用户项目列表"""
+    uid = current_user_id()
+    if not uid:
+        return jsonify({"projects": [], "total": 0})
+    projects = get_projects_by_user(uid)
+    for p in projects:
+        if p.get("requirements") and isinstance(p["requirements"], str):
+            try:
+                p["requirements"] = json.loads(p["requirements"])
+            except:
+                pass
+    return jsonify({"projects": projects, "total": len(projects)})
+
+
+@app.route("/api/projects", methods=["POST"])
+def api_create_project():
+    """创建项目"""
+    if not g.user:
+        return jsonify({"error": "未登录"}), 401
+    data = request.get_json() or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "项目名称不能为空"}), 400
+    pl_id = data.get("product_line_id")
+    desc = data.get("description", "")
+    reqs = data.get("requirements")
+    reqs_str = json.dumps(reqs, ensure_ascii=False) if reqs else None
+
+    project_id = create_project(
+        user_id=g.user["id"],
+        name=name,
+        product_line_id=pl_id,
+        description=desc,
+        requirements=reqs_str,
+    )
+    return jsonify({"status": "ok", "project_id": project_id})
+
+
+@app.route("/api/project/<project_id>")
+def api_project_detail(project_id):
+    """获取项目详情"""
+    project = get_project_by_id(project_id)
+    if not project:
+        return jsonify({"error": "项目不存在"}), 404
+    # 权限检查: 非管理员只能看自己的项目
+    uid = current_user_id()
+    if project["user_id"] != uid and (not g.user or g.user.get("role") != "admin"):
+        return jsonify({"error": "无权访问"}), 403
+    if project.get("requirements") and isinstance(project["requirements"], str):
+        try:
+            project["requirements"] = json.loads(project["requirements"])
+        except:
+            pass
+    return jsonify({"project": project})
+
+
+# ============================================================
+# v2.02.01: 积分体系 API
+# ============================================================
+@app.route("/api/points/balance")
+def api_points_balance():
+    """获取积分余额"""
+    if not g.user:
+        return jsonify({"balance": 0})
+    return jsonify({"balance": get_balance(g.user["id"])})
+
+
+@app.route("/api/points/history")
+def api_points_history():
+    """获取积分变动记录"""
+    if not g.user:
+        return jsonify({"history": [], "total": 0})
+    history = get_points_history(g.user["id"])
+    return jsonify({"history": history, "total": len(history)})
+
+
+@app.route("/api/points/checkin", methods=["POST"])
+def api_points_checkin():
+    """每日签到"""
+    if not g.user:
+        return jsonify({"error": "未登录"}), 401
+    if not POINTS_OK:
+        return jsonify({"error": "积分系统不可用"}), 500
+    result = do_daily_checkin(g.user["id"])
+    return jsonify(result)
+
+
+@app.route("/api/points/membership")
+def api_points_membership():
+    """获取会员等级信息"""
+    if not g.user:
+        return jsonify({"membership": get_membership_info("trial")})
+    level = g.user.get("membership_level", "trial")
+    info = get_membership_info(level)
+    return jsonify({
+        "membership": info,
+        "balance": get_balance(g.user["id"]),
+        "user_role": g.user.get("role", "user"),
+    })
+
+
+# ============================================================
 # 启动
 # ============================================================
 if __name__ == "__main__":
@@ -2038,5 +2428,7 @@ if __name__ == "__main__":
     print(f"  Evolution:{'OK' if EVOLUTION_OK else 'ERROR'}")
     print(f"  Feedback: {'OK' if FEEDBACK_OK else 'ERROR'}")
     print(f"  TaskMgr:  {'OK' if TASK_MANAGER_OK else 'ERROR'}")
+    print(f"  Auth:     {'OK' if AUTH_OK else 'ERROR'}")
+    print(f"  Points:   {'OK' if POINTS_OK else 'ERROR'}")
     print("=" * 60)
     app.run(host=_bind_host, port=_port, debug=_debug, threaded=True)

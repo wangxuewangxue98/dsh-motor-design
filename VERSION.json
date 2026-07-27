@@ -1,7 +1,7 @@
 {
     "system_name": "Motor-AI",
-    "version": "2.01.01",
-    "version_date": "2026-07-28 00:15",
+    "version": "2.02.01",
+    "version_date": "2026-07-28 00:45",
     "description": "电机设计AI辅助系统",
     "version_scheme": "主版本.次版本.修订号 (X.YY.ZZ)",
     "version_suffix": {
@@ -10,6 +10,26 @@
     },
     "changelog_file": "CHANGELOG.md",
     "changelog": [
+        {
+            "version": "2.02.01",
+            "date": "2026-07-28 00:45",
+            "tag": "v2.02.01-dev",
+            "env": "dev",
+            "summary": "多租户基础 — 认证系统 + 产品线配置 + 积分体系 + 数据隔离",
+            "changes": [
+                "Core/auth.py: JWT认证模块 (注册/登录/验证/角色分级)",
+                "Core/points_service.py: 积分体系 (签到/余额/历史/消耗)",
+                "db_tools.py: users表扩展(password_hash/email/membership_level/points_balance等)",
+                "db_tools.py: 新建product_lines表(4条默认产品线A/B/C/D) + projects表",
+                "db_tools.py: designs表增加user_id列, save_result/get_all_results/get_stats支持user_id过滤",
+                "11个新API: /api/auth/register|login|verify|profile|logout + /api/admin/users + /api/product-lines + /api/projects + /api/points/balance|history|checkin|membership",
+                "数据隔离: /api/results + /api/results/top 按user_id过滤(admin可看全部)",
+                "dev环境自动登录admin(admin/admin123, 99999积分)",
+                "前端: 用户信息卡(头像/名称/角色/积分/登出) + 登录注册模态框",
+                "前端: 我的积分面板(余额/等级/签到/历史记录) + 用户管理面板(admin)",
+                "角色分级: guest/user/vip/flagship/admin, 会员等级: trial/standard/vip/flagship"
+            ]
+        },
         {
             "version": "2.01.01",
             "date": "2026-07-28 00:15",

@@ -1641,3 +1641,82 @@ body {
 .sandbox-detail .sim-row.verdict-高风险, .sandbox-detail .sim-row.verdict-极危险 { border-left-color:#f85149; }
 
 @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.6;} }
+
+/* ============================================================
+   v2.02.01: 多租户 — 用户卡片、登录模态框、用户管理
+   ============================================================ */
+.user-card {
+    display:flex; align-items:center; gap:10px;
+    padding:10px 12px; margin:8px 12px;
+    border-radius:8px;
+    background:var(--bg-secondary);
+    border:1px solid var(--border);
+}
+.user-avatar {
+    width:36px; height:36px; border-radius:50%;
+    background:linear-gradient(135deg,var(--accent),var(--accent-hover,#2563eb));
+    color:#fff; font-size:14px; font-weight:700;
+    display:flex; align-items:center; justify-content:center;
+    flex-shrink:0;
+}
+.user-info { flex:1; min-width:0; }
+.user-name { font-size:13px; font-weight:600; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.user-meta { display:flex; gap:8px; font-size:11px; color:var(--text-tertiary); margin-top:2px; }
+.user-role { padding:1px 6px; border-radius:3px; font-size:10px; font-weight:600; color:#fff; background:#6b7280; }
+.user-role.admin { background:#dc2626; }
+.user-role.user { background:#3b82f6; }
+.user-role.vip { background:#8b5cf6; }
+.user-role.flagship { background:#f59e0b; }
+.user-points { color:#10b981; font-weight:600; }
+
+/* 登录/注册模态框 */
+.modal-overlay {
+    position:fixed; top:0; left:0; right:0; bottom:0;
+    background:rgba(0,0,0,0.5);
+    display:flex; align-items:center; justify-content:center;
+    z-index:10000;
+}
+.modal-box {
+    background:var(--bg-primary);
+    border-radius:12px;
+    border:1px solid var(--border);
+    box-shadow:0 20px 60px rgba(0,0,0,0.3);
+    overflow:hidden;
+}
+.modal-header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:16px 20px;
+    border-bottom:1px solid var(--border);
+}
+.modal-header h3 { margin:0; font-size:18px; }
+.modal-body { padding:20px; }
+
+/* 用户管理表格 */
+.admin-user-card {
+    display:flex; align-items:center; gap:12px;
+    padding:12px 16px; border-radius:8px;
+    background:var(--bg-secondary); border:1px solid var(--border);
+}
+.admin-user-card .au-avatar {
+    width:32px; height:32px; border-radius:50%;
+    background:var(--accent); color:#fff;
+    display:flex; align-items:center; justify-content:center;
+    font-size:12px; font-weight:700; flex-shrink:0;
+}
+.admin-user-card .au-info { flex:1; min-width:0; }
+.admin-user-card .au-name { font-size:13px; font-weight:600; color:var(--text-primary); }
+.admin-user-card .au-meta { font-size:11px; color:var(--text-tertiary); margin-top:2px; }
+.admin-user-card .au-actions { display:flex; gap:6px; }
+
+/* 积分历史记录 */
+.points-row {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:8px 12px; border-radius:6px;
+    background:var(--bg-secondary); border:1px solid var(--border);
+    font-size:13px;
+}
+.points-row.earn { border-left:3px solid #10b981; }
+.points-row.spend { border-left:3px solid #ef4444; }
+.points-row .pr-amount.earn { color:#10b981; font-weight:600; }
+.points-row .pr-amount.spend { color:#ef4444; font-weight:600; }
+

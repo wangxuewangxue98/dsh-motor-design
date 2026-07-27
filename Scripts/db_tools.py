@@ -14,6 +14,13 @@ v1.03.01 更新:
 v1.03.03 更新:
 - 新增 task_queue 表 (全局任务队列)
 - 启用 SQLite WAL 模式减少锁冲突
+
+v2.02.01 更新:
+- users 表扩展: password_hash, email, membership_level, points_balance, status 等
+- 新建 product_lines 表 (产品线配置引擎)
+- 新建 projects 表 (项目关联用户+产品线)
+- designs 表增加 user_id + project_id 列
+- points 表扩展: type(earn/spend), balance_after
 """
 import sqlite3
 import json
@@ -96,7 +103,7 @@ def init_db():
         conn.commit()
 
         # v1.03.01: 预建多租户表结构 (users / points), 当前未启用
-        # users 表: 未来用户认证
+        # v2.02.01: users 表扩展为完整认证体系
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,7 +113,29 @@ def init_db():
                 created_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # points 表: 未来积分系统
+        # v2.02.01: users 表自动迁移 — 添加认证相关字段
+        cursor = conn.execute("PRAGMA table_info(users)")
+        user_cols = {row[1] for row in cursor.fetchall()}
+        user_new_cols = [
+            ("email", "TEXT"),
+            ("password_hash", "TEXT"),
+            ("phone", "TEXT"),
+            ("membership_level", "TEXT DEFAULT 'trial'"),
+            ("points_balance", "INTEGER DEFAULT 0"),
+            ("status", "TEXT DEFAULT 'active'"),
+            ("last_login", "TIMESTAMP"),
+            ("expires_at", "TIMESTAMP"),
+        ]
+        for col_name, col_type in user_new_cols:
+            if col_name not in user_cols:
+                try:
+                    conn.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
+                    print(f"[db_tools] users 新增字段: {col_name}")
+                except Exception as e:
+                    print(f"[db_tools] users 字段 {col_name} 添加失败: {e}")
+        conn.commit()
+
+        # points 表: 积分系统
         conn.execute("""
             CREATE TABLE IF NOT EXISTS points (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -117,7 +146,103 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         """)
+        # v2.02.01: points 表扩展 — 添加类型和余额快照
+        cursor = conn.execute("PRAGMA table_info(points)")
+        point_cols = {row[1] for row in cursor.fetchall()}
+        point_new_cols = [
+            ("type", "TEXT DEFAULT 'earn'"),
+            ("balance_after", "INTEGER DEFAULT 0"),
+        ]
+        for col_name, col_type in point_new_cols:
+            if col_name not in point_cols:
+                try:
+                    conn.execute(f"ALTER TABLE points ADD COLUMN {col_name} {col_type}")
+                    print(f"[db_tools] points 新增字段: {col_name}")
+                except Exception:
+                    pass
         conn.commit()
+
+        # v2.02.01: designs 表增加 user_id + project_id 列
+        cursor = conn.execute("PRAGMA table_info(designs)")
+        design_cols = {row[1] for row in cursor.fetchall()}
+        for col_name, col_type in [("user_id", "INTEGER"), ("project_id", "TEXT")]:
+            if col_name not in design_cols:
+                try:
+                    conn.execute(f"ALTER TABLE designs ADD COLUMN {col_name} {col_type}")
+                    print(f"[db_tools] designs 新增字段: {col_name}")
+                except Exception:
+                    pass
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_designs_user ON designs(user_id)")
+        conn.commit()
+
+        # v2.02.01: 产品线配置表
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS product_lines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                flow_stages TEXT,
+                design_template TEXT,
+                pricing_model TEXT,
+                convergence_intensity TEXT DEFAULT 'standard',
+                is_active INTEGER DEFAULT 1,
+                created_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+
+        # v2.02.01: 项目表 — 关联用户与产品线
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS projects (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                product_line_id INTEGER,
+                name TEXT NOT NULL,
+                description TEXT,
+                status TEXT DEFAULT 'active',
+                requirements TEXT,
+                created_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (product_line_id) REFERENCES product_lines(id)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id)")
+        conn.commit()
+
+        # v2.02.01: 插入默认产品线 (如果表为空)
+        count = conn.execute("SELECT COUNT(*) FROM product_lines").fetchone()[0]
+        if count == 0:
+            default_lines = [
+                ("A", "技术服务", "按人天计费的技术咨询服务",
+                 json.dumps(["requirement", "design", "review", "report"], ensure_ascii=False),
+                 "Templates.mot",
+                 json.dumps({"type": "daily", "rate": 1000}, ensure_ascii=False),
+                 "standard"),
+                ("B", "整体解决方案", "从设计到交付的完整方案",
+                 json.dumps(["requirement", "design", "review", "cost", "supply", "delivery"], ensure_ascii=False),
+                 "160kw_assm_2222.mot",
+                 json.dumps({"type": "bom", "margin": 0.3}, ensure_ascii=False),
+                 "enhanced"),
+                ("C", "快速验证", "快速仿真验证方案可行性",
+                 json.dumps(["requirement", "design", "report"], ensure_ascii=False),
+                 "Templates.mot",
+                 json.dumps({"type": "fixed", "amount": 5000}, ensure_ascii=False),
+                 "standard"),
+                ("D", "联合开发", "长期联合开发合作",
+                 json.dumps(["requirement", "design", "review", "prototype", "test", "delivery"], ensure_ascii=False),
+                 "Templates.mot",
+                 json.dumps({"type": "milestone", "stages": 4}, ensure_ascii=False),
+                 "enhanced"),
+            ]
+            for line in default_lines:
+                conn.execute("""
+                    INSERT INTO product_lines (code, name, description, flow_stages, design_template, pricing_model, convergence_intensity)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, line)
+            conn.commit()
+            print(f"[db_tools] 插入 {len(default_lines)} 条默认产品线")
 
         # v1.03.03: 全局任务队列表
         conn.execute("""
@@ -144,7 +269,7 @@ def init_db():
         print(f"[db_tools] 数据库就绪: {DB_PATH}")
 
 
-def save_result(params: dict, result: dict):
+def save_result(params: dict, result: dict, user_id: int = None, project_id: str = None):
     """保存一组求解结果（包含扩展参数）"""
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
@@ -158,8 +283,9 @@ def save_result(params: dict, result: dict):
                 copper_loss, iron_loss, total_loss,
                 thermal_factor, copper_temp, magnet_temp,
                 stator_id, rotor_od, core_length, air_gap,
-                tooth_width, yoke_thickness, shaft_dia
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                tooth_width, yoke_thickness, shaft_dia,
+                user_id, project_id
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             params.get("power_kw"),
             params.get("voltage"),
@@ -194,39 +320,53 @@ def save_result(params: dict, result: dict):
             result.get("tooth_width") or params.get("tooth_width"),
             result.get("yoke_thickness") or params.get("yoke_thickness"),
             result.get("shaft_dia") or params.get("shaft_dia"),
+            user_id,
+            project_id,
         ))
         conn.commit()
         return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
 
-def get_all_results() -> list:
-    """获取所有结果"""
+def get_all_results(user_id: int = None) -> list:
+    """获取所有结果 (v2.02.01: 支持按 user_id 过滤)"""
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM designs ORDER BY efficiency DESC").fetchall()
+        if user_id is not None:
+            rows = conn.execute(
+                "SELECT * FROM designs WHERE user_id = ? OR user_id IS NULL ORDER BY efficiency DESC",
+                (user_id,)
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM designs ORDER BY efficiency DESC").fetchall()
         return [dict(r) for r in rows]
 
 
-def get_top_solutions(n: int = 10, min_efficiency: float = 0) -> list:
-    """获取效率最高的 N 个方案"""
+def get_top_solutions(n: int = 10, min_efficiency: float = 0, user_id: int = None) -> list:
+    """获取效率最高的 N 个方案 (v2.02.01: 支持按 user_id 过滤)"""
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT * FROM designs WHERE efficiency >= ? ORDER BY efficiency DESC LIMIT ?",
-            (min_efficiency, n)
-        ).fetchall()
+        if user_id is not None:
+            rows = conn.execute(
+                "SELECT * FROM designs WHERE efficiency >= ? AND (user_id = ? OR user_id IS NULL) ORDER BY efficiency DESC LIMIT ?",
+                (min_efficiency, user_id, n)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM designs WHERE efficiency >= ? ORDER BY efficiency DESC LIMIT ?",
+                (min_efficiency, n)
+            ).fetchall()
         return [dict(r) for r in rows]
 
 
-def export_csv(filepath: str = None) -> str:
-    """导出全部结果到 CSV（包含扩展字段）"""
+def export_csv(filepath: str = None, user_id: int = None) -> str:
+    """导出全部结果到 CSV（包含扩展字段, v2.02.01: 支持 user_id 过滤）"""
     if filepath is None:
         filepath = os.path.join(
             r"D:\MotorDesign\Reports",
             f"export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         )
 
-    results = get_all_results()
+    results = get_all_results(user_id=user_id)
     if not results:
         return ""
 
@@ -252,20 +392,37 @@ def export_csv(filepath: str = None) -> str:
     return filepath
 
 
-def get_stats() -> dict:
-    """获取统计信息"""
+def get_stats(user_id: int = None) -> dict:
+    """获取统计信息 (v2.02.01: 支持按 user_id 过滤)"""
     with sqlite3.connect(DB_PATH) as conn:
-        total = conn.execute("SELECT COUNT(*) FROM designs").fetchone()[0]
+        if user_id is not None:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM designs WHERE user_id = ? OR user_id IS NULL", (user_id,)
+            ).fetchone()[0]
+        else:
+            total = conn.execute("SELECT COUNT(*) FROM designs").fetchone()[0]
         if total == 0:
             return {"total": 0}
-        avg_eff = conn.execute("SELECT AVG(efficiency) FROM designs").fetchone()[0]
-        max_eff = conn.execute("SELECT MAX(efficiency) FROM designs").fetchone()[0]
-        min_temp = conn.execute("SELECT MIN(max_temp) FROM designs").fetchone()[0]
-
-        # 求解模式统计
-        mc_count = conn.execute(
-            "SELECT COUNT(*) FROM designs WHERE solve_mode = 'motorcad'"
-        ).fetchone()[0]
+        if user_id is not None:
+            avg_eff = conn.execute(
+                "SELECT AVG(efficiency) FROM designs WHERE user_id = ? OR user_id IS NULL", (user_id,)
+            ).fetchone()[0]
+            max_eff = conn.execute(
+                "SELECT MAX(efficiency) FROM designs WHERE user_id = ? OR user_id IS NULL", (user_id,)
+            ).fetchone()[0]
+            min_temp = conn.execute(
+                "SELECT MIN(max_temp) FROM designs WHERE user_id = ? OR user_id IS NULL", (user_id,)
+            ).fetchone()[0]
+            mc_count = conn.execute(
+                "SELECT COUNT(*) FROM designs WHERE solve_mode = 'motorcad' AND (user_id = ? OR user_id IS NULL)", (user_id,)
+            ).fetchone()[0]
+        else:
+            avg_eff = conn.execute("SELECT AVG(efficiency) FROM designs").fetchone()[0]
+            max_eff = conn.execute("SELECT MAX(efficiency) FROM designs").fetchone()[0]
+            min_temp = conn.execute("SELECT MIN(max_temp) FROM designs").fetchone()[0]
+            mc_count = conn.execute(
+                "SELECT COUNT(*) FROM designs WHERE solve_mode = 'motorcad'"
+            ).fetchone()[0]
         sim_count = total - mc_count
 
         return {
@@ -276,3 +433,119 @@ def get_stats() -> dict:
             "motorcad_count": mc_count,
             "simulation_count": sim_count,
         }
+
+
+# ============================================================
+# v2.02.01: 多租户数据库工具函数
+# ============================================================
+
+def get_user_by_username(username: str) -> dict:
+    """按用户名查询用户"""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        return dict(row) if row else None
+
+
+def get_user_by_email(email: str) -> dict:
+    """按邮箱查询用户"""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+        return dict(row) if row else None
+
+
+def get_user_by_id(user_id: int) -> dict:
+    """按 ID 查询用户"""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def create_user(username: str, email: str, password_hash: str, display_name: str = None,
+                role: str = "user", membership_level: str = "trial") -> int:
+    """创建用户，返回 user_id"""
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            """INSERT INTO users (username, email, password_hash, display_name, role, membership_level, points_balance)
+               VALUES (?, ?, ?, ?, ?, ?, 100)""",
+            (username, email, password_hash, display_name or username, role, membership_level)
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def get_all_users() -> list:
+    """获取所有用户列表 (管理员用)"""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, username, email, display_name, role, membership_level, points_balance, status, last_login, created_time FROM users ORDER BY id"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_user(user_id: int, **fields) -> bool:
+    """更新用户字段"""
+    if not fields:
+        return False
+    set_clauses = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values()) + [user_id]
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(f"UPDATE users SET {set_clauses} WHERE id = ?", values)
+        conn.commit()
+        return True
+
+
+def get_product_lines() -> list:
+    """获取所有产品线"""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM product_lines WHERE is_active = 1 ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_product_line_by_id(pl_id: int) -> dict:
+    """按 ID 获取产品线"""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM product_lines WHERE id = ?", (pl_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def create_project(user_id: int, name: str, product_line_id: int = None,
+                   description: str = None, requirements: str = None) -> str:
+    """创建项目，返回 project_id (UUID)"""
+    import uuid
+    project_id = str(uuid.uuid4())[:8]
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """INSERT INTO projects (id, user_id, product_line_id, name, description, requirements)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (project_id, user_id, product_line_id, name, description, requirements)
+        )
+        conn.commit()
+    return project_id
+
+
+def get_projects_by_user(user_id: int) -> list:
+    """获取用户的项目列表"""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """SELECT p.*, pl.name as product_line_name, pl.code as product_line_code
+               FROM projects p
+               LEFT JOIN product_lines pl ON p.product_line_id = pl.id
+               WHERE p.user_id = ? ORDER BY p.created_time DESC""",
+            (user_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_project_by_id(project_id: str) -> dict:
+    """获取项目详情"""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        return dict(row) if row else None

@@ -5,6 +5,39 @@
 
 ---
 
+## [2.02.01] - 2026-07-28 (DEV)
+
+### 多租户基础 — 认证系统 + 产品线配置 + 积分体系 + 数据隔离
+
+#### Added
+- **Core/auth.py**: JWT 认证模块
+  - 密码哈希 (werkzeug.security pbkdf2:sha256)
+  - JWT token 生成/验证 (PyJWT, 7天有效期)
+  - 角色分级: guest/user/vip/flagship/admin
+  - 会员等级: trial/standard/vip/flagship
+  - @require_auth / @require_role / @require_admin 装饰器
+  - dev 环境自动创建 admin 用户并自动登录
+- **Core/points_service.py**: 积分体系
+  - 每日签到 (+10), 积分获取/消耗记录
+  - 签到防重 (每日仅一次)
+  - 积分余额查询/变动历史
+- **数据库升级**: users 表扩展 8 个字段 (password_hash/email/membership_level/points_balance/status/last_login/expires_at/phone)
+- **新建表**: product_lines (4条默认产品线 A/B/C/D) + projects (关联用户与产品线)
+- **designs 表**: 增加 user_id 列, save_result/get_all_results/get_stats 支持 user_id 过滤
+- **11 个新 API 端点**:
+  - 认证: /api/auth/register, /api/auth/login, /api/auth/verify, /api/auth/profile (GET+PUT), /api/auth/logout
+  - 管理: /api/admin/users, /api/admin/user/{id} (PUT), /api/admin/user/{id}/points (POST)
+  - 产品线: /api/product-lines (GET+POST), /api/product-line/{id}
+  - 项目: /api/projects (GET+POST), /api/project/{id}
+  - 积分: /api/points/balance, /api/points/history, /api/points/checkin, /api/points/membership
+- **数据隔离**: /api/results, /api/results/top 按 user_id 过滤 (admin 可看全部)
+- **前端**: 用户信息卡 (头像/名称/角色/积分/登出) + 登录注册模态框
+- **前端**: 我的积分面板 (余额/等级/签到/历史记录)
+- **前端**: 用户管理面板 (admin only, 角色修改/积分调整)
+- **前端**: 角色分级导航 (用户管理面板仅 admin 可见)
+
+---
+
 ## [2.01.01] - 2026-07-28 (DEV)
 
 ### 新主版本起点 — 版本号按环境分离

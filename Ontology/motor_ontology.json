@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "last_updated": "2026-07-27",
+  "last_updated": "2026-07-28",
   "description": "Motor-AI 知识本体 - 定义电机设计领域的实体、关系与约束",
   "entities": {
     "CustomerRequirement": {

@@ -4,7 +4,7 @@ set MOTOR_ENV=dev
 
 echo ============================================================
 echo   Motor-AI - Development Environment (DEV)
-echo   Version: 2.01.01-dev  -  Port: 5000
+echo   Version: 2.02.01-dev  -  Port: 5000
 echo ============================================================
 echo.
 
