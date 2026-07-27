@@ -4,7 +4,7 @@ set MOTOR_ENV=trial
 
 echo ============================================================
 echo   Motor-AI - Trial Environment (BETA)
-echo   Version: 1.03.01-beta.1  -  Port: 5001
+echo   Version: 1.03.03-beta.1  -  Port: 5001
 echo ============================================================
 echo.
 

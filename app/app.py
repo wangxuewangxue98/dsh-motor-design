@@ -152,6 +152,19 @@ except Exception:
     PROGRESS_HUB_OK = False
     progress_hub = None
 
+# ---- v1.03.03: 全局任务管理 ----
+TASK_MANAGER_OK = True
+try:
+    from task_manager import (
+        create_task, update_task, get_task, get_active_tasks,
+        get_all_tasks, get_tasks_by_status, cancel_task as _cancel_task,
+        STATUS_QUEUED, STATUS_RUNNING, STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED,
+        TYPE_SOLVE, TYPE_WORKFLOW,
+    )
+except Exception as e:
+    TASK_MANAGER_OK = False
+    print(f"[app] task_manager 加载失败: {e}")
+
 
 # ============================================================
 # v1.03.02: SSE 流包装器 — 拦截事件并广播到 ProgressHub
@@ -376,8 +389,18 @@ def api_solve():
         progress_hub.reset_cancel()
         progress_hub.start("solve", client=client_id, total=count)
 
+    # v1.03.03: 创建全局任务记录
+    _task_id = None
+    if TASK_MANAGER_OK:
+        _task_id = create_task(
+            TYPE_SOLVE, source=Config.ENV, specs={"specs": specs, "count": count}
+        )
+
     def generate():
         try:
+            if TASK_MANAGER_OK and _task_id:
+                update_task(_task_id, status=STATUS_RUNNING, current_step="初始化求解",
+                           log_entry=f"求解任务启动: {count} 个方案")
             if MOTOR_OK:
                 reset_solve_log()
 
@@ -439,6 +462,10 @@ def api_solve():
             for i, params in enumerate(param_list):
                 # v1.03.02: 检查取消标志
                 if PROGRESS_HUB_OK and progress_hub.is_cancelled():
+                    if TASK_MANAGER_OK and _task_id:
+                        update_task(_task_id, status=STATUS_CANCELLED,
+                                   progress=i/total if total > 0 else 0,
+                                   current_step=f"用户终止 (已完成 {i}/{total})")
                     yield f"data: {json.dumps({'type': 'cancelled', 'message': f'用户已终止求解 (已完成 {i}/{total})', 'completed': i, 'total': total}, ensure_ascii=False)}\n\n"
                     break
                 try:
@@ -487,8 +514,16 @@ def api_solve():
 
                     yield f"data: {json.dumps({'type': 'progress', 'index': i + 1, 'total': total, 'result': result}, ensure_ascii=False)}\n\n"
 
+                    # v1.03.03: 更新任务进度
+                    if TASK_MANAGER_OK and _task_id:
+                        update_task(_task_id, progress=(i + 1) / total,
+                                   current_step=f"求解 {i+1}/{total}",
+                                   log_entry=f"方案 {i+1}/{total} 完成: 效率={result.get('efficiency', '?')}%")
+
                 except Exception as e:
                     yield f"data: {json.dumps({'type': 'error', 'index': i + 1, 'total': total, 'error': str(e)})}\n\n"
+                    if TASK_MANAGER_OK and _task_id:
+                        update_task(_task_id, log_entry=f"方案 {i+1} 错误: {str(e)}")
 
             # ---- 断开 COM 连接 (释放资源) ----
             if mc_connector is not None:
@@ -519,8 +554,20 @@ def api_solve():
                 'solve_logs': solve_logs[-10:] if solve_logs else [],
             }, ensure_ascii=False)}\n\n"
 
+            # v1.03.03: 任务完成
+            if TASK_MANAGER_OK and _task_id:
+                _cancelled = PROGRESS_HUB_OK and progress_hub and progress_hub.is_cancelled()
+                update_task(_task_id,
+                           status=STATUS_CANCELLED if _cancelled else STATUS_COMPLETED,
+                           progress=1.0 if not _cancelled else None,
+                           current_step="已完成" if not _cancelled else "已终止",
+                           result_summary=f"MC:{mc_count}/Sim:{sim_count}/Total:{len(results)}")
+
         except Exception as e:
             yield f"data: {json.dumps({'type': 'fatal', 'error': str(e)})}\n\n"
+            if TASK_MANAGER_OK and _task_id:
+                update_task(_task_id, status=STATUS_FAILED,
+                           current_step=f"错误: {str(e)[:100]}")
 
     return Response(
         stream_with_context(_publish_stream(generate())),
@@ -1294,8 +1341,19 @@ def api_workflow_run():
         progress_hub.reset_cancel()
         progress_hub.start("workflow", client=client_id)
 
+    # v1.03.03: 创建全局任务记录
+    _wf_task_id = None
+    if TASK_MANAGER_OK:
+        _wf_task_id = create_task(
+            TYPE_WORKFLOW, source=Config.ENV,
+            specs={"raw_text": raw_text[:200], "solve_count": solve_count}
+        )
+
     def generate():
         try:
+            if TASK_MANAGER_OK and _wf_task_id:
+                update_task(_wf_task_id, status=STATUS_RUNNING, current_step="工作流启动",
+                           log_entry=f"AI工作流启动: {solve_count} 个方案")
             yield f"data: {json.dumps({'type': 'start', 'message': 'Workflow started (辩证制衡双轨)', 'steps': ['parse_requirement', 'generate_designs', 'review_solutions', 'convergence_review', 'decision_gate', 'generate_report']}, ensure_ascii=False)}\n\n"
 
             for update in _orchestrator.run_streaming(
@@ -1308,10 +1366,15 @@ def api_workflow_run():
                 # ---- step_start: 节点开始 ----
                 if event_type == "step_start":
                     yield f"data: {json.dumps({'type': 'step_start', 'step': update.get('step', ''), 'message': update.get('message', '')}, ensure_ascii=False)}\n\n"
+                    if TASK_MANAGER_OK and _wf_task_id:
+                        update_task(_wf_task_id, current_step=update.get('message', update.get('step', '')),
+                                   log_entry=f"步骤: {update.get('step', '')}")
 
                 # ---- progress: 子步骤进度 ----
                 elif event_type == "progress":
                     yield f"data: {json.dumps({'type': 'progress', 'step': update.get('step', ''), 'message': update.get('message', ''), 'level': update.get('level', 'info'), 'timestamp': update.get('timestamp', '')}, ensure_ascii=False)}\n\n"
+                    if TASK_MANAGER_OK and _wf_task_id:
+                        update_task(_wf_task_id, log_entry=update.get('message', ''))
 
                 # ---- step_done: 节点完成 ----
                 elif event_type == "step_done":
@@ -1357,8 +1420,18 @@ def api_workflow_run():
 
             yield f"data: {json.dumps({'type': 'done', 'message': 'Workflow completed (双轨辩证完成)'})}\n\n"
 
+            if TASK_MANAGER_OK and _wf_task_id:
+                _wf_cancelled = PROGRESS_HUB_OK and progress_hub and progress_hub.is_cancelled()
+                update_task(_wf_task_id,
+                           status=STATUS_CANCELLED if _wf_cancelled else STATUS_COMPLETED,
+                           progress=1.0 if not _wf_cancelled else None,
+                           current_step="工作流完成" if not _wf_cancelled else "已终止")
+
         except Exception as e:
             yield f"data: {json.dumps({'type': 'fatal', 'error': str(e)}, ensure_ascii=False)}\n\n"
+            if TASK_MANAGER_OK and _wf_task_id:
+                update_task(_wf_task_id, status=STATUS_FAILED,
+                           current_step=f"错误: {str(e)[:100]}")
 
     return Response(
         stream_with_context(_publish_stream(generate())),
@@ -1715,6 +1788,58 @@ def api_progress_cancel():
     return jsonify({"status": "cancel_requested", "reason": reason})
 
 
+# ============================================================
+# v1.03.03: 全局任务管理 API
+# ============================================================
+@app.route("/api/tasks")
+def api_tasks_list():
+    """获取所有任务列表"""
+    if not TASK_MANAGER_OK:
+        return jsonify({"error": "TaskManager not available"}), 500
+    status_filter = request.args.get("status")
+    limit = int(request.args.get("limit", 50))
+    if status_filter:
+        tasks = get_tasks_by_status(status_filter, limit=limit)
+    else:
+        tasks = get_all_tasks(limit=limit)
+    return jsonify({"tasks": tasks, "total": len(tasks)})
+
+
+@app.route("/api/tasks/active")
+def api_tasks_active():
+    """获取活跃任务 (queued + running)"""
+    if not TASK_MANAGER_OK:
+        return jsonify({"error": "TaskManager not available"}), 500
+    tasks = get_active_tasks()
+    return jsonify({"tasks": tasks, "total": len(tasks)})
+
+
+@app.route("/api/task/<task_id>")
+def api_task_detail(task_id):
+    """获取单个任务详情"""
+    if not TASK_MANAGER_OK:
+        return jsonify({"error": "TaskManager not available"}), 500
+    task = get_task(task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+    return jsonify(task)
+
+
+@app.route("/api/task/<task_id>/cancel", methods=["POST"])
+def api_task_cancel(task_id):
+    """取消指定任务"""
+    if not TASK_MANAGER_OK:
+        return jsonify({"error": "TaskManager not available"}), 500
+    # 先在数据库中标记取消
+    success = _cancel_task(task_id)
+    if not success:
+        return jsonify({"error": "Task not found or already finished"}), 404
+    # 同时通过 ProgressHub 发送取消信号 (终止正在运行的 Worker)
+    if PROGRESS_HUB_OK:
+        progress_hub.request_cancel(f"task_cancelled:{task_id}")
+    return jsonify({"status": "cancelled", "task_id": task_id})
+
+
 @app.route("/api/network/status")
 def api_network_status():
     """获取网络访问状态：本机IP、Tailscale、端口监听、绑定地址"""
@@ -1911,5 +2036,6 @@ if __name__ == "__main__":
     print(f"  Audit:    {'OK' if AUDIT_OK else 'ERROR'}")
     print(f"  Evolution:{'OK' if EVOLUTION_OK else 'ERROR'}")
     print(f"  Feedback: {'OK' if FEEDBACK_OK else 'ERROR'}")
+    print(f"  TaskMgr:  {'OK' if TASK_MANAGER_OK else 'ERROR'}")
     print("=" * 60)
     app.run(host=_bind_host, port=_port, debug=_debug, threaded=True)

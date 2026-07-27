@@ -90,6 +90,7 @@ function switchTab(tabName) {
     if (tabName === 'audit') loadAuditLogs();
     if (tabName === 'radar') loadRadar();
     if (tabName === 'sandbox') loadSandboxCandidates();
+    if (tabName === 'tasks') loadTasks();
 }
 
 // ============================================================
@@ -106,6 +107,25 @@ async function loadStatus() {
             envBadge.textContent = data.env.env_label;
             envBadge.style.background = data.env.env_color;
             envBadge.title = `${data.env.env_desc} | ${data.env.version_label} | DB: ${data.env.db_path ? data.env.db_path.split('\\').pop() : ''}`;
+        }
+
+        // v1.03.03: 调试版专属 UI
+        const isDev = data.env && data.env.env === 'dev';
+        const devTitleBadge = document.getElementById('devTitleBadge');
+        if (devTitleBadge) {
+            devTitleBadge.style.display = isDev ? 'inline-block' : 'none';
+        }
+        // 任务调度面板仅调试版可见
+        const navTasks = document.getElementById('navTasks');
+        if (navTasks) {
+            navTasks.style.display = isDev ? '' : 'none';
+        }
+        // 调试版顶部渐变条
+        if (isDev && !document.getElementById('devTopBar')) {
+            const bar = document.createElement('div');
+            bar.id = 'devTopBar';
+            bar.className = 'dev-top-bar';
+            document.querySelector('.main').insertBefore(bar, document.querySelector('.main').firstChild);
         }
 
         // Ollama
@@ -2428,6 +2448,119 @@ async function cancelRemoteTask() {
         if (data.status === 'cancel_requested') {
             showToast('终止信号已发送', 'warn');
             addMsgBar('warn', '已发送终止信号, 正在停止任务...');
+        } else {
+            showToast('终止失败: ' + (data.error || ''), 'error');
+        }
+    } catch(e) {
+        showToast('终止请求失败: ' + e.message, 'error');
+    }
+}
+
+// ============================================================
+// v1.03.03: 任务调度面板
+// ============================================================
+let _taskFilter = 'all';
+let _taskPollTimer = null;
+
+function filterTasks(status) {
+    _taskFilter = status;
+    loadTasks();
+}
+
+async function loadTasks() {
+    try {
+        const url = _taskFilter === 'all'
+            ? '/api/tasks?limit=50'
+            : `/api/tasks?status=${_taskFilter}&limit=50`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        renderTaskList(data.tasks || []);
+
+        // 更新统计信息
+        const activeResp = await fetch('/api/tasks/active');
+        const activeData = await activeResp.json();
+        const activeCount = (activeData.tasks || []).length;
+        document.getElementById('taskWorkerCount').textContent = activeCount;
+        document.getElementById('taskTotalCount').textContent = data.total || 0;
+        document.getElementById('taskMcadStatus').textContent = activeCount > 0 ? '忙碌' : '空闲';
+
+        // 启动自动刷新
+        if (_taskPollTimer) clearInterval(_taskPollTimer);
+        const pollStatus = document.getElementById('taskPollStatus');
+        if (activeCount > 0) {
+            _taskPollTimer = setInterval(loadTasks, 2000);
+            if (pollStatus) pollStatus.textContent = '自动刷新中 (2s)...';
+        } else {
+            if (pollStatus) pollStatus.textContent = '无活跃任务';
+        }
+    } catch(e) {
+        console.error('loadTasks error:', e);
+        const container = document.getElementById('taskListContainer');
+        if (container) container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--error);">加载失败</div>';
+    }
+}
+
+function renderTaskList(tasks) {
+    const container = document.getElementById('taskListContainer');
+    if (!container) return;
+
+    if (!tasks || tasks.length === 0) {
+        container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-tertiary);">暂无任务记录</div>';
+        return;
+    }
+
+    let html = '';
+    for (const t of tasks) {
+        const statusText = {
+            'queued': '排队中', 'running': '运行中', 'completed': '已完成',
+            'cancelled': '已取消', 'failed': '失败'
+        }[t.status] || t.status;
+        const typeText = { 'solve': '求解', 'workflow': '工作流' }[t.type] || t.type;
+        const progressPct = Math.round((t.progress || 0) * 100);
+        const isRunning = t.status === 'running' || t.status === 'queued';
+        const createdAt = t.created_at ? t.created_at.substring(11, 19) : '';
+        const sourceBadge = t.source === 'trial'
+            ? '<span style="color:#3b82f6;font-size:10px;">TRIAL</span>'
+            : '<span style="color:#f59e0b;font-size:10px;">DEV</span>';
+
+        // 最新日志
+        const lastLog = (t.log && t.log.length > 0) ? t.log[t.log.length - 1] : null;
+        const lastLogText = lastLog ? `${lastLog.time} ${lastLog.msg}` : '';
+
+        html += `<div class="task-card task-${t.status}">
+            <div class="task-card-header">
+                <span class="task-card-id">#${t.id}</span>
+                ${sourceBadge}
+                <span class="task-card-type">${typeText}</span>
+                <span class="task-card-status status-${t.status}">${statusText}</span>
+                <span style="font-size:11px;color:var(--text-tertiary);margin-left:auto;">${createdAt}</span>
+            </div>
+            <div class="task-progress-bar">
+                <div class="task-progress-fill ${t.status === 'completed' ? 'fill-completed' : ''} ${t.status === 'cancelled' ? 'fill-cancelled' : ''}"
+                     style="width:${progressPct}%"></div>
+            </div>
+            <div class="task-card-info">
+                <span>进度: ${progressPct}%</span>
+                <span>${t.current_step || ''}</span>
+                ${t.result_summary ? `<span>摘要: ${t.result_summary}</span>` : ''}
+            </div>
+            ${lastLogText ? `<div class="task-card-step">${lastLogText}</div>` : ''}
+            ${isRunning ? `<div style="margin-top:8px;">
+                <button class="btn btn-danger btn-sm" onclick="cancelTask('${t.id}')">终止任务</button>
+            </div>` : ''}
+        </div>`;
+    }
+    container.innerHTML = html;
+}
+
+async function cancelTask(taskId) {
+    if (!confirm(`确定要终止任务 #${taskId} 吗？`)) return;
+    try {
+        const resp = await fetch(`/api/task/${taskId}/cancel`, { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+            showToast(`任务 #${taskId} 已发送终止信号`, 'success');
+            loadTasks();
         } else {
             showToast('终止失败: ' + (data.error || ''), 'error');
         }

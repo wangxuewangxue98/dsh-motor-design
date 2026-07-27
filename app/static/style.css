@@ -76,6 +76,111 @@ body {
     letter-spacing: 0.5px;
 }
 
+.dev-title-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #1a1a2e;
+    background: #f59e0b;
+    vertical-align: middle;
+    margin-left: 4px;
+    animation: dev-pulse 2s ease-in-out infinite;
+}
+
+@keyframes dev-pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4); }
+    50% { opacity: 0.85; box-shadow: 0 0 0 4px rgba(245, 158, 11, 0); }
+}
+
+.dev-top-bar {
+    height: 3px;
+    background: linear-gradient(90deg, #f59e0b, #f97316, #f59e0b);
+    background-size: 200% 100%;
+    animation: dev-bar-shimmer 3s linear infinite;
+}
+
+@keyframes dev-bar-shimmer {
+    0% { background-position: 0% 0%; }
+    100% { background-position: 200% 0%; }
+}
+
+/* 任务卡片 */
+.task-card {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    background: var(--bg-card);
+    transition: border-color 0.2s;
+}
+.task-card:hover { border-color: var(--primary); }
+.task-card.task-running { border-left: 3px solid var(--primary); }
+.task-card.task-queued { border-left: 3px solid var(--warning); }
+.task-card.task-completed { border-left: 3px solid var(--success); }
+.task-card.task-cancelled { border-left: 3px solid var(--text-tertiary); opacity: 0.7; }
+.task-card.task-failed { border-left: 3px solid var(--error); }
+
+.task-card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+.task-card-id {
+    font-family: monospace;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+.task-card-type {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+}
+.task-card-status {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 600;
+}
+.task-card-status.status-running { background: var(--primary); color: #fff; }
+.task-card-status.status-queued { background: var(--warning); color: #fff; }
+.task-card-status.status-completed { background: var(--success); color: #fff; }
+.task-card-status.status-cancelled { background: var(--text-tertiary); color: #fff; }
+.task-card-status.status-failed { background: var(--error); color: #fff; }
+
+.task-progress-bar {
+    height: 6px;
+    background: var(--bg-elevated);
+    border-radius: 3px;
+    overflow: hidden;
+    margin: 6px 0;
+}
+.task-progress-fill {
+    height: 100%;
+    background: var(--primary);
+    transition: width 0.3s ease;
+}
+.task-progress-fill.fill-completed { background: var(--success); }
+.task-progress-fill.fill-cancelled { background: var(--text-tertiary); }
+
+.task-card-info {
+    display: flex;
+    gap: 12px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-top: 4px;
+}
+.task-card-step {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+}
+
 .subtitle {
     font-size: 12px;
     color: var(--text-light);

@@ -44,8 +44,8 @@ class Config:
 
     # ---- 系统版本 ----
     SYSTEM_NAME = "Motor-AI"
-    SYSTEM_VERSION = "1.03.02"
-    VERSION_DATE = "2026-07-27 22:30"
+    SYSTEM_VERSION = "1.03.03"
+    VERSION_DATE = "2026-07-27 23:15"
     # 试用版追加 -beta.X 后缀
     VERSION_LABEL = f"{SYSTEM_VERSION}-beta.1" if IS_TRIAL else f"{SYSTEM_VERSION}-dev"
 

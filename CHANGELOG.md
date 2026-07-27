@@ -5,6 +5,34 @@
 
 ---
 
+## [1.03.03] - 2026-07-27
+
+### 全局任务队列系统 + 调试版UI标识
+
+#### Added
+- 全局任务队列系统：task_queue 表持久化所有耗时任务的生命周期
+- Core/task_manager.py：任务管理器模块，实现创建/更新/查询/取消
+- SQLite WAL 模式：减少并发写入锁冲突
+- 4个任务管理API：/api/tasks、/api/tasks/active、/api/task/{id}、/api/task/{id}/cancel
+- /api/solve 和 /api/workflow/run 集成任务追踪：自动创建/更新/完成任务记录
+- 任务调度面板：仅调试版可见，展示任务卡片+进度条+终止按钮
+- 2秒自动轮询：活跃任务存在时自动刷新任务列表
+- 调试版UI标识：标题DEV脉冲徽章 + 顶部渐变光条
+- 任务状态筛选：全部/运行中/排队中/已完成/已取消
+
+#### Changed
+- db_tools.py：init_db() 启用 WAL 模式 + 新增 task_queue 表 + 索引
+- app.py：导入 task_manager，SSE 流中集成任务创建/更新/完成
+- index.html：新增任务调度面板 + 调试版标识 + 版本号更新
+- app.js：任务列表渲染 + loadTasks/filterTasks/cancelTask 函数
+- style.css：任务卡片样式 + DEV脉冲动画 + 调试版顶部光条
+
+#### Security
+- 任务取消API同时触发 ProgressHub 取消信号，确保运行中的任务被终止
+- 任务调度面板仅调试版(dev)可见，试用版隐藏
+
+---
+
 ## [1.03.02] - 2026-07-27
 
 ### 跨设备进度同步 + 任务终止机制

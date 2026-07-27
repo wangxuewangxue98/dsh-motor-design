@@ -10,6 +10,10 @@ v1.01 更新:
 v1.03.01 更新:
 - 数据库路径从 Config 获取 (dev/trial 环境隔离)
 - 预建 users / points 表结构 (多租户预留)
+
+v1.03.03 更新:
+- 新增 task_queue 表 (全局任务队列)
+- 启用 SQLite WAL 模式减少锁冲突
 """
 import sqlite3
 import json
@@ -54,6 +58,13 @@ def init_db():
     """初始化数据库表 + 自动迁移新增字段"""
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with sqlite3.connect(DB_PATH) as conn:
+        # v1.03.03: 启用 WAL 模式减少并发锁冲突
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+        except Exception:
+            pass
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS designs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,6 +117,29 @@ def init_db():
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
         """)
+        conn.commit()
+
+        # v1.03.03: 全局任务队列表
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS task_queue (
+                id TEXT PRIMARY KEY,
+                user_id TEXT DEFAULT 'dev',
+                source TEXT DEFAULT 'dev',
+                type TEXT,
+                status TEXT DEFAULT 'queued',
+                priority INTEGER DEFAULT 5,
+                progress REAL DEFAULT 0.0,
+                current_step TEXT,
+                log TEXT DEFAULT '[]',
+                result_summary TEXT,
+                specs TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        # 索引加速查询
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_task_status ON task_queue(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_task_created ON task_queue(created_at DESC)")
         conn.commit()
         print(f"[db_tools] 数据库就绪: {DB_PATH}")
 
