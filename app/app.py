@@ -9,6 +9,7 @@ import os
 import sys
 import json
 import glob
+import queue
 import traceback
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, Response, stream_with_context, g
@@ -27,7 +28,6 @@ from config.env import Config
 SYSTEM_NAME = Config.SYSTEM_NAME
 SYSTEM_VERSION = Config.SYSTEM_VERSION
 VERSION_DATE = Config.VERSION_DATE
-
 # ============================================================
 # 路径配置 (从 Config 获取)
 # ============================================================
@@ -143,6 +143,31 @@ try:
     from flywheel import on_adopt as _flywheel_adopt, on_reject as _flywheel_reject, get_flywheel_status
 except Exception as e:
     FLYWHEEL_OK = False
+
+# ---- v1.03.02: 全局进度广播 ----
+PROGRESS_HUB_OK = True
+try:
+    from progress_hub import progress_hub
+except Exception:
+    PROGRESS_HUB_OK = False
+    progress_hub = None
+
+
+# ============================================================
+# v1.03.02: SSE 流包装器 — 拦截事件并广播到 ProgressHub
+# ============================================================
+def _publish_stream(gen):
+    """包装 SSE 生成器, 将每个事件发布到 progress_hub, 实现跨设备同步"""
+    for line in gen:
+        if PROGRESS_HUB_OK and line.startswith("data: "):
+            try:
+                event = json.loads(line[6:].strip())
+                progress_hub.publish(event)
+            except Exception:
+                pass
+        yield line
+    if PROGRESS_HUB_OK:
+        progress_hub.finish()
 
 
 # ============================================================
@@ -345,6 +370,12 @@ def api_solve():
     count = data.get("count", 30)
     raw_text = data.get("raw_text", "")
 
+    # v1.03.02: 启动进度广播
+    client_id = request.headers.get("User-Agent", "unknown")[:60]
+    if PROGRESS_HUB_OK:
+        progress_hub.reset_cancel()
+        progress_hub.start("solve", client=client_id, total=count)
+
     def generate():
         try:
             if MOTOR_OK:
@@ -406,6 +437,10 @@ def api_solve():
 
             # ---- 逐个求解 (复用同一 COM 连接) ----
             for i, params in enumerate(param_list):
+                # v1.03.02: 检查取消标志
+                if PROGRESS_HUB_OK and progress_hub.is_cancelled():
+                    yield f"data: {json.dumps({'type': 'cancelled', 'message': f'用户已终止求解 (已完成 {i}/{total})', 'completed': i, 'total': total}, ensure_ascii=False)}\n\n"
+                    break
                 try:
                     if mc_available and mc_connector is not None:
                         # 使用已有连接求解
@@ -488,7 +523,7 @@ def api_solve():
             yield f"data: {json.dumps({'type': 'fatal', 'error': str(e)})}\n\n"
 
     return Response(
-        stream_with_context(generate()),
+        stream_with_context(_publish_stream(generate())),
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -1253,6 +1288,12 @@ def api_workflow_run():
     if not raw_text:
         return jsonify({"error": "Please provide raw_text"}), 400
 
+    # v1.03.02: 启动进度广播
+    client_id = request.headers.get("User-Agent", "unknown")[:60]
+    if PROGRESS_HUB_OK:
+        progress_hub.reset_cancel()
+        progress_hub.start("workflow", client=client_id)
+
     def generate():
         try:
             yield f"data: {json.dumps({'type': 'start', 'message': 'Workflow started (辩证制衡双轨)', 'steps': ['parse_requirement', 'generate_designs', 'review_solutions', 'convergence_review', 'decision_gate', 'generate_report']}, ensure_ascii=False)}\n\n"
@@ -1320,7 +1361,7 @@ def api_workflow_run():
             yield f"data: {json.dumps({'type': 'fatal', 'error': str(e)}, ensure_ascii=False)}\n\n"
 
     return Response(
-        stream_with_context(generate()),
+        stream_with_context(_publish_stream(generate())),
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -1617,6 +1658,61 @@ def _check_port_listening(port=_NET_PORT):
             return result == 0
     except Exception:
         return False
+
+
+# ============================================================
+# v1.03.02: 全局进度广播 API (跨设备同步 + 任务终止)
+# ============================================================
+@app.route("/api/progress/stream")
+def api_progress_stream():
+    """SSE 端点: 任何客户端可订阅, 实时接收其他客户端的工作流/求解进度"""
+    if not PROGRESS_HUB_OK:
+        return jsonify({"error": "ProgressHub not available"}), 500
+
+    def generate():
+        q = progress_hub.subscribe()
+        try:
+            # 先发送当前状态快照
+            state = progress_hub.get_state()
+            yield f"data: {json.dumps({'type': 'hub_snapshot', 'state': state}, ensure_ascii=False)}\n\n"
+
+            while True:
+                try:
+                    event = q.get(timeout=15)
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except queue.Empty:
+                    # 心跳, 保持连接
+                    yield f"data: {json.dumps({'type': 'heartbeat', 'time': datetime.now().strftime('%H:%M:%S')})}\n\n"
+        except GeneratorExit:
+            pass
+        finally:
+            progress_hub.unsubscribe(q)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.route("/api/progress/status")
+def api_progress_status():
+    """获取当前进度状态快照 (轮询用)"""
+    if not PROGRESS_HUB_OK:
+        return jsonify({"active": False, "error": "ProgressHub not available"})
+    return jsonify(progress_hub.get_state())
+
+
+@app.route("/api/progress/cancel", methods=["POST"])
+def api_progress_cancel():
+    """终止当前正在运行的工作流/求解任务"""
+    if not PROGRESS_HUB_OK:
+        return jsonify({"error": "ProgressHub not available"}), 500
+
+    data = request.get_json(silent=True) or {}
+    reason = data.get("reason", "user_requested")
+    progress_hub.request_cancel(reason)
+    return jsonify({"status": "cancel_requested", "reason": reason})
 
 
 @app.route("/api/network/status")

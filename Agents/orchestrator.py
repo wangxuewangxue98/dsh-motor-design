@@ -510,7 +510,19 @@ class MotorAIOrchestrator:
 
         # 2. 主循环: 轮询 progress 和 node_done
         while True:
-            # 2a. 先 drain 进度队列 (非阻塞)
+            # 2a. 检查取消标志 (v1.03.02)
+            try:
+                from progress_hub import progress_hub
+                if progress_hub.is_cancelled():
+                    yield {"type": "progress", "step": "cancel", "message": "收到终止信号, 正在停止工作流...", "level": "warn"}
+                    # 等待后台线程结束
+                    thread.join(timeout=3)
+                    yield {"type": "fatal", "error": "用户已终止工作流"}
+                    return
+            except ImportError:
+                pass
+
+            # 2b. 先 drain 进度队列 (非阻塞)
             drained_any = False
             while not self._progress_queue.empty():
                 try:
@@ -520,7 +532,7 @@ class MotorAIOrchestrator:
                 except queue.Empty:
                     break
 
-            # 2b. 等待节点完成事件 (带超时, 以便继续轮询进度)
+            # 2c. 等待节点完成事件 (带超时, 以便继续轮询进度)
             try:
                 item = result_queue.get(timeout=0.3)
             except queue.Empty:

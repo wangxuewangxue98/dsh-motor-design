@@ -65,6 +65,9 @@ document.addEventListener('DOMContentLoaded', () => {
     loadTestCases();
     loadSettings();
     loadNetworkStatus();
+
+    // v1.03.02: 连接进度广播 (跨设备同步)
+    connectProgressHub();
 });
 
 // ============================================================
@@ -415,6 +418,7 @@ async function startSolve() {
     const btn = document.getElementById('solveStartBtn');
     btn.disabled = true;
     btn.textContent = '求解中...';
+    _myWorkflowActive = true;  // v1.03.02: 标记自己发起的求解
 
     // 显示进度区域
     const progressEl = document.getElementById('solveProgress');
@@ -464,8 +468,10 @@ async function startSolve() {
         showToast('求解失败: ' + e.message, 'error');
         appendLog('求解失败: ' + e.message, 'err');
     } finally {
+        _myWorkflowActive = false;  // v1.03.02: 求解结束
         btn.disabled = false;
         btn.textContent = '开始求解';
+        hideRemoteBanner();
     }
 }
 
@@ -1435,6 +1441,7 @@ async function runAgentWorkflow() {
     document.getElementById('gateReadCon').checked = false;
     document.getElementById('agentRunBtn').disabled = true;
     document.getElementById('agentRunBtn').textContent = '运行中...';
+    _myWorkflowActive = true;  // v1.03.02: 标记自己发起的工作流
 
     try {
         const resp = await fetch('/api/workflow/run', {
@@ -1474,8 +1481,10 @@ async function runAgentWorkflow() {
     } catch (e) {
         showToast('工作流错误: ' + e.message, 'error');
     } finally {
+        _myWorkflowActive = false;  // v1.03.02: 工作流结束
         document.getElementById('agentRunBtn').disabled = false;
         document.getElementById('agentRunBtn').textContent = '启动 AI 团队';
+        hideRemoteBanner();
     }
 }
 
@@ -2213,4 +2222,216 @@ function showSemiAutoResult(result) {
     }
     html += `<p style="margin-top:8px;font-size:11px;color:var(--text-tertiary);">${result.note || ''}</p>`;
     content.innerHTML = html;
+}
+
+// ============================================================
+// v1.03.02: 跨设备进度同步 + 任务终止
+// ============================================================
+var _myWorkflowActive = false;  // 当前客户端是否在运行自己的工作流
+var _progressEventSource = null;
+
+function connectProgressHub() {
+    try {
+        _progressEventSource = new EventSource('/api/progress/stream');
+
+        _progressEventSource.onmessage = function(e) {
+            try {
+                var data = JSON.parse(e.data);
+                handleProgressHubEvent(data);
+            } catch(err) {
+                // ignore parse errors
+            }
+        };
+
+        _progressEventSource.onerror = function() {
+            // 断线重连 (5秒后)
+            if (_progressEventSource) {
+                _progressEventSource.close();
+                _progressEventSource = null;
+            }
+            setTimeout(function() {
+                if (!_progressEventSource) connectProgressHub();
+            }, 5000);
+        };
+    } catch(err) {
+        console.error('ProgressHub connect error:', err);
+    }
+}
+
+function handleProgressHubEvent(data) {
+    // 心跳: 忽略
+    if (data.type === 'heartbeat') return;
+
+    // 快照: 页面加载时获取当前状态
+    if (data.type === 'hub_snapshot') {
+        var st = data.state;
+        if (st && st.active) {
+            showRemoteBanner(st);
+            // 如果有历史消息且不是自己发起的, 回放最近的几条
+            if (!_myWorkflowActive && st.messages && st.messages.length > 0) {
+                var recent = st.messages.slice(-5);
+                recent.forEach(function(msg) {
+                    if (msg.message) {
+                        addMsgBar(msg.type || 'info', '[' + msg.time + '] ' + msg.message);
+                    }
+                });
+            }
+        }
+        return;
+    }
+
+    // 会话开始
+    if (data.type === 'hub_start') {
+        if (!_myWorkflowActive) {
+            showRemoteBanner(data);
+            addMsgBar('info', '远程会话已启动 (' + (data.type === 'workflow' ? 'AI团队' : '批量求解') + ')');
+        }
+        return;
+    }
+
+    // 会话结束
+    if (data.type === 'hub_end') {
+        hideRemoteBanner();
+        if (!_myWorkflowActive) {
+            addMsgBar('info', '远程会话已结束');
+        }
+        return;
+    }
+
+    // 取消请求
+    if (data.type === 'cancel_requested') {
+        addMsgBar('warn', '收到终止请求, 正在停止...');
+        return;
+    }
+
+    // 事件 (包含原始事件 + 状态快照)
+    if (data.type === 'hub_event') {
+        var event = data.event;
+        var state = data.state;
+
+        // 更新横幅
+        if (state && state.active) {
+            updateRemoteBanner(state);
+        } else {
+            hideRemoteBanner();
+        }
+
+        // 如果是自己发起的工作流, 跳过 (fetch reader 已处理)
+        if (_myWorkflowActive) return;
+
+        // 镜像远程事件到消息栏
+        if (event) {
+            if (event.type === 'step_start') {
+                var stepNames = {
+                    'parse_requirement': '需求分析师',
+                    'generate_designs': '方案生成师',
+                    'review_solutions': '评审推荐师',
+                    'convergence_review': '收敛阵营',
+                    'decision_gate': '决策门',
+                    'generate_report': '报告撰写员'
+                };
+                var sName = stepNames[event.step] || event.step;
+                addMsgBar('step', '[' + sName + '] ' + (event.message || ''));
+                updatePipelineStep(event.step, 'running', '远程执行中');
+            } else if (event.type === 'progress') {
+                if (event.message) {
+                    addMsgBar('info', event.message);
+                }
+            } else if (event.type === 'step_done') {
+                var doneNames = {
+                    'parse_requirement': '需求解析完成',
+                    'generate_designs': '方案生成完成',
+                    'review_solutions': '支持报告完成',
+                    'convergence_review': '反对报告完成',
+                    'decision_gate': '决策门就绪',
+                    'generate_report': '报告生成完成'
+                };
+                var dName = doneNames[event.step] || event.step;
+                if (dName) {
+                    updatePipelineStep(event.step, 'done', dName);
+                    addMsgBar('step', '[' + dName + ']');
+                }
+                // 显示结果摘要
+                if (event.step === 'generate_designs' && event.results_count) {
+                    addMsgBar('info', '远程: 生成 ' + event.results_count + ' 个方案');
+                }
+                if (event.step === 'generate_report' && event.report) {
+                    addMsgBar('success', '远程: 正式报告已生成');
+                    document.getElementById('agentReportDisplay').innerHTML = renderMarkdown(event.report);
+                    document.getElementById('agentReportBtn').style.display = '';
+                    _lastReportText = event.report;
+                    _lastReportFilename = event.report_filename || '';
+                }
+            } else if (event.type === 'done') {
+                addMsgBar('success', '远程会话完成');
+            } else if (event.type === 'fatal') {
+                addMsgBar('error', '远程错误: ' + (event.error || ''));
+            } else if (event.type === 'cancelled') {
+                addMsgBar('warn', '远程任务已终止: ' + (event.message || ''));
+            }
+        }
+    }
+}
+
+function showRemoteBanner(state) {
+    var banner = document.getElementById('remoteSessionBanner');
+    if (!banner) return;
+    banner.style.display = 'flex';
+    updateRemoteBanner(state);
+}
+
+function updateRemoteBanner(state) {
+    var text = document.getElementById('remoteSessionText');
+    var step = document.getElementById('remoteSessionStep');
+    var time = document.getElementById('remoteSessionTime');
+    if (!text) return;
+
+    var typeLabel = state.type === 'workflow' ? 'AI团队工作流' : '批量求解';
+    text.textContent = typeLabel + ' 进行中';
+
+    if (state.current_step) {
+        var stepNames = {
+            'parse_requirement': '需求分析师',
+            'generate_designs': '方案生成师',
+            'review_solutions': '评审推荐师',
+            'convergence_review': '收敛阵营',
+            'decision_gate': '决策门',
+            'generate_report': '报告撰写员'
+        };
+        step.textContent = stepNames[state.current_step] || state.current_step;
+    } else {
+        step.textContent = '';
+    }
+
+    if (state.total && state.completed) {
+        time.textContent = state.completed + '/' + state.total + ' (' + state.elapsed + 's)';
+    } else {
+        time.textContent = state.elapsed + 's';
+    }
+}
+
+function hideRemoteBanner() {
+    var banner = document.getElementById('remoteSessionBanner');
+    if (banner) banner.style.display = 'none';
+}
+
+async function cancelRemoteTask() {
+    if (!confirm('确定要终止当前正在运行的任务吗？\n(正在进行的 Motor-CAD 解算将完成当前方案后停止)')) return;
+
+    try {
+        var resp = await fetch('/api/progress/cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: 'user_clicked_cancel' })
+        });
+        var data = await resp.json();
+        if (data.status === 'cancel_requested') {
+            showToast('终止信号已发送', 'warn');
+            addMsgBar('warn', '已发送终止信号, 正在停止任务...');
+        } else {
+            showToast('终止失败: ' + (data.error || ''), 'error');
+        }
+    } catch(e) {
+        showToast('终止请求失败: ' + e.message, 'error');
+    }
 }

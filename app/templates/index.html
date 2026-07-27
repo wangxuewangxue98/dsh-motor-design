@@ -12,7 +12,7 @@
     <aside class="sidebar">
         <div class="sidebar-header">
             <div class="logo">Motor-AI</div>
-            <div class="subtitle">电机设计AI辅助系统 v1.03.01</div>
+            <div class="subtitle">电机设计AI辅助系统 v1.03.02</div>
         </div>
         <nav class="nav">
             <a class="nav-item active" data-tab="dashboard">仪表盘</a>
@@ -35,7 +35,7 @@
                 <span id="sidebarStatusText">检查中...</span>
             </div>
             <div class="version-info" style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">
-                v1.03.01 | 2026-07-27
+                v1.03.02 | 2026-07-27
                 <span id="envBadge" style="display:inline-block;margin-left:6px;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;color:#fff;background:#6b7280;">--</span>
             </div>
         </div>
@@ -44,11 +44,22 @@
     <!-- ============ 主内容区 ============ -->
     <main class="main">
 
+        <!-- v1.03.02: 远程会话横幅 (跨设备进度同步) -->
+        <div id="remoteSessionBanner" class="remote-session-banner" style="display:none;">
+            <div class="remote-session-info">
+                <span class="remote-session-icon">&#128241;</span>
+                <span id="remoteSessionText">远程会话进行中...</span>
+                <span id="remoteSessionStep" class="remote-session-step"></span>
+                <span id="remoteSessionTime" class="remote-session-time"></span>
+            </div>
+            <button class="btn btn-danger btn-sm" id="remoteCancelBtn" onclick="cancelRemoteTask()">终止任务</button>
+        </div>
+
         <!-- ========== 仪表盘 ========== -->
         <section class="tab-content active" id="tab-dashboard">
             <div class="page-header">
                 <h2>系统仪表盘 <span style="font-size:14px;color:var(--text-secondary);font-weight:normal;">Motor-AI</span></h2>
-                <p class="page-desc">电机设计AI辅助系统 v1.03.01 (2026-07-27) — 环境分离双轨 + 辩证制衡 + 全本地零上云</p>
+                <p class="page-desc">电机设计AI辅助系统 v1.03.02 (2026-07-27) — 环境分离双轨 + 辩证制衡 + 全本地零上云</p>
             </div>
             <div class="status-grid" id="statusGrid">
                 <div class="status-card" id="cardOllama">

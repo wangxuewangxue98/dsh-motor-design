@@ -1,7 +1,7 @@
 {
     "system_name": "Motor-AI",
-    "version": "1.03.01",
-    "version_date": "2026-07-27 22:00",
+    "version": "1.03.02",
+    "version_date": "2026-07-27 22:30",
     "description": "电机设计AI辅助系统",
     "version_scheme": "主版本.次版本.修订号 (X.YY.ZZ)",
     "version_suffix": {
@@ -10,6 +10,22 @@
     },
     "changelog_file": "CHANGELOG.md",
     "changelog": [
+        {
+            "version": "1.03.02",
+            "date": "2026-07-27 22:30",
+            "tag": "v1.03.02-dev",
+            "summary": "跨设备进度同步 + 任务终止机制 — 手机操作电脑可见, Motor-CAD解算可终止",
+            "changes": [
+                "ProgressHub 全局进度广播: Scripts/progress_hub.py, 线程安全, 多客户端订阅",
+                "跨设备实时同步: 手机端发起工作流/求解时, 电脑端自动显示远程会话横幅+进度镜像",
+                "/api/progress/stream (SSE): 实时事件流订阅, 含心跳保活",
+                "/api/progress/status: 轮询端点, 返回当前任务状态快照",
+                "/api/progress/cancel: 终止当前工作流/求解任务",
+                "远程会话横幅: 页面顶部显示远程会话状态(类型/步骤/进度/耗时), 含终止按钮",
+                "任务终止: 批量求解循环和编排器主循环检查取消标志, 优雅停止",
+                "前端EventSource: 页面加载自动连接, 断线5秒重连"
+            ]
+        },
         {
             "version": "1.03.01",
             "date": "2026-07-27 22:00",

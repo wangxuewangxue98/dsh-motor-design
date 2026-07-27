@@ -5,6 +5,27 @@
 
 ---
 
+## [1.03.02] - 2026-07-27
+
+### 跨设备进度同步 + 任务终止机制
+
+### Added
+- **ProgressHub 全局进度广播**: 新增 `Scripts/progress_hub.py`，线程安全的进度广播器，支持多客户端订阅
+- **跨设备实时同步**: 手机端发起工作流/求解时，电脑端自动显示远程会话横幅 + 实时进度镜像
+- **`/api/progress/stream` (SSE)**: 任何客户端可订阅的实时事件流，含心跳保活
+- **`/api/progress/status`**: 轮询端点，返回当前任务状态快照（active/step/progress/messages）
+- **`/api/progress/cancel`**: 终止当前正在运行的工作流/求解任务
+- **远程会话横幅**: 页面顶部显示当前远程会话状态（类型/步骤/进度/耗时），含终止按钮
+- **任务终止机制**: 批量求解循环和编排器主循环均检查取消标志，收到信号后优雅停止
+- **前端 EventSource 连接**: 页面加载自动连接进度广播，断线5秒后自动重连
+
+### Changed
+- `app.py` 的 `/api/solve` 和 `/api/workflow/run` SSE 流通过 `_publish_stream()` 包装器发布事件到 ProgressHub
+- `orchestrator.py` 的 `run_streaming` 主循环增加取消标志检查
+- `app.js` 新增 `_myWorkflowActive` 标志，避免本地事件与远程事件重复处理
+
+---
+
 ## [1.03.01] - 2026-07-27
 
 ### 环境分离双轨 — 调试版与发布试用版并行

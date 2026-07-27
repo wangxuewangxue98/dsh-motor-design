@@ -1057,6 +1057,43 @@ body {
 .btn-danger { background: var(--error); color: #fff; }
 .btn-danger:hover { background: #b91c1c; }
 
+/* ---- v1.03.02: 远程会话横幅 ---- */
+.remote-session-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 16px;
+    margin-bottom: 12px;
+    border-radius: var(--radius);
+    background: linear-gradient(135deg, #1e3a5f, #1e2a4f);
+    border: 1px solid var(--primary);
+    color: #fff;
+    font-size: 13px;
+    animation: pulse-banner 2s ease-in-out infinite;
+}
+.remote-session-banner .remote-session-info {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.remote-session-icon { font-size: 18px; }
+.remote-session-step {
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.2);
+    font-weight: 600;
+}
+.remote-session-time {
+    font-size: 11px;
+    opacity: 0.8;
+}
+@keyframes pulse-banner {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(59,130,246,0.3); }
+    50% { box-shadow: 0 0 0 6px rgba(59,130,246,0); }
+}
+
 /* ---- AI 团队工作流 ---- */
 .agent-workflow-input {
     background: var(--surface);
