@@ -11,12 +11,17 @@ LangGraph 多智能体编排器 - 双轨辩证制衡体系
     → generate_report → END
 
   无结果时: generate_designs → generate_report (跳过辩证)
+
+v1.02.02 修复: 并行节点不再返回 step/status (避免 InvalidUpdateError)
+  - step 由 run_streaming 从 node_name 设置
+  - errors 改为 Annotated[List, operator.add] 允许并行追加
 """
 import sys
 import os
 import time
 import json
-from typing import TypedDict, Optional, List
+import operator
+from typing import TypedDict, Optional, List, Annotated
 from datetime import datetime
 
 sys.path.insert(0, r"D:\MotorDesign\Agents")
@@ -37,8 +42,19 @@ from devils_advocate import DevilsAdvocate
 import audit_logger
 
 
+# 节点名 → 状态名映射 (供 run/run_streaming 统一设置)
+STEP_STATUS_MAP = {
+    "parse_requirement": "parsed",
+    "generate_designs": "solved",
+    "review_solutions": "reviewed",
+    "convergence_review": "converged",
+    "decision_gate": "ready",
+    "generate_report": "completed",
+}
+
+
 class WorkflowState(TypedDict):
-    """工作流状态 (v1.02.01 双轨)"""
+    """工作流状态 (v1.02.02 双轨 - 修复并行冲突)"""
     raw_text: str
     specs: dict
     confidence: float
@@ -59,12 +75,13 @@ class WorkflowState(TypedDict):
     report_filename: str
     matched_templates: list
     project_id: str
-    status: str
-    errors: List[str]
+    # errors 使用 Annotated 允许并行节点追加 (而非覆盖)
+    errors: Annotated[List[str], operator.add]
     solve_count: int
     use_cloud_review: bool
     use_cloud_report: bool
     step: str
+    status: str
     timestamp: str
 
 
@@ -141,24 +158,18 @@ class MotorAIOrchestrator:
 
         result = self.req_agent.safe_run(raw_text=state["raw_text"])
         if "error" in result:
-            return {"status": "error",
-                    "errors": state.get("errors", []) + [result["error"]],
-                    "step": "parse_requirement"}
+            return {"errors": [result["error"]]}
         return {"specs": result["specs"], "confidence": result["confidence"],
-                "project_id": project_id, "status": "parsed",
-                "step": "parse_requirement",
+                "project_id": project_id,
                 "timestamp": datetime.now().isoformat()}
 
     def _node_generate_designs(self, state: WorkflowState) -> dict:
         count = state.get("solve_count", 10)
         result = self.design_agent.safe_run(specs=state["specs"], count=count)
         if "error" in result:
-            return {"status": "error",
-                    "errors": state.get("errors", []) + [result["error"]],
-                    "step": "generate_designs", "results": []}
+            return {"errors": [result["error"]], "results": []}
         return {"results": result["results"],
-                "matched_templates": result.get("matched_templates", []),
-                "status": "solved", "step": "generate_designs"}
+                "matched_templates": result.get("matched_templates", [])}
 
     def _node_review_solutions(self, state: WorkflowState) -> dict:
         """放大轨: 评审推荐师 → 支持报告"""
@@ -166,14 +177,12 @@ class MotorAIOrchestrator:
         result = self.review_agent.safe_run(
             results=state["results"], specs=state["specs"], use_cloud=use_cloud)
         if "error" in result:
-            return {"status": "error",
-                    "errors": state.get("errors", []) + [result["error"]],
-                    "step": "review_solutions", "review": "评审失败",
+            return {"errors": [result["error"]],
+                    "review": "评审失败",
                     "top_solutions": state["results"][:5]}
         return {"review": result["review"],
                 "top_solutions": result["top_solutions"],
-                "recommendation": result["recommendation"],
-                "status": "reviewed", "step": "review_solutions"}
+                "recommendation": result["recommendation"]}
 
     # ==================== 收敛轨 ====================
     def _node_convergence_review(self, state: WorkflowState) -> dict:
@@ -224,8 +233,7 @@ class MotorAIOrchestrator:
         con_report = self._assemble_con_report(findings)
 
         return {"con_report": con_report,
-                "convergence_findings": findings,
-                "status": "converged", "step": "convergence_review"}
+                "convergence_findings": findings}
 
     def _assemble_con_report(self, findings: dict) -> str:
         """把4个收敛agent的发现汇总成一份反对报告"""
@@ -249,9 +257,7 @@ class MotorAIOrchestrator:
         con = state.get("con_report", "")
         ready = bool(pro and con)
         return {"pro_report": pro,
-                "ready_for_confirm": ready,
-                "status": "ready" if ready else "partial",
-                "step": "decision_gate"}
+                "ready_for_confirm": ready}
 
     # ==================== 报告 ====================
     def _node_generate_report(self, state: WorkflowState) -> dict:
@@ -262,13 +268,10 @@ class MotorAIOrchestrator:
         result = self.report_agent.safe_run(
             specs=specs, results=results, review=review, use_cloud=use_cloud)
         if "error" in result:
-            return {"status": "error",
-                    "errors": state.get("errors", []) + [result["error"]],
-                    "step": "generate_report"}
+            return {"errors": [result["error"]]}
         return {"report": result["report"],
                 "report_filepath": result["filepath"],
-                "report_filename": result["filename"],
-                "status": "completed", "step": "generate_report"}
+                "report_filename": result["filename"]}
 
     # ==================== 执行入口 ====================
     def _initial_state(self, raw_text, solve_count, use_cloud_review, use_cloud_report):
@@ -280,11 +283,11 @@ class MotorAIOrchestrator:
             "pro_report": "", "ready_for_confirm": False,
             "report": "", "report_filepath": "", "report_filename": "",
             "matched_templates": [], "project_id": "",
-            "status": "started", "errors": [],
+            "errors": [],
             "solve_count": solve_count,
             "use_cloud_review": use_cloud_review,
             "use_cloud_report": use_cloud_report,
-            "step": "init", "timestamp": "",
+            "step": "init", "status": "started", "timestamp": "",
         }
 
     def run(self, raw_text: str, solve_count: int = 10,
@@ -297,12 +300,14 @@ class MotorAIOrchestrator:
         final_state = self.compiled.invoke(
             initial_state,
             config={"configurable": {"thread_id": f"thread_{int(time.time())}"}})
+        final_step = final_state.get("step", "unknown")
+        final_status = STEP_STATUS_MAP.get(final_step, final_state.get("status", "unknown"))
         audit_logger.log(agent_name="Orchestrator", action="workflow_complete",
                          parameters={"project_id": final_state.get("project_id", "")},
-                         result={"status": final_state.get("status"),
+                         result={"status": final_status,
                                  "results_count": len(final_state.get("results", [])),
                                  "ready_for_confirm": final_state.get("ready_for_confirm", False)},
-                         status="success" if final_state.get("status") == "completed" else "partial")
+                         status="success" if final_status == "completed" else "partial")
         return final_state
 
     def run_streaming(self, raw_text: str, solve_count: int = 10,
@@ -316,5 +321,9 @@ class MotorAIOrchestrator:
                          status="started")
         for event in self.compiled.stream(initial_state, config=config, stream_mode="updates"):
             for node_name, state_update in event.items():
+                if state_update is None:
+                    state_update = {}
+                # 统一设置 step 和 status (节点返回值中不再包含这些字段)
                 state_update["step"] = node_name
+                state_update["status"] = STEP_STATUS_MAP.get(node_name, node_name)
                 yield state_update

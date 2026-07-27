@@ -1199,6 +1199,10 @@ async function runAgentWorkflow() {
     });
     document.getElementById('agentResults').style.display = 'none';
     document.getElementById('decisionGate').style.display = 'none';
+
+    // 清空消息栏
+    clearMsgBar();
+    addMsgBar('info', 'AI 团队启动中...');
     document.getElementById('gateReadPro').checked = false;
     document.getElementById('gateReadCon').checked = false;
     document.getElementById('agentRunBtn').disabled = true;
@@ -1250,6 +1254,10 @@ async function runAgentWorkflow() {
 function handleWorkflowEvent(data) {
     if (data.type === 'start') {
         showToast('AI 团队已启动 (辩证双轨)', 'info');
+        addMsgBar('info', '工作流已启动 (辩证双轨制衡)');
+        if (data.steps && data.steps.length) {
+            addMsgBar('info', '预期步骤: ' + data.steps.join(' → '));
+        }
     } else if (data.type === 'step_done') {
         const stepMap = {
             'parse_requirement': { name: '需求解析完成', next: 'generate_designs' },
@@ -1262,24 +1270,34 @@ function handleWorkflowEvent(data) {
         const info = stepMap[data.step];
         if (info) {
             updatePipelineStep(data.step, 'done', info.name);
+            addMsgBar('step', '[' + info.name + ']');
             // 双轨: generate_designs 完成后同时启动 review 和 convergence
             if (data.step === 'generate_designs' && info.next) {
                 updatePipelineStep('review_solutions', 'running', '执行中');
                 updatePipelineStep('convergence_review', 'running', '收敛阵营执行中');
+                addMsgBar('info', '双轨并行启动: 放大轨(评审推荐师) + 收敛轨(四剑客)');
+                addMsgBar('info', '收敛阵营执行中, 含4个agent串行调用, 预计需要1-3分钟...');
             } else if (info.next && !(data.step === 'review_solutions' || data.step === 'convergence_review')) {
                 updatePipelineStep(info.next, 'running', '执行中');
             }
         }
 
+        // 额外进度信息
         if (data.step === 'parse_requirement' && data.specs) {
             document.getElementById('agentResults').style.display = 'block';
             document.getElementById('agentSpecsDisplay').textContent = JSON.stringify(data.specs, null, 2);
+            addMsgBar('info', '需求解析: ' + JSON.stringify(data.specs).slice(0, 120) + '...');
+        }
+        if (data.step === 'generate_designs') {
+            addMsgBar('info', '方案生成: ' + (data.results_count || 0) + ' 个方案');
         }
         if (data.step === 'review_solutions' && data.review) {
             document.getElementById('agentReviewDisplay').innerHTML = renderMarkdown(data.review);
+            addMsgBar('success', '支持报告已生成 (放大轨)');
         }
         if (data.step === 'convergence_review' && data.con_report) {
             document.getElementById('agentConReportDisplay').innerHTML = renderMarkdown(data.con_report);
+            addMsgBar('success', '反对报告已生成 (收敛轨)');
         }
         if (data.step === 'decision_gate') {
             document.getElementById('decisionGate').style.display = 'block';
@@ -1288,9 +1306,11 @@ function handleWorkflowEvent(data) {
             if (ready) {
                 gs.textContent = '双报告已齐备，请阅读后确认';
                 gs.className = 'gate-status gate-ready';
+                addMsgBar('success', '决策门: 双报告齐备, 等待用户确认');
             } else {
                 gs.textContent = '报告未齐备';
                 gs.className = 'gate-status gate-pending';
+                addMsgBar('warn', '决策门: 报告未齐备');
             }
         }
         if (data.step === 'generate_report' && data.report) {
@@ -1300,15 +1320,54 @@ function handleWorkflowEvent(data) {
                 btn.style.display = 'inline-block';
                 btn.dataset.filepath = data.report_filepath;
             }
+            addMsgBar('success', '正式报告已生成');
         }
     } else if (data.type === 'step_error') {
         updatePipelineStep(data.step, 'error', '错误: ' + (data.error || '').slice(0, 50));
         showToast('步骤错误: ' + data.step, 'warn');
+        addMsgBar('error', '步骤[' + data.step + ']错误: ' + (data.error || '未知错误'));
+    } else if (data.type === 'progress') {
+        addMsgBar(data.level || 'info', data.message || '');
     } else if (data.type === 'done') {
         showToast('辩证制衡工作流完成', 'success');
+        addMsgBar('success', '======= 工作流全部完成 =======');
     } else if (data.type === 'fatal') {
         showToast('致命错误: ' + data.error, 'error');
+        addMsgBar('error', '致命错误: ' + (data.error || '未知'));
     }
+}
+
+// ==================== 消息栏 ====================
+function addMsgBar(type, text) {
+    const body = document.getElementById('msgBarBody');
+    if (!body) return;
+    // 移除空提示
+    const empty = body.querySelector('.msg-empty');
+    if (empty) empty.remove();
+
+    const now = new Date();
+    const ts = String(now.getHours()).padStart(2, '0') + ':' +
+               String(now.getMinutes()).padStart(2, '0') + ':' +
+               String(now.getSeconds()).padStart(2, '0');
+
+    const icons = { info: '\u2139', success: '\u2714', warn: '\u26a0', error: '\u2716', step: '\u25b6' };
+    const icon = icons[type] || icons.info;
+
+    const line = document.createElement('div');
+    line.className = 'msg-line msg-' + type;
+    line.innerHTML = '<span class="msg-time">' + ts + '</span>' +
+                     '<span class="msg-icon">' + icon + '</span>' +
+                     '<span class="msg-text"></span>';
+    line.querySelector('.msg-text').textContent = text;
+
+    body.appendChild(line);
+    body.scrollTop = body.scrollHeight;
+}
+
+function clearMsgBar() {
+    const body = document.getElementById('msgBarBody');
+    if (!body) return;
+    body.innerHTML = '<div class="msg-empty">点击「启动 AI 团队」后，此处将显示实时运行日志</div>';
 }
 
 // 决策门: 检查是否双报告都已阅读

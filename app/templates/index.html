@@ -612,9 +612,17 @@
                     <button class="btn btn-secondary btn-sm" id="agentReportBtn" style="display:none" onclick="downloadAgentReport()">下载报告</button>
                 </div>
             </div>
+            <!-- 实时消息栏 -->
+            <div class="msg-bar" id="msgBar">
+                <div class="msg-bar-header">
+                    <span class="msg-bar-title">实时日志</span>
+                    <button class="msg-bar-clear" onclick="clearMsgBar()">清空</button>
+                </div>
+                <div class="msg-bar-body" id="msgBarBody">
+                    <div class="msg-empty">点击「启动 AI 团队」后，此处将显示实时运行日志</div>
+                </div>
+            </div>
         </section>
-
-        <!-- ========== 进化仪表盘 ========== -->
         <section class="tab-content" id="tab-evolution">
             <div class="page-header">
                 <h2>进化仪表盘</h2>
