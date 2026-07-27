@@ -1,7 +1,7 @@
 {
     "system_name": "Motor-AI",
-    "version": "2.02.01",
-    "version_date": "2026-07-28 00:45",
+    "version": "2.03.01",
+    "version_date": "2026-07-28 01:10",
     "description": "电机设计AI辅助系统",
     "version_scheme": "主版本.次版本.修订号 (X.YY.ZZ)",
     "version_suffix": {
@@ -10,6 +10,31 @@
     },
     "changelog_file": "CHANGELOG.md",
     "changelog": [
+        {
+            "version": "2.03.01",
+            "date": "2026-07-28 01:10",
+            "tag": "v2.03.01-dev",
+            "env": "dev",
+            "summary": "调试版继续开发 — 后续修改调试仅限dev环境",
+            "changes": [
+                "版本号从 v2.02.01-dev 升级为 v2.03.01-dev",
+                "v2.02.01 代码冻结为试用版 (v2.02.01-trial)",
+                "后续开发仅修改调试版, 试用版修改须经用户确认"
+            ]
+        },
+        {
+            "version": "2.02.01",
+            "date": "2026-07-28 01:10",
+            "tag": "v2.02.01-trial",
+            "env": "trial",
+            "summary": "试用版发布 — 基于 v2.02.01-dev 冻结, 含多租户基础",
+            "changes": [
+                "从 v2.02.01-dev 冻结为试用版",
+                "试用版版本号从 v1.03.03 升级为 v2.02.01",
+                "含多租户基础: JWT认证 + 产品线 + 积分体系 + 数据隔离",
+                "安全限制保持: 禁用Debug, 禁用云端API, Motor-CAD模拟模式"
+            ]
+        },
         {
             "version": "2.02.01",
             "date": "2026-07-28 00:45",
