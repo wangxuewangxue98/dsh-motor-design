@@ -158,10 +158,18 @@ async function loadStatus() {
                     roleEl.className = 'user-role ' + (user.role || 'guest');
                 }
                 document.getElementById('userPoints').textContent = (user.points_balance || 0) + ' 积分';
-                // dev 自动登录不显示登出按钮
+                // 已登录: 隐藏侧边栏登录按钮
+                const loginBtnSidebar = document.getElementById('loginBtnSidebar');
+                if (loginBtnSidebar) loginBtnSidebar.style.display = 'none';
+                // 登出按钮: dev和trial都显示 (dev登出后可恢复自动登录)
                 const logoutBtn = document.getElementById('logoutBtn');
                 if (logoutBtn) {
-                    logoutBtn.style.display = data.auth.auto_login ? 'none' : '';
+                    logoutBtn.style.display = '';
+                }
+                // dev 恢复自动登录按钮: 仅在 dev 自动登录时隐藏
+                const devRestoreBtn = document.getElementById('devRestoreBtn');
+                if (devRestoreBtn) {
+                    devRestoreBtn.style.display = (data.auth.auto_login) ? 'none' : (isDev ? '' : 'none');
                 }
                 // 管理员面板可见性
                 const navAdminUsers = document.getElementById('navAdminUsers');
@@ -170,6 +178,26 @@ async function loadStatus() {
                 }
                 // 全局保存当前用户
                 state.currentUser = user;
+            } else if (userCard) {
+                // 未登录状态: 隐藏用户卡, 显示登录入口
+                userCard.style.display = 'none';
+                state.currentUser = null;
+                // 显示侧边栏登录按钮
+                const loginBtnSidebar = document.getElementById('loginBtnSidebar');
+                if (loginBtnSidebar) loginBtnSidebar.style.display = '';
+                // dev 环境: 显示恢复自动登录按钮
+                const devRestoreBtn = document.getElementById('devRestoreBtn');
+                if (devRestoreBtn) {
+                    devRestoreBtn.style.display = isDev ? '' : 'none';
+                }
+                // 隐藏管理员面板
+                const navAdminUsers = document.getElementById('navAdminUsers');
+                if (navAdminUsers) navAdminUsers.style.display = 'none';
+            }
+            // admin 凭据提示 (dev 或 trial 首次运行)
+            const adminHint = document.getElementById('adminHint');
+            if (adminHint) {
+                adminHint.style.display = data.auth.admin_hint ? '' : 'none';
             }
         }
 
@@ -2694,8 +2722,19 @@ async function doRegister() {
 
 function doLogout() {
     localStorage.removeItem('motorai_token');
+    fetch('/api/auth/logout', {method: 'POST'});
     showToast('已登出', 'info');
     setTimeout(() => location.reload(), 500);
+}
+
+async function doDevRestore() {
+    try {
+        await fetch('/api/auth/dev-restore', {method: 'POST'});
+        showToast('已恢复自动登录', 'success');
+        setTimeout(() => location.reload(), 500);
+    } catch(e) {
+        showToast('请求失败: ' + e.message, 'error');
+    }
 }
 
 // ============================================================

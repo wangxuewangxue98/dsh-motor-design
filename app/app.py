@@ -120,6 +120,7 @@ try:
         verify_password, require_auth, require_role, require_admin,
         current_user_id, current_user_dict, get_membership_info,
         extract_token_from_request, is_path_public, ROLE_LEVELS, MEMBERSHIP_LEVELS,
+        is_dev_auto_login, should_show_admin_hint,
     )
 except Exception as e:
     AUTH_OK = False
@@ -291,7 +292,9 @@ def api_status():
         "cloud": {"configured": False, "model": "", "allowed": Config.ALLOW_CLOUD_API},
         "db": {"available": DB_OK, "total": 0, "max_efficiency": 0, "avg_efficiency": 0, "path": Config.DB_PATH},
         "motorcad": {"available": False, "simulation_mode": True, "version": "11.1.5", "exe_path": ""},
-        "auth": {"enabled": AUTH_OK, "user": current_user_dict() if AUTH_OK else None},
+        "auth": {"enabled": AUTH_OK, "user": current_user_dict() if AUTH_OK else None,
+                 "auto_login": AUTH_OK and is_dev_auto_login() if AUTH_OK else False,
+                 "admin_hint": AUTH_OK and should_show_admin_hint() if AUTH_OK else False},
         "points": {"enabled": POINTS_OK},
         "errors": [],
     }
@@ -2100,6 +2103,7 @@ def api_auth_register():
 @app.route("/api/auth/login", methods=["POST"])
 def api_auth_login():
     """用户登录, 返回 JWT"""
+    from flask import make_response
     data = request.get_json() or {}
     username = (data.get("username") or "").strip()
     password = data.get("password", "")
@@ -2125,7 +2129,7 @@ def api_auth_login():
         user["id"], user["username"], user.get("role", "user"),
         user.get("membership_level", "trial")
     )
-    return jsonify({
+    resp = make_response(jsonify({
         "status": "ok",
         "token": token,
         "user": {
@@ -2137,7 +2141,11 @@ def api_auth_login():
             "membership_level": user.get("membership_level", "trial"),
             "points_balance": user.get("points_balance", 0),
         }
-    })
+    }))
+    # 登录时清除 dev 登出 cookie (恢复自动登录状态)
+    if Config.IS_DEV:
+        resp.delete_cookie("motorai_skip_auto")
+    return resp
 
 
 @app.route("/api/auth/verify")
@@ -2147,16 +2155,16 @@ def api_auth_verify():
         return jsonify({"valid": False})
     token = extract_token_from_request()
     if not token:
-        # dev 环境自动登录
+        # dev 环境自动登录 (cookie 未设置时)
         if g.user:
-            return jsonify({"valid": True, "user": current_user_dict(), "auto_login": Config.IS_DEV})
-        return jsonify({"valid": False})
+            return jsonify({"valid": True, "user": current_user_dict(), "auto_login": is_dev_auto_login()})
+        return jsonify({"valid": False, "admin_hint": should_show_admin_hint()})
     payload = verify_token(token)
     if not payload:
-        return jsonify({"valid": False})
+        return jsonify({"valid": False, "admin_hint": should_show_admin_hint()})
     user = get_user_by_id(payload["user_id"])
     if not user or user.get("status") != "active":
-        return jsonify({"valid": False})
+        return jsonify({"valid": False, "admin_hint": should_show_admin_hint()})
     return jsonify({"valid": True, "user": current_user_dict()})
 
 
@@ -2185,8 +2193,26 @@ def api_auth_update_profile():
 
 @app.route("/api/auth/logout", methods=["POST"])
 def api_auth_logout():
-    """登出 (无状态 JWT, 客户端删除 token 即可)"""
-    return jsonify({"status": "ok"})
+    """登出 (无状态 JWT, 客户端删除 token 即可)
+
+    dev 环境: 设置 cookie 阻止自动登录, 直到用户手动登录或恢复自动登录
+    """
+    from flask import make_response
+    resp = make_response(jsonify({"status": "ok"}))
+    if Config.IS_DEV:
+        resp.set_cookie("motorai_skip_auto", "1", max_age=86400, httponly=True)
+    return resp
+
+
+@app.route("/api/auth/dev-restore", methods=["POST"])
+def api_auth_dev_restore():
+    """dev 环境: 恢复自动登录 (清除 cookie)"""
+    from flask import make_response
+    if not Config.IS_DEV:
+        return jsonify({"error": "仅调试版可用"}), 403
+    resp = make_response(jsonify({"status": "ok"}))
+    resp.delete_cookie("motorai_skip_auto")
+    return resp
 
 
 # ============================================================

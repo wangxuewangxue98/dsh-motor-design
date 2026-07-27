@@ -1,17 +1,18 @@
 """
-auth.py - 多租户认证模块 (v2.02.01)
+auth.py - 多租户认证模块 (v2.03.01)
 
 功能:
 - JWT token 生成/验证
 - 密码哈希 (werkzeug.security)
 - 角色分级: guest / user / vip / flagship / admin
 - @require_auth / @require_role 装饰器
-- dev 环境自动登录为 admin (方便开发)
+- dev 环境: 自动登录为 admin (可通过登出按钮退出, 用 admin/admin123 重新登录)
+- trial 环境: 需手动登录 (首运行自动创建 admin 用户, admin/admin123)
 
 设计原则:
 - 无状态 JWT (不依赖服务端 session 存储)
 - token 有效期 7 天
-- dev 环境: Config.IS_DEV == True 时自动创建 admin 用户并跳过认证
+- dev 和 trial 各自独立数据库, admin 用户互相独立
 """
 import os
 import sys
@@ -126,14 +127,17 @@ def extract_token_from_request() -> str:
 def load_user_context():
     """Flask before_request 钩子: 从 JWT 加载用户上下文到 g.user
 
-    dev 环境: 如果没有用户, 自动创建 admin 用户并自动登录
+    dev 环境: 如果没有用户且未手动登出, 自动创建 admin 并自动登录
+    trial 环境: 仅从 JWT token 加载用户 (首运行自动创建 admin 但不自动登录)
     """
     g.user = None
     g.token_payload = None
 
-    # dev 环境自动登录
-    if Config.IS_DEV:
-        _ensure_dev_admin()
+    # 两个环境都确保 admin 用户存在 (各自独立数据库)
+    _ensure_admin()
+
+    # dev 环境自动登录 (除非用户手动登出设置了 cookie)
+    if Config.IS_DEV and not _is_dev_logged_out():
         admin = db_tools.get_user_by_username("admin")
         if admin:
             g.user = admin
@@ -145,7 +149,7 @@ def load_user_context():
             }
             return
 
-    # 从 JWT token 加载用户
+    # 从 JWT token 加载用户 (trial 或 dev 手动登出后)
     token = extract_token_from_request()
     if token:
         payload = verify_token(token)
@@ -156,23 +160,48 @@ def load_user_context():
                 g.token_payload = payload
 
 
-def _ensure_dev_admin():
-    """dev 环境: 确保 admin 用户存在"""
+def _is_dev_logged_out() -> bool:
+    """检查 dev 环境用户是否手动登出 (cookie 标志)"""
+    from flask import request as _req
+    return _req.cookies.get("motorai_skip_auto") == "1"
+
+
+def _ensure_admin():
+    """确保 admin 用户存在 (dev 和 trial 各自独立数据库, 各自独立的 admin)
+
+    dev: admin/admin123, 自动登录, 99999 积分
+    trial: admin/admin123, 需手动登录, 99999 积分
+    """
     admin = db_tools.get_user_by_username("admin")
     if not admin:
+        display_name = "开发者 (Admin)" if Config.IS_DEV else "管理员 (Admin)"
         db_tools.create_user(
             username="admin",
             email="admin@motor-ai.local",
             password_hash=hash_password("admin123"),
-            display_name="开发者 (Admin)",
+            display_name=display_name,
             role="admin",
             membership_level="flagship",
         )
-        print("[auth] dev 环境: 已自动创建 admin 用户 (admin/admin123)")
+        env_label = "dev" if Config.IS_DEV else "trial"
+        print(f"[auth] {env_label} 环境: 已自动创建 admin 用户 (admin/admin123)")
         # 给 admin 补充积分
         admin = db_tools.get_user_by_username("admin")
         if admin:
             db_tools.update_user(admin["id"], points_balance=99999)
+    else:
+        # 确保已有 admin 用户的角色和权限正确
+        needs_update = {}
+        if admin.get("role") != "admin":
+            needs_update["role"] = "admin"
+        if admin.get("membership_level") != "flagship":
+            needs_update["membership_level"] = "flagship"
+        if not admin.get("password_hash"):
+            needs_update["password_hash"] = hash_password("admin123")
+        if needs_update:
+            db_tools.update_user(admin["id"], **needs_update)
+            env_label = "dev" if Config.IS_DEV else "trial"
+            print(f"[auth] {env_label} 环境: 已修正 admin 用户属性: {list(needs_update.keys())}")
 
 
 # ============================================================
@@ -219,6 +248,23 @@ def is_path_public(path: str) -> bool:
         if path.startswith(prefix):
             return True
     return False
+
+
+def is_dev_auto_login() -> bool:
+    """dev 环境是否正在自动登录 (dev + 未手动登出)"""
+    return Config.IS_DEV and not _is_dev_logged_out()
+
+
+def should_show_admin_hint() -> bool:
+    """是否显示管理员凭据提示 (dev 始终显示, trial 首次运行时显示)"""
+    if Config.IS_DEV:
+        return True
+    # trial: 仅当只有 admin 一个用户时显示 (首次运行)
+    try:
+        users = db_tools.get_all_users()
+        return len(users) <= 1
+    except Exception:
+        return False
 
 
 # ============================================================
