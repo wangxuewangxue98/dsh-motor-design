@@ -1,15 +1,45 @@
 {
     "system_name": "Motor-AI",
-    "version": "1.03.03",
-    "version_date": "2026-07-27 23:15",
+    "version": "2.01.01",
+    "version_date": "2026-07-28 00:15",
     "description": "电机设计AI辅助系统",
     "version_scheme": "主版本.次版本.修订号 (X.YY.ZZ)",
     "version_suffix": {
         "dev": "-dev",
-        "trial": "-beta.X"
+        "trial": "-trial"
     },
     "changelog_file": "CHANGELOG.md",
     "changelog": [
+        {
+            "version": "2.01.01",
+            "date": "2026-07-28 00:15",
+            "tag": "v2.01.01-dev",
+            "env": "dev",
+            "summary": "新主版本起点 — 版本号按环境分离, dev使用2.x, trial冻结1.x",
+            "changes": [
+                "版本号按环境分离: dev=2.01.01-dev, trial=1.03.03-trial",
+                "config/env.py: SYSTEM_VERSION 按 IS_DEV 返回不同版本号",
+                "试用版后缀从 -beta.X 改为 -trial",
+                "index.html 版本号改为动态显示 (JS从API加载)",
+                "app.js loadStatus() 动态填充版本号/标题/描述",
+                "数据库迁移: 旧 designs.db 270条记录导入 designs_dev.db",
+                "导航栏: AI团队移到需求解析前, 仪表盘快捷键增加AI团队",
+                "修复: load_dotenv 未导入导致保存设置报错",
+                "修复: QR码生成失败 (需用项目venv启动)"
+            ]
+        },
+        {
+            "version": "1.03.03",
+            "date": "2026-07-28 00:15",
+            "tag": "v1.03.03-trial",
+            "env": "trial",
+            "summary": "试用版发布 — 基于 v1.03.03-dev 冻结, 全局任务队列+跨设备同步+辩证制衡",
+            "changes": [
+                "从 v1.03.03-dev 冻结为试用版",
+                "试用版标签: 1.03.03-trial (原 -beta.1)",
+                "安全限制: 禁用Debug模式, 禁用云端API, Motor-CAD模拟模式"
+            ]
+        },
         {
             "version": "1.03.03",
             "date": "2026-07-27 23:15",

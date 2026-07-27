@@ -5,6 +5,43 @@
 
 ---
 
+## [2.01.01] - 2026-07-28 (DEV)
+
+### 新主版本起点 — 版本号按环境分离
+
+#### Added
+- 版本号按环境分离：dev 使用 2.x 系列，trial 冻结 1.x 系列
+- config/env.py：SYSTEM_VERSION 按 IS_DEV 返回不同版本号（dev=2.01.01, trial=1.03.03）
+- index.html 版本号改为动态显示：通过 JS 从 /api/status 加载，不再硬编码
+- app.js loadStatus() 动态填充副标题、版本信息、仪表盘描述、页面标题
+- 仪表盘快捷操作增加「AI 团队」入口
+- 左侧导航栏「AI 团队」移到「需求解析」前面
+- 旧数据库 designs.db 270 条记录迁移到 designs_dev.db
+
+#### Changed
+- 试用版后缀从 `-beta.X` 改为 `-trial`
+- VERSION.json version_suffix.trial: `"-trial"`
+- start_dev.bat / start_trial.bat 版本号更新
+- .env.dev 版本升级到 2.01.01，.env.trial 保持 1.03.03 但后缀改为 -trial
+
+#### Fixed
+- `load_dotenv` 未在 app.py 导入导致保存设置返回 HTML 错误页（NameError）
+- QR 码生成失败：服务器需用项目 venv Python 启动（托管 Python 缺 qrcode/Pillow）
+
+---
+
+## [1.03.03] - 2026-07-28 (TRIAL)
+
+### 试用版发布 — 基于 v1.03.03-dev 冻结
+
+#### Added
+- 从 v1.03.03-dev 冻结为试用版，标签改为 `1.03.03-trial`（原 `-beta.1`）
+
+#### Security
+- 试用版安全限制保持不变：禁用 Debug 模式、禁用云端 API、Motor-CAD 模拟模式
+
+---
+
 ## [1.03.03] - 2026-07-27
 
 ### 全局任务队列系统 + 调试版UI标识

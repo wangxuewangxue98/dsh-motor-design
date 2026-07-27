@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Motor-AI [DEV] 电机设计AI辅助系统</title>
+    <title>Motor-AI 电机设计AI辅助系统</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -12,10 +12,11 @@
     <aside class="sidebar">
         <div class="sidebar-header">
             <div class="logo">Motor-AI <span id="devTitleBadge" class="dev-title-badge" style="display:none;">DEV</span></div>
-            <div class="subtitle">电机设计AI辅助系统 v1.03.03</div>
+            <div class="subtitle" id="sysSubtitle">电机设计AI辅助系统</div>
         </div>
         <nav class="nav">
             <a class="nav-item active" data-tab="dashboard">仪表盘</a>
+            <a class="nav-item" data-tab="agents">AI 团队</a>
             <a class="nav-item" data-tab="parse">需求解析</a>
             <a class="nav-item" data-tab="solve">批量求解</a>
             <a class="nav-item" data-tab="compare">方案对比</a>
@@ -24,7 +25,6 @@
             <a class="nav-item" data-tab="settings">系统设置</a>
             <div class="nav-divider"></div>
             <a class="nav-item" data-tab="radar">战略雷达</a>
-            <a class="nav-item" data-tab="agents">AI 团队</a>
             <a class="nav-item" data-tab="sandbox">沙盘推演</a>
             <a class="nav-item" data-tab="evolution">进化仪表盘</a>
             <a class="nav-item" data-tab="audit">审计日志</a>
@@ -35,8 +35,8 @@
                 <span class="status-dot status-dot--checking"></span>
                 <span id="sidebarStatusText">检查中...</span>
             </div>
-            <div class="version-info" style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">
-                v1.03.03 | 2026-07-27
+            <div class="version-info" id="versionInfo" style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">
+                <span id="versionText">--</span>
                 <span id="envBadge" style="display:inline-block;margin-left:6px;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;color:#fff;background:#6b7280;">--</span>
             </div>
         </div>
@@ -60,7 +60,7 @@
         <section class="tab-content active" id="tab-dashboard">
             <div class="page-header">
                 <h2>系统仪表盘 <span style="font-size:14px;color:var(--text-secondary);font-weight:normal;">Motor-AI</span></h2>
-                <p class="page-desc">电机设计AI辅助系统 v1.03.03 (2026-07-27) — 全局任务队列 + 跨设备同步 + 辩证制衡 + 全本地零上云</p>
+                <p class="page-desc" id="dashboardDesc">电机设计AI辅助系统 — 全局任务队列 + 跨设备同步 + 辩证制衡 + 全本地零上云</p>
             </div>
             <div class="status-grid" id="statusGrid">
                 <div class="status-card" id="cardOllama">
@@ -99,6 +99,7 @@
             <div class="quick-actions">
                 <h3>快捷操作</h3>
                 <div class="action-buttons">
+                    <button class="btn btn-primary" onclick="switchTab('agents')">AI 团队</button>
                     <button class="btn btn-primary" onclick="switchTab('parse')">新建需求解析</button>
                     <button class="btn btn-secondary" onclick="switchTab('history')">查看历史记录</button>
                     <button class="btn btn-secondary" onclick="switchTab('settings')">系统设置</button>

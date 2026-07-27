@@ -42,12 +42,12 @@ class Config:
     IS_DEV = ENV == "dev"
     IS_TRIAL = ENV == "trial"
 
-    # ---- 系统版本 ----
+    # ---- 系统版本 (按环境分离) ----
+    # dev 使用新版本号 (2.x), trial 使用冻结版本号 (1.x)
     SYSTEM_NAME = "Motor-AI"
-    SYSTEM_VERSION = "1.03.03"
-    VERSION_DATE = "2026-07-27 23:15"
-    # 试用版追加 -beta.X 后缀
-    VERSION_LABEL = f"{SYSTEM_VERSION}-beta.1" if IS_TRIAL else f"{SYSTEM_VERSION}-dev"
+    SYSTEM_VERSION = "2.01.01" if IS_DEV else "1.03.03"
+    VERSION_DATE = "2026-07-28 00:15"
+    VERSION_LABEL = f"{SYSTEM_VERSION}-dev" if IS_DEV else f"{SYSTEM_VERSION}-trial"
 
     # ---- Flask ----
     FLASK_PORT = int(os.getenv("FLASK_PORT", "5000" if IS_DEV else "5001"))

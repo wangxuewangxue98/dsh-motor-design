@@ -109,6 +109,20 @@ async function loadStatus() {
             envBadge.title = `${data.env.env_desc} | ${data.env.version_label} | DB: ${data.env.db_path ? data.env.db_path.split('\\').pop() : ''}`;
         }
 
+        // v2.01.01: 版本号按环境动态显示
+        if (data.env) {
+            const vl = data.env.version_label || '';
+            const vd = (data.env.version_date || '').split(' ')[0];
+            const subtitle = document.getElementById('sysSubtitle');
+            if (subtitle) subtitle.textContent = `电机设计AI辅助系统 v${vl}`;
+            const versionText = document.getElementById('versionText');
+            if (versionText) versionText.textContent = `v${vl} | ${vd}`;
+            const dashboardDesc = document.getElementById('dashboardDesc');
+            if (dashboardDesc) dashboardDesc.textContent = `电机设计AI辅助系统 v${vl} (${vd}) — 全局任务队列 + 跨设备同步 + 辩证制衡 + 全本地零上云`;
+            const isDevEnv = data.env.env === 'dev';
+            document.title = `Motor-AI ${isDevEnv ? '[DEV]' : '[TRIAL]'} 电机设计AI辅助系统`;
+        }
+
         // v1.03.03: 调试版专属 UI
         const isDev = data.env && data.env.env === 'dev';
         const devTitleBadge = document.getElementById('devTitleBadge');

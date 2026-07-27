@@ -13,6 +13,7 @@ import queue
 import traceback
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, Response, stream_with_context, g
+from dotenv import load_dotenv
 
 # ============================================================
 # 环境配置 (v1.03.01: 从 config.env 加载)
