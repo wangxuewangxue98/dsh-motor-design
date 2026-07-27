@@ -6,6 +6,10 @@ v1.01 更新:
 - 新增字段: 槽配合、线圈参数、磁密、电密、发热因数、损耗等
 - 新增 solve_mode 字段标记 Motor-CAD / 模拟模式
 - 自动迁移旧数据库 (ALTER TABLE)
+
+v1.03.01 更新:
+- 数据库路径从 Config 获取 (dev/trial 环境隔离)
+- 预建 users / points 表结构 (多租户预留)
 """
 import sqlite3
 import json
@@ -13,7 +17,9 @@ import csv
 import os
 from datetime import datetime
 
-DB_PATH = r"D:\MotorDesign\KnowledgeBase\designs.db"
+# v1.03.01: 从环境配置获取数据库路径
+# 优先使用环境变量 DB_PATH，回退到默认路径
+DB_PATH = os.getenv("DB_PATH", r"D:\MotorDesign\KnowledgeBase\designs.db")
 
 # 新增字段列表 (用于自动迁移)
 NEW_COLUMNS = [
@@ -77,6 +83,31 @@ def init_db():
                 except Exception as e:
                     print(f"[db_tools] 字段 {col_name} 添加失败: {e}")
         conn.commit()
+
+        # v1.03.01: 预建多租户表结构 (users / points), 当前未启用
+        # users 表: 未来用户认证
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                display_name TEXT,
+                role TEXT DEFAULT 'guest',
+                created_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        # points 表: 未来积分系统
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS points (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                points INTEGER DEFAULT 0,
+                reason TEXT,
+                created_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        """)
+        conn.commit()
+        print(f"[db_tools] 数据库就绪: {DB_PATH}")
 
 
 def save_result(params: dict, result: dict):

@@ -1,11 +1,33 @@
 {
     "system_name": "Motor-AI",
-    "version": "1.02.01",
-    "version_date": "2026-07-27 01:43",
+    "version": "1.03.01",
+    "version_date": "2026-07-27 22:00",
     "description": "电机设计AI辅助系统",
     "version_scheme": "主版本.次版本.修订号 (X.YY.ZZ)",
+    "version_suffix": {
+        "dev": "-dev",
+        "trial": "-beta.X"
+    },
     "changelog_file": "CHANGELOG.md",
     "changelog": [
+        {
+            "version": "1.03.01",
+            "date": "2026-07-27 22:00",
+            "tag": "v1.03.01-beta.1",
+            "summary": "环境分离双轨 — 调试版(dev)与发布试用版(trial)并行, 数据库隔离, 多租户预留",
+            "changes": [
+                "环境分离机制: 支持 dev(调试) 和 trial(试用) 双环境, 由 MOTOR_ENV 控制",
+                "config/env.py 配置模块: 集中管理环境配置, 向后兼容旧 .env",
+                ".env.dev / .env.trial: 环境级配置文件, 数据库/端口/云端API各自隔离",
+                "启动脚本分离: start_dev.bat(port 5000, debug) / start_trial.bat(port 5001, no debug)",
+                "数据库按环境隔离: designs_dev.db / designs_trial.db 互不影响",
+                "前端环境标识标签: 侧边栏底部显示 DEV(橙色) / BETA(蓝色) 标签",
+                "试用版安全限制: 强制关闭 Flask Debug 模式和云端 API 调用",
+                "多租户预留: g.user 上下文(当前None), users/points 空表, CLIENT_SECRET 字段",
+                "云端API门控增强: ai_tools/review_agent/report_agent 均检查 ALLOW_CLOUD_API",
+                "向后兼容: 旧 start_ui.bat 仍可用, 无 .env.{ENV} 时回退到 .env"
+            ]
+        },
         {
             "version": "1.02.01",
             "date": "2026-07-27 01:43",

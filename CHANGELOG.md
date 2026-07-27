@@ -5,6 +5,38 @@
 
 ---
 
+## [1.03.01] - 2026-07-27
+
+### 环境分离双轨 — 调试版与发布试用版并行
+
+### Added
+- **环境分离机制**: 支持 `dev`（调试版）和 `trial`（发布试用版）双环境，由 `MOTOR_ENV` 环境变量控制
+- **config/env.py 配置模块**: 集中管理环境配置，提供 `Config` 类统一暴露所有配置项
+- **环境级配置文件**: `.env.dev`（开发环境）和 `.env.trial`（试用环境），端口/数据库/云端API各自隔离
+- **启动脚本分离**: `start_dev.bat`（port 5000, debug 模式）和 `start_trial.bat`（port 5001, 生产模式）
+- **数据库按环境隔离**: `designs_dev.db` / `designs_trial.db` 互不影响，自动创建
+- **前端环境标识标签**: 侧边栏底部显示 `DEV`（橙色）或 `BETA`（蓝色）标签，tooltip 显示详细信息
+- **`/api/env` 端点**: 返回当前环境配置摘要，供前端和运维查询
+- **多租户预留**: `g.user` 请求上下文（当前 `None`）、`users`/`points` 空表结构、`CLIENT_SECRET` 字段
+- **试用版安全限制**: 强制关闭 Flask Debug 模式、强制禁用云端 API 调用
+
+### Changed
+- 配置系统从单一 `.env` 升级为多环境配置文件（`.env.dev` / `.env.trial`），向后兼容旧 `.env`
+- 版本号规则：调试版带 `-dev` 后缀，试用版带 `-beta.X` 后缀
+- `ai_tools.py` / `review_agent.py` / `report_agent.py` 云端门控增加 `ALLOW_CLOUD_API` 检查
+- `app.py` 启动逻辑改用 `Config` 类获取端口、绑定地址、Debug 开关
+- `db_tools.py` 数据库路径从 `Config` 获取，`init_db()` 预建 `users`/`points` 表
+
+### Security
+- 试用版禁用 Flask 热重载（`FLASK_DEBUG=false`），避免错误页面暴露代码
+- 试用版限制云端 API 调用权限（`ALLOW_CLOUD_API=false`），防止客户原始数据外泄
+- 试用版默认模拟模式（`MOTORCAD_USE_MODE=simulation`），避免 COM 冲突
+
+### Deprecated
+- 旧版单一 `start_ui.bat` 启动方式，现按环境分脚本启动（旧脚本仍可用，默认 dev 环境）
+
+---
+
 ## [1.02.01] - 2026-07-27
 
 ### 辩证制衡体系 — 放大火花，举起镜子

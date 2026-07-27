@@ -2,7 +2,7 @@
 LangGraph 多智能体编排器 - 双轨辩证制衡体系
 放大系统 (评审推荐师) + 收敛系统 (逆向/现实/沙盘/魔鬼) 并行, 汇入决策门
 
-工作流 (v1.02.01):
+工作流 (v1.03.01):
   START → parse_requirement → generate_designs
     → [fan-out]
         ├→ review_solutions (放大·支持报告)
@@ -198,7 +198,8 @@ class MotorAIOrchestrator:
             return {"errors": [result["error"]]}
 
         self._push_progress("parse_requirement",
-                            f"需求解析完成: 功率={result['specs'].get('power_kw', '?')}kW, "
+                            f"需求解析完成: 类型={result['specs'].get('motor_type', '异步电动机')}, "
+                            f"功率={result['specs'].get('power_kw', '?')}kW, "
                             f"电压={result['specs'].get('voltage_v', '?')}V, "
                             f"转速={result['specs'].get('speed_rpm', '?')}rpm")
         return {"specs": result["specs"], "confidence": result["confidence"],

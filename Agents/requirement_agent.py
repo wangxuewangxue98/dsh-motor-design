@@ -41,6 +41,7 @@ class RequirementAgent(BaseAgent):
 
 JSON格式：
 {{
+    "motor_type": "异步电动机" 或 "永磁同步电动机" 或 "无刷直流电动机" 或 "开关磁阻电动机" 或 "异步电动机",
     "power_kw": 数字（功率kW）,
     "voltage_v": 数字（电压V）,
     "speed_rpm": 数字或null（转速rpm）,
@@ -53,6 +54,7 @@ JSON格式：
 注意：
 - 包含"左右""大约""不低于""以上"等词的数字也要提取
 - 如果信息缺失，对应字段填null
+- motor_type: 如果客户未明确说明电机类型，默认填"异步电动机"
 - application 字段根据描述推断
 
 客户描述：{raw_text}
@@ -78,6 +80,7 @@ JSON:"""
                 raise ValueError(f"无法解析为JSON: {content[:200]}")
 
         # 补全默认值
+        specs.setdefault("motor_type", "异步电动机")
         specs.setdefault("speed_rpm", 3000)
         specs.setdefault("cooling", "未知")
         specs.setdefault("application", "通用")

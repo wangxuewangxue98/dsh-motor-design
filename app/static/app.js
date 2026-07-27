@@ -64,6 +64,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadStatus();
     loadTestCases();
     loadSettings();
+    loadNetworkStatus();
 });
 
 // ============================================================
@@ -96,6 +97,14 @@ async function loadStatus() {
         const resp = await fetch('/api/status');
         const data = await resp.json();
 
+        // v1.03.01: 环境标识标签
+        const envBadge = document.getElementById('envBadge');
+        if (envBadge && data.env) {
+            envBadge.textContent = data.env.env_label;
+            envBadge.style.background = data.env.env_color;
+            envBadge.title = `${data.env.env_desc} | ${data.env.version_label} | DB: ${data.env.db_path ? data.env.db_path.split('\\').pop() : ''}`;
+        }
+
         // Ollama
         const ollamaEl = document.getElementById('ollamaStatus');
         const ollamaDetail = document.getElementById('ollamaDetail');
@@ -119,7 +128,11 @@ async function loadStatus() {
         // 云端
         const cloudEl = document.getElementById('cloudStatus');
         const cloudDetail = document.getElementById('cloudDetail');
-        if (data.cloud.configured) {
+        if (data.cloud.allowed === false) {
+            cloudEl.textContent = '已禁用';
+            cloudEl.style.color = 'var(--text-tertiary)';
+            cloudDetail.textContent = '试用版安全限制：云端 API 已关闭';
+        } else if (data.cloud.configured) {
             cloudEl.textContent = '已配置';
             cloudEl.style.color = 'var(--success)';
             cloudDetail.textContent = data.cloud.model;
@@ -1105,8 +1118,201 @@ async function saveSettings() {
 }
 
 // ============================================================
-// 工具函数
+// 网络访问管理
 // ============================================================
+async function loadNetworkStatus() {
+    try {
+        const resp = await fetch('/api/network/status');
+        const data = await resp.json();
+
+        // 绑定地址下拉框
+        const select = document.getElementById('setBindHost');
+        if (select) {
+            // 动态添加局域网 IP 选项
+            const currentVal = data.bind_host || '127.0.0.1';
+            // 清除旧的动态选项（保留前两个固定选项）
+            while (select.options.length > 2) select.remove(2);
+            // 添加局域网 IP
+            (data.lan_ips || []).forEach(ip => {
+                const opt = document.createElement('option');
+                opt.value = ip;
+                opt.textContent = `${ip} — 绑定到此网卡`;
+                select.appendChild(opt);
+            });
+            // 添加 Tailscale IP
+            if (data.tailscale && data.tailscale.ip) {
+                const opt = document.createElement('option');
+                opt.value = data.tailscale.ip;
+                opt.textContent = `${data.tailscale.ip} — Tailscale`;
+                select.appendChild(opt);
+            }
+            select.value = currentVal;
+        }
+
+        // 状态文本
+        const statusEl = document.getElementById('netStatusText');
+        if (statusEl) {
+            const lanStr = (data.lan_ips || []).join(', ') || '未检测到';
+            let html = `绑定: <strong>${data.bind_host}</strong> ｜ 端口: ${data.port} ｜ 监听: ${data.port_listening ? '✅' : '❌'}<br>`;
+            html += `局域网 IP: ${lanStr}`;
+            if (data.tailscale && data.tailscale.ip) {
+                html += `<br>Tailscale IP: ${data.tailscale.ip}`;
+            }
+            statusEl.innerHTML = html;
+        }
+
+        // Tailscale 状态
+        const tsEl = document.getElementById('tailscaleStatus');
+        if (tsEl) {
+            const ts = data.tailscale || {};
+            if (!ts.installed) {
+                tsEl.innerHTML = '⚪ <span style="color:var(--text-light);">未安装</span>';
+            } else if (!ts.running) {
+                tsEl.innerHTML = '🟡 <span style="color:var(--warning);">已安装，未运行</span>';
+            } else {
+                tsEl.innerHTML = `🟢 <span style="color:var(--success);">运行中</span> — IP: <strong>${ts.ip}</strong>，主机名: ${ts.hostname || '-'}`;
+            }
+        }
+
+        // 局域网 URL 显示
+        const lanUrlEl = document.getElementById('netLanUrl');
+        if (lanUrlEl && data.lan_ips && data.lan_ips.length > 0) {
+            lanUrlEl.textContent = `http://${data.lan_ips[0]}:${data.port}`;
+        }
+    } catch (e) {
+        console.error('loadNetworkStatus error:', e);
+        const statusEl = document.getElementById('netStatusText');
+        if (statusEl) statusEl.textContent = '检测失败: ' + e.message;
+    }
+}
+
+async function saveNetworkConfig() {
+    const select = document.getElementById('setBindHost');
+    if (!select) return;
+    const bindHost = select.value;
+
+    try {
+        const resp = await fetch('/api/network/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bind_host: bindHost }),
+        });
+        const result = await resp.json();
+        if (result.status === 'ok') {
+            showToast(result.message, 'success');
+            if (bindHost !== '127.0.0.1') {
+                setTimeout(() => {
+                    showToast('⚠️ 请重启 Web UI (start_ui.bat) 使绑定地址生效', 'info');
+                }, 1000);
+            }
+        } else {
+            showToast('保存失败: ' + (result.message || result.error || '未知错误'), 'error');
+        }
+    } catch (e) {
+        showToast('保存失败: ' + e.message, 'error');
+    }
+}
+
+async function showNetworkQRCode() {
+    try {
+        const resp = await fetch('/api/network/qrcode');
+        const data = await resp.json();
+        if (data.error) {
+            showToast(data.error, 'error');
+            return;
+        }
+
+        const lan = data.lan || data;
+        const ts = data.tailscale;
+
+        // 创建模态弹窗
+        let modal = document.getElementById('qrModal');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.id = 'qrModal';
+            modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;';
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) modal.style.display = 'none';
+            });
+            document.body.appendChild(modal);
+        }
+
+        let qrHTML = `
+            <div style="flex:1;text-align:center;">
+                <h4 style="margin:0 0 4px;">局域网</h4>
+                <p style="color:var(--text-secondary);font-size:11px;margin:0 0 8px;">手机和电脑须同一 Wi-Fi</p>
+                <img src="${lan.qr_code}" style="width:200px;height:200px;border:1px solid var(--border);border-radius:8px;" />
+                <p style="margin:8px 0 0;font-size:12px;font-family:monospace;color:var(--primary);">${lan.url}</p>
+            </div>
+        `;
+
+        if (ts) {
+            qrHTML += `
+                <div style="flex:1;text-align:center;">
+                    <h4 style="margin:0 0 4px;color:var(--success,#27ae60);">Tailscale</h4>
+                    <p style="color:var(--text-secondary);font-size:11px;margin:0 0 8px;">手机装 Tailscale 后扫码</p>
+                    <img src="${ts.qr_code}" style="width:200px;height:200px;border:1px solid var(--border);border-radius:8px;" />
+                    <p style="margin:8px 0 0;font-size:12px;font-family:monospace;color:var(--success,#27ae60);">${ts.url}</p>
+                </div>
+            `;
+        }
+
+        let warning = '';
+        if (!ts) {
+            warning = '<p style="color:var(--text-light);font-size:11px;margin:8px 0 0;">提示：安装 Tailscale 可实现外网访问，不受 Wi-Fi 网络类型限制</p>';
+        } else {
+            warning = '<p style="color:var(--text-light);font-size:11px;margin:8px 0 0;">局域网二维码如无法访问，请用 Tailscale 二维码（更稳定）</p>';
+        }
+
+        modal.innerHTML = `
+            <div style="background:var(--surface);border-radius:var(--radius);padding:32px;text-align:center;max-width:520px;box-shadow:0 8px 32px rgba(0,0,0,0.2);">
+                <h3 style="margin:0 0 8px;">扫码访问 Motor-AI</h3>
+                <p style="color:var(--text-secondary);font-size:13px;margin:0 0 20px;">手机浏览器扫描下方二维码直接打开</p>
+                <div style="display:flex;gap:24px;align-items:flex-start;">
+                    ${qrHTML}
+                </div>
+                ${warning}
+                <p style="color:var(--text-light);font-size:11px;margin:8px 0 16px;">需先在"绑定地址"中选择 0.0.0.0 并重启</p>
+                <button class="btn btn-secondary" style="margin-top:8px;" onclick="document.getElementById('qrModal').style.display='none'">关闭</button>
+            </div>
+        `;
+        modal.style.display = 'flex';
+    } catch (e) {
+        showToast('生成二维码失败: ' + e.message, 'error');
+    }
+}
+
+async function checkNetworkAccess(target) {
+    const resultEl = document.getElementById('netCheckResult');
+    if (resultEl) {
+        resultEl.textContent = '检测中...';
+        resultEl.style.color = 'var(--text-secondary)';
+    }
+
+    try {
+        const resp = await fetch('/api/network/check-access', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target: target }),
+        });
+        const data = await resp.json();
+
+        if (resultEl) {
+            if (data.reachable) {
+                resultEl.innerHTML = data.message;
+                resultEl.style.color = 'var(--success)';
+            } else {
+                resultEl.innerHTML = data.error || '不可达';
+                resultEl.style.color = 'var(--error)';
+            }
+        }
+    } catch (e) {
+        if (resultEl) {
+            resultEl.textContent = '检测失败: ' + e.message;
+            resultEl.style.color = 'var(--error)';
+        }
+    }
+}
 function showToast(message, type) {
     const container = document.getElementById('toastContainer');
     const toast = document.createElement('div');

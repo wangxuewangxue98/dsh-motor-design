@@ -63,16 +63,20 @@ def _local_chat(prompt: str, temperature: float = 0.1) -> str:
 # ---- 云端模型 ----
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 CLOUD_MODEL = os.getenv("CLOUD_MODEL_NAME", "deepseek-chat")
+# v1.03.01: 试用版强制关闭云端 API
+ALLOW_CLOUD_API = os.getenv("ALLOW_CLOUD_API", "true") == "true"
 
 cloud_client = None
 try:
     from openai import OpenAI
-    if DEEPSEEK_API_KEY and DEEPSEEK_API_KEY != "sk-your-key-here":
+    if DEEPSEEK_API_KEY and DEEPSEEK_API_KEY != "sk-your-key-here" and ALLOW_CLOUD_API:
         cloud_client = OpenAI(
             api_key=DEEPSEEK_API_KEY,
             base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         )
         print(f"[ai_tools] 云端 AI 已就绪: {CLOUD_MODEL}")
+    elif not ALLOW_CLOUD_API:
+        print("[ai_tools] 云端 AI 已禁用 (ALLOW_CLOUD_API=false, 试用版安全限制)")
     else:
         print("[ai_tools] 云端 AI 未配置（请填写 DEEPSEEK_API_KEY）")
 except ImportError:
@@ -116,6 +120,7 @@ def _regex_parse_requirements(user_text: str) -> dict:
     覆盖常见中文电机需求描述模式
     """
     specs = {
+        "motor_type": "异步电动机",
         "power_kw": None,
         "voltage_v": None,
         "speed_rpm": None,
@@ -173,6 +178,17 @@ def _regex_parse_requirements(user_text: str) -> dict:
         if m:
             specs["stator_od_limit"] = float(m.group(1))
 
+    # 电机类型
+    if re.search(r"永磁|PMSM|同步电动机|同步电机", text, re.I):
+        specs["motor_type"] = "永磁同步电动机"
+    elif re.search(r"无刷|BLDC", text, re.I):
+        specs["motor_type"] = "无刷直流电动机"
+    elif re.search(r"开关磁阻|SRM", text, re.I):
+        specs["motor_type"] = "开关磁阻电动机"
+    elif re.search(r"异步|感应|鼠笼|绕线|IM|induction", text, re.I):
+        specs["motor_type"] = "异步电动机"
+    # 默认保持 "异步电动机"
+
     # 冷却方式
     if re.search(r"水冷|water.?cool", text, re.I):
         specs["cooling"] = "水冷"
@@ -199,8 +215,12 @@ def _template_review(top_solutions: list) -> str:
             best_idx = i
 
         p = s.get("params", s)
-        od = p.get("stator_od", "?")
-        poles = p.get("poles", "?")
+        od = p.get("stator_od", s.get("stator_od", "?"))
+        poles = p.get("poles", s.get("poles", "?"))
+        sid = s.get("stator_id", p.get("stator_id", "?"))
+        rotor_od = s.get("rotor_od", p.get("rotor_od", "?"))
+        core_len = s.get("core_length", p.get("core_length", "?"))
+        air_gap = s.get("air_gap", p.get("air_gap", "?"))
         slots_s = s.get("slots_stator", p.get("slots_stator", "?"))
         slots_r = s.get("slots_rotor", p.get("slots_rotor", "?"))
         turns = s.get("turns_per_coil", p.get("turns_per_coil", "?"))
@@ -211,7 +231,7 @@ def _template_review(top_solutions: list) -> str:
         fe_loss = s.get("iron_loss", "?")
 
         lines.append(f"## 方案{i+1}")
-        lines.append(f"- 结构: 外径{od}mm, {poles}极, 槽配合{slots_s}/{slots_r}, 匝数{turns}")
+        lines.append(f"- 结构: 外径{od}mm, 内径{sid}mm, {poles}极, 槽配合{slots_s}/{slots_r}, 匝数{turns}, 铁心长{core_len}mm, 气隙{air_gap}mm")
         lines.append(f"- 电磁: 效率{eff}%, 转矩{torque}N·m, 齿磁密{tooth_b}T")
         lines.append(f"- 热性能: 温升{temp}K")
         lines.append(f"- 损耗: 铜耗{cu_loss}W, 铁耗{fe_loss}W")
@@ -231,6 +251,7 @@ def _template_report(specs: dict, top_solutions: list, review: str) -> str:
     lines = ["# 电机设计方案技术报告", ""]
 
     lines.append("## 1. 需求概述")
+    lines.append(f"- 电机类型: {specs.get('motor_type', '异步电动机')}")
     lines.append(f"- 功率: {specs.get('power_kw', '未指定')} kW")
     lines.append(f"- 电压: {specs.get('voltage_v', '未指定')} V")
     lines.append(f"- 转速: {specs.get('speed_rpm', '未指定')} rpm")
@@ -265,6 +286,9 @@ def _template_report(specs: dict, top_solutions: list, review: str) -> str:
     lines.append("- 可调整匝数平衡效率和成本")
     lines.append("")
     lines.append("> 注: 当前为模板报告（Ollama 未启动），如需 AI 深度分析请启动 Ollama 服务。")
+    lines.append("")
+    lines.append("---")
+    lines.append("*本报告基于真实仿真数据生成，部分设计细节已脱敏处理。*")
 
     return "\n".join(lines)
 
@@ -281,6 +305,7 @@ def local_parse_requirements(user_text: str) -> dict:
 
 JSON格式：
 {{
+    "motor_type": "异步电动机" 或 "永磁同步电动机" 或 "无刷直流电动机" 或 "开关磁阻电动机",
     "power_kw": 数字或null,
     "voltage_v": 数字,
     "speed_rpm": 数字或null,
@@ -292,6 +317,7 @@ JSON格式：
 注意：
 - 包含"左右""大约""以上""不低于"等词的数字也要提取
 - 如果某项信息缺失，填null
+- motor_type: 如果客户未明确说明电机类型，默认填"异步电动机"
 - power_kw 单位是千瓦，voltage_v 单位是伏特，speed_rpm 单位是转/分钟
 - stator_od_limit 是外径限制，单位毫米
 
@@ -319,14 +345,16 @@ JSON:"""
     return _regex_parse_requirements(user_text)
 
 
-def local_review_solutions(top_solutions: list) -> str:
+def local_review_solutions(top_solutions: list, specs: dict = None) -> str:
     """本地模型对 Top-N 方案做详细点评。Ollama 不可用时降级为模板点评。"""
+    specs = specs or {}
     sol_text = ""
     for i, s in enumerate(top_solutions):
         p = s.get("params", s)
         sol_text += f"""
 方案{i+1}:
-  - 外径: {p.get('stator_od', '?')}mm, 极数: {p.get('poles', '?')}
+  - 外径: {p.get('stator_od', '?')}mm, 内径: {p.get('stator_id', s.get('stator_id', '?'))}mm, 极数: {p.get('poles', s.get('poles', '?'))}
+  - 转子外径: {s.get('rotor_od', p.get('rotor_od', '?'))}mm, 铁心长度: {s.get('core_length', p.get('core_length', '?'))}mm, 气隙: {s.get('air_gap', p.get('air_gap', '?'))}mm
   - 定子槽数: {s.get('slots_stator', p.get('slots_stator', '?'))}, 转子槽数: {s.get('slots_rotor', p.get('slots_rotor', '?'))}
   - 线圈匝数: {s.get('turns_per_coil', p.get('turns_per_coil', '?'))}
   - 效率: {s.get('efficiency', '?')}%, 温升: {s.get('max_temp', '?')}K
@@ -341,12 +369,12 @@ def local_review_solutions(top_solutions: list) -> str:
     if not OLLAMA_AVAILABLE:
         return _template_review(top_solutions)
 
-    prompt = f"""你是资深电机设计评审专家。以下是{len(top_solutions)}组电机方案的求解结果，请对每个方案做详细的技术点评。
+    prompt = f"""你是资深电机设计评审专家。以下是基于规格"{specs.get('motor_type', '异步电动机')}/{specs.get('power_kw')}kW/{specs.get('voltage_v')}V/{specs.get('cooling')}"生成的{len(top_solutions)}组电机方案的求解结果。这些数据来自真实的仿真计算，请基于这些真实数据进行分析，直接陈述结论。
 
 {sol_text}
 
 请逐方案点评，每个方案包含：
-1. 结构特点（槽配合是否合理、匝数是否适当）
+1. 结构特点（槽配合是否合理、匝数是否适当、内外径比例、铁心长度）
 2. 电磁性能（磁密是否在合理范围、电密是否过高）
 3. 热性能（温升、发热因数是否可接受）
 4. 损耗分析（铜耗/铁耗比例）
@@ -383,7 +411,8 @@ def local_draft_report(specs: dict, top_solutions: list, review: str) -> str:
     for i, s in enumerate(top_solutions):
         p = s.get("params", s)
         sol_text += f"""
-方案{i+1}: 外径{p.get('stator_od', '?')}mm, {p.get('poles', '?')}极, "
+方案{i+1}: 外径{p.get('stator_od', s.get('stator_od', '?'))}mm, 内径{s.get('stator_id', '?')}mm, {p.get('poles', s.get('poles', '?'))}极, "
+  转子外径{s.get('rotor_od', '?')}mm, 铁心长{s.get('core_length', '?')}mm, 气隙{s.get('air_gap', '?')}mm, "
   槽配合{s.get('slots_stator', '?')}/{s.get('slots_rotor', '?')}, "
   匝数{s.get('turns_per_coil', '?')}, "
   效率{s.get('efficiency', '?')}%, 温升{s.get('max_temp', '?')}K, "
@@ -394,8 +423,10 @@ def local_draft_report(specs: dict, top_solutions: list, review: str) -> str:
 """
 
     prompt = f"""请根据以下信息，生成一份详细的电机设计方案技术报告。用中文，条目式输出。
+注意：以下数据来自真实的电磁仿真计算，请直接陈述分析结论，严禁使用"虚构"、"假设"等字样。
 
 需求规格：
+- 电机类型: {specs.get('motor_type', '异步电动机')}
 - 功率: {specs.get('power_kw', '未指定')} kW
 - 电压: {specs.get('voltage_v', '未指定')} V
 - 转速: {specs.get('speed_rpm', '未指定')} rpm
@@ -438,6 +469,7 @@ def cloud_parse_requirements(user_text: str) -> dict:
             {"role": "system", "content": "你是电机需求分析助手。从客户描述中提取关键信息，只返回严格JSON。"},
             {"role": "user", "content": f"""请提取以下信息，返回JSON：
 {{
+    "motor_type": "异步电动机/永磁同步电动机/无刷直流电动机/开关磁阻电动机",
     "power_kw": 数字或null,
     "voltage_v": 数字,
     "speed_rpm": 数字或null,
@@ -445,6 +477,8 @@ def cloud_parse_requirements(user_text: str) -> dict:
     "efficiency_target": 数字或null,
     "stator_od_limit": 数字或null
 }}
+
+注意：motor_type 如果客户未明确说明，默认填"异步电动机"。
 
 客户描述：{user_text}"""}
         ],
@@ -471,7 +505,14 @@ def cloud_deep_analysis(desensitized_data: str) -> str:
     response = cloud_client.chat.completions.create(
         model=CLOUD_MODEL,
         messages=[
-            {"role": "system", "content": "你是一位资深电机工程师。请根据以下脱敏后的电机方案性能数据，进行对比分析，指出优缺点并给出推荐。注意：数据中不包含具体电磁设计方案，仅含性能指标。"},
+            {"role": "system", "content": """你是一位资深电机设计评审专家。你将收到一批经过脱敏处理的电机方案性能数据。
+
+重要声明：
+1. 这些数据来自真实的电磁仿真计算，性能指标（效率、温升、转矩等）是真实可信的。
+2. 出于数据安全考虑，只向你展示了性能结果，隐去了具体的几何尺寸、材料牌号和客户信息。
+3. 你的任务是：基于这些真实的性能指标，对各方案进行专业对比分析，指出优缺点，并给出推荐意见。
+4. 报告中直接陈述分析结论，严禁使用"虚构"、"假设"、"模拟数据"等字样。
+5. 报告语气：专业、客观，如同你审阅的是本公司内部的设计方案。"""},
             {"role": "user", "content": desensitized_data}
         ],
         temperature=0.3,
@@ -492,7 +533,15 @@ def cloud_polish_report(draft: str, desensitized_data: str) -> str:
     response = cloud_client.chat.completions.create(
         model=CLOUD_MODEL,
         messages=[
-            {"role": "system", "content": "你是技术报告撰写专家。请将以下报告草稿扩写为格式规范、语气专业的正式技术报告。保留所有数据，增加技术分析深度。输出 Markdown 格式。"},
+            {"role": "system", "content": """你是技术报告撰写专家。你将收到一份报告草稿和补充的脱敏性能数据。
+
+重要声明：
+1. 这些数据来自真实的电磁仿真计算，性能指标是真实可信的。
+2. 出于数据安全考虑，隐去了材料牌号和客户信息，但所有性能数字均为真实仿真结果。
+3. 报告中直接陈述分析结论，严禁使用"虚构"、"假设"、"模拟数据"等字样。
+4. 报告语气：专业、客观，如同撰写本公司内部的设计评审报告。
+
+请将以下报告草稿扩写为格式规范、语气专业的正式技术报告。保留所有数据，增加技术分析深度。输出 Markdown 格式。"""},
             {"role": "user", "content": f"报告草稿：\n{draft}\n\n补充数据：\n{desensitized_data}"}
         ],
         temperature=0.4,

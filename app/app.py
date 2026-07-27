@@ -1,7 +1,9 @@
 """
 Motor-AI Web 界面后端
-版本: 1.02.01 | 更新时间: 2026-07-27 07:00
+版本: 1.03.01 | 更新时间: 2026-07-27 22:00
 Flask 应用，提供所有 API 端点，连接现有的 ai_tools / motor_tools / db_tools 模块
+
+v1.03.01: 环境分离 (dev/trial) + 多租户预留
 """
 import os
 import sys
@@ -9,33 +11,42 @@ import json
 import glob
 import traceback
 from datetime import datetime
-from flask import Flask, render_template, request, jsonify, Response, stream_with_context
+from flask import Flask, render_template, request, jsonify, Response, stream_with_context, g
 
 # ============================================================
-# 系统版本信息 (三段式: 主版本.次版本.修订号)
+# 环境配置 (v1.03.01: 从 config.env 加载)
 # ============================================================
-SYSTEM_NAME = "Motor-AI"
-SYSTEM_VERSION = "1.02.01"
-VERSION_DATE = "2026-07-27 07:00"
+# 将项目根目录加入 sys.path 以导入 config 包
+_PROJECT_ROOT = r"D:\MotorDesign"
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from config.env import Config
+
+# 兼容性别名: 旧代码引用 SYSTEM_NAME / SYSTEM_VERSION 等
+SYSTEM_NAME = Config.SYSTEM_NAME
+SYSTEM_VERSION = Config.SYSTEM_VERSION
+VERSION_DATE = Config.VERSION_DATE
 
 # ============================================================
-# 路径配置
+# 路径配置 (从 Config 获取)
 # ============================================================
-BASE_DIR = r"D:\MotorDesign"
-SCRIPTS_DIR = os.path.join(BASE_DIR, "Scripts")
-AGENTS_DIR = os.path.join(BASE_DIR, "Agents")
-CORE_DIR = os.path.join(BASE_DIR, "Core")
-KNOWLEDGE_DIR = os.path.join(BASE_DIR, "Knowledge")
-ENV_PATH = os.path.join(BASE_DIR, ".env")
-REPORTS_DIR = os.path.join(BASE_DIR, "Reports")
+BASE_DIR = Config.BASE_DIR
+SCRIPTS_DIR = Config.SCRIPTS_DIR
+AGENTS_DIR = Config.AGENTS_DIR
+CORE_DIR = Config.CORE_DIR
+KNOWLEDGE_DIR = Config.KNOWLEDGE_DIR
+REPORTS_DIR = Config.REPORTS_DIR
 
 sys.path.insert(0, SCRIPTS_DIR)
 sys.path.insert(0, AGENTS_DIR)
 sys.path.insert(0, CORE_DIR)
 sys.path.insert(0, KNOWLEDGE_DIR)
 
-from dotenv import load_dotenv
-load_dotenv(ENV_PATH, override=True)
+# .env 文件路径 (向后兼容: 读写网络配置时使用当前环境的 .env)
+ENV_PATH = os.path.join(BASE_DIR, f".env.{Config.ENV}")
+if not os.path.exists(ENV_PATH):
+    ENV_PATH = os.path.join(BASE_DIR, ".env")
 
 app = Flask(
     __name__,
@@ -43,6 +54,24 @@ app = Flask(
     static_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), "static"),
 )
 app.config["JSON_AS_ASCII"] = False
+
+# ============================================================
+# v1.03.01: 多租户预留 — 每次请求注入 g.user (当前为 None)
+# 未来引入用户认证时，只需修改此函数即可
+# ============================================================
+@app.before_request
+def _load_user_context():
+    g.user = None  # 预留: 未来从 session/token 解析用户
+
+# 环境信息注入模板上下文
+@app.context_processor
+def _inject_env_info():
+    return {
+        "ENV_LABEL": Config.env_label(),
+        "ENV_COLOR": Config.env_color(),
+        "ENV_DESC": Config.env_desc(),
+        "VERSION_LABEL": Config.VERSION_LABEL,
+    }
 
 # ============================================================
 # 导入现有模块（带容错）
@@ -181,11 +210,13 @@ def api_status():
         "system": {
             "name": SYSTEM_NAME,
             "version": SYSTEM_VERSION,
+            "version_label": Config.VERSION_LABEL,
             "version_date": VERSION_DATE,
         },
+        "env": Config.to_dict(),
         "ollama": {"running": False, "model": "", "gpu_mode": False, "models": []},
-        "cloud": {"configured": False, "model": ""},
-        "db": {"available": DB_OK, "total": 0, "max_efficiency": 0, "avg_efficiency": 0},
+        "cloud": {"configured": False, "model": "", "allowed": Config.ALLOW_CLOUD_API},
+        "db": {"available": DB_OK, "total": 0, "max_efficiency": 0, "avg_efficiency": 0, "path": Config.DB_PATH},
         "motorcad": {"available": False, "simulation_mode": True, "version": "11.1.5", "exe_path": ""},
         "errors": [],
     }
@@ -250,6 +281,15 @@ def api_status():
         status["errors"].append(f"AI模块: {AI_ERR}")
 
     return jsonify(status)
+
+
+# ============================================================
+# API：环境信息 (v1.03.01)
+# ============================================================
+@app.route("/api/env")
+def api_env():
+    """返回当前环境配置信息"""
+    return jsonify(Config.to_dict())
 
 
 # ============================================================
@@ -1000,7 +1040,7 @@ def api_report():
         full_report = f"""# 电机设计方案报告
 
 **生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-**系统版本**: Motor-AI (v1.02.01)
+**系统版本**: Motor-AI (v{Config.VERSION_LABEL})
 
 ---
 
@@ -1039,7 +1079,7 @@ def api_report():
 
 ---
 
-*本报告由 Motor-AI v1.02.01 自动生成 | {datetime.now().strftime('%Y-%m-%d %H:%M')}*
+*本报告由 Motor-AI v{Config.VERSION_LABEL} 自动生成 | {datetime.now().strftime('%Y-%m-%d %H:%M')}*
 """
 
         # 保存报告
@@ -1122,7 +1162,7 @@ def api_settings_get():
         "motorcad_progid": env.get("MOTORCAD_PROGID", "MotorCAD.MotorCAD"),
         "motorcad_use_mode": env.get("MOTORCAD_USE_MODE", "auto"),
         "system_name": env.get("SYSTEM_NAME", "Motor-AI"),
-        "system_version": env.get("SYSTEM_VERSION", "1.02.01"),
+        "system_version": env.get("SYSTEM_VERSION", Config.SYSTEM_VERSION),
         "version_date": env.get("VERSION_DATE", "2026-07-27 07:00"),
     })
 
@@ -1509,13 +1549,265 @@ def api_audit_agent_metrics():
 
 
 # ============================================================
+# API：网络访问管理（局域网/Tailscale/二维码/健康检查）
+# ============================================================
+import socket
+import subprocess
+import io as _io
+import base64 as _base64
+
+# 端口号常量 (v1.03.01: 从 Config 获取)
+_NET_PORT = Config.FLASK_PORT
+
+
+def _get_all_ips():
+    """获取本机所有 IPv4 地址，区分局域网和 Tailscale"""
+    lan_ips = []
+    tailscale_ips = []
+    try:
+        hostname = socket.gethostname()
+        # 获取所有网卡地址
+        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            ip = info[4][0]
+            if ip.startswith("127."):
+                continue
+            if ip.startswith("100."):
+                # Tailscale 的 CGNAT 地址段 100.64.0.0/10
+                tailscale_ips.append(ip)
+            else:
+                lan_ips.append(ip)
+    except Exception:
+        pass
+    # 去重
+    lan_ips = list(dict.fromkeys(lan_ips))
+    tailscale_ips = list(dict.fromkeys(tailscale_ips))
+    return lan_ips, tailscale_ips
+
+
+def _check_tailscale():
+    """检测 Tailscale 安装和运行状态"""
+    result = {"installed": False, "running": False, "ip": None, "hostname": None}
+    # 检查 CLI 是否存在
+    try:
+        proc = subprocess.run(
+            ["tailscale", "status", "--json"],
+            capture_output=True, text=True, timeout=5,
+            creationflags=0x08000000,  # CREATE_NO_WINDOW
+        )
+        if proc.returncode == 0:
+            import json as _json
+            ts_data = _json.loads(proc.stdout)
+            result["installed"] = True
+            result["running"] = ts_data.get("BackendState") == "Running"
+            result["ip"] = ts_data.get("Self", {}).get("TailscaleIPs", [None])[0]
+            result["hostname"] = ts_data.get("Self", {}).get("HostName")
+    except FileNotFoundError:
+        result["installed"] = False
+    except Exception:
+        result["installed"] = True  # 可能装了但状态异常
+    return result
+
+
+def _check_port_listening(port=_NET_PORT):
+    """检测指定端口是否在监听"""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            result = s.connect_ex(("127.0.0.1", port))
+            return result == 0
+    except Exception:
+        return False
+
+
+@app.route("/api/network/status")
+def api_network_status():
+    """获取网络访问状态：本机IP、Tailscale、端口监听、绑定地址"""
+    lan_ips, ts_ips_from_scan = _get_all_ips()
+    tailscale = _check_tailscale()
+
+    # 优先用 Tailscale CLI 的结果
+    ts_ip = tailscale.get("ip") or (ts_ips_from_scan[0] if ts_ips_from_scan else None)
+
+    env = read_env_file()
+    bind_host = env.get("BIND_HOST", "127.0.0.1")
+
+    return jsonify({
+        "lan_ips": lan_ips,
+        "tailscale": {
+            "installed": tailscale["installed"],
+            "running": tailscale["running"],
+            "ip": ts_ip,
+            "hostname": tailscale["hostname"],
+        },
+        "port": _NET_PORT,
+        "port_listening": _check_port_listening(),
+        "bind_host": bind_host,
+        "current_url": f"http://{bind_host}:{_NET_PORT}" if bind_host != "0.0.0.0" else f"http://127.0.0.1:{_NET_PORT}",
+    })
+
+
+def _generate_qr_b64(url):
+    """生成二维码的 base64 data URI"""
+    import qrcode
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=8,
+        border=2,
+    )
+    qr.add_data(url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = _io.BytesIO()
+    img.save(buf, format="PNG")
+    img_b64 = _base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{img_b64}"
+
+
+@app.route("/api/network/qrcode")
+def api_network_qrcode():
+    """生成访问二维码（局域网 + Tailscale），返回 base64 PNG"""
+    try:
+        import qrcode  # noqa: F401
+    except ImportError:
+        return jsonify({"error": "qrcode 库未安装，请运行: pip install qrcode Pillow"}), 500
+
+    lan_ips, _ = _get_all_ips()
+    tailscale = _check_tailscale()
+
+    # 局域网二维码
+    lan_ip = lan_ips[0] if lan_ips else "127.0.0.1"
+    lan_url = f"http://{lan_ip}:{_NET_PORT}"
+    lan_qr = _generate_qr_b64(lan_url)
+
+    result = {
+        "lan": {
+            "url": lan_url,
+            "qr_code": lan_qr,
+            "ip": lan_ip,
+            "port": _NET_PORT,
+        },
+        # 兼容旧字段
+        "url": lan_url,
+        "qr_code": lan_qr,
+        "ip": lan_ip,
+        "port": _NET_PORT,
+    }
+
+    # Tailscale 二维码（如果可用）
+    ts_ip = tailscale.get("ip")
+    if tailscale.get("running") and ts_ip:
+        ts_url = f"http://{ts_ip}:{_NET_PORT}"
+        result["tailscale"] = {
+            "url": ts_url,
+            "qr_code": _generate_qr_b64(ts_url),
+            "ip": ts_ip,
+            "port": _NET_PORT,
+            "hostname": tailscale.get("hostname"),
+        }
+
+    return jsonify(result)
+
+
+@app.route("/api/network/check-access", methods=["POST"])
+def api_network_check_access():
+    """外部可达性检测：从本机模拟外部访问"""
+    data = request.get_json() or {}
+    target = data.get("target", "lan")  # lan / tailscale / localhost
+
+    lan_ips, _ = _get_all_ips()
+    tailscale = _check_tailscale()
+
+    if target == "tailscale":
+        ip = tailscale.get("ip")
+        if not ip:
+            return jsonify({"reachable": False, "error": "Tailscale 未运行或未安装"})
+    elif target == "lan":
+        ip = lan_ips[0] if lan_ips else None
+        if not ip:
+            return jsonify({"reachable": False, "error": "未找到局域网 IP"})
+    else:
+        ip = "127.0.0.1"
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(2)
+            result = s.connect_ex((ip, _NET_PORT))
+            if result == 0:
+                return jsonify({
+                    "reachable": True,
+                    "ip": ip,
+                    "port": _NET_PORT,
+                    "url": f"http://{ip}:{_NET_PORT}",
+                    "message": f"✅ 可达：{ip}:{_NET_PORT} 端口已开放",
+                })
+            else:
+                return jsonify({
+                    "reachable": False,
+                    "ip": ip,
+                    "port": _NET_PORT,
+                    "error": f"❌ 不可达：{ip}:{_NET_PORT} 端口未开放（可能 Flask 未绑定该 IP，或防火墙拦截）",
+                })
+    except Exception as e:
+        return jsonify({"reachable": False, "error": f"检测失败: {str(e)}"})
+
+
+@app.route("/api/network/config", methods=["POST"])
+def api_network_config():
+    """更新网络绑定配置（BIND_HOST）"""
+    data = request.get_json() or {}
+    bind_host = data.get("bind_host", "127.0.0.1")
+
+    # 验证地址格式
+    valid_hosts = ["127.0.0.1", "0.0.0.0"]
+    lan_ips, ts_ips = _get_all_ips()
+    valid_hosts.extend(lan_ips)
+    if ts_ips:
+        valid_hosts.extend(ts_ips)
+
+    # 也允许用户输入的任意 IP（可能切换网络后 IP 变了）
+    try:
+        socket.inet_aton(bind_host)
+    except socket.error:
+        return jsonify({"status": "error", "message": f"无效的 IP 地址: {bind_host}"}), 400
+
+    write_env_file({"BIND_HOST": bind_host})
+    load_dotenv(ENV_PATH, override=True)
+
+    mode_desc = {
+        "127.0.0.1": "仅本机访问（最安全）",
+        "0.0.0.0": "所有网卡（局域网+Tailscale 均可访问）",
+    }.get(bind_host, f"绑定到 {bind_host}")
+
+    return jsonify({
+        "status": "ok",
+        "bind_host": bind_host,
+        "mode_desc": mode_desc,
+        "message": f"绑定地址已更新为 {bind_host}（{mode_desc}）。需要重启 Web UI 生效。",
+    })
+
+
+# ============================================================
 # 启动
 # ============================================================
 if __name__ == "__main__":
+    _bind_host = Config.BIND_HOST
+    _port = Config.FLASK_PORT
+    _debug = Config.FLASK_DEBUG
     print("=" * 60)
     print(f"  {SYSTEM_NAME} Web Interface (Multi-Agent Edition)")
-    print(f"  Version: {SYSTEM_VERSION}  |  Date: {VERSION_DATE}")
-    print(f"  URL: http://127.0.0.1:5000")
+    print(f"  Version: {Config.VERSION_LABEL}  |  Date: {VERSION_DATE}")
+    print(f"  ENV: {Config.ENV} ({Config.env_desc()})  |  Debug: {_debug}")
+    print(f"  DB:  {os.path.basename(Config.DB_PATH)}")
+    print(f"  URL: http://{_bind_host}:{_port}")
+    if _bind_host != "127.0.0.1":
+        _lan, _ts = _get_all_ips()
+        for _ip in _lan:
+            print(f"  LAN:  http://{_ip}:{_port}")
+        if _ts:
+            for _ip in _ts:
+                print(f"  TS:   http://{_ip}:{_port}")
+    print(f"  Cloud API: {'ON' if Config.ALLOW_CLOUD_API else 'OFF'}")
     print(f"  AI:       {'OK' if AI_OK else 'ERROR: ' + AI_ERR}")
     print(f"  Motor:    {'OK' if MOTOR_OK else 'ERROR'}")
     print(f"  DB:       {'OK' if DB_OK else 'ERROR'}")
@@ -1524,4 +1816,4 @@ if __name__ == "__main__":
     print(f"  Evolution:{'OK' if EVOLUTION_OK else 'ERROR'}")
     print(f"  Feedback: {'OK' if FEEDBACK_OK else 'ERROR'}")
     print("=" * 60)
-    app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)
+    app.run(host=_bind_host, port=_port, debug=_debug, threaded=True)

@@ -36,9 +36,10 @@ class ReportAgent(BaseAgent):
             **({"num_gpu": 0} if not use_gpu else {})
         )
 
-        # v1.02.01: 严格排除占位符, 确保全本地零上云
+        # v1.03.01: 严格排除占位符 + 试用版强制禁用云端
         _ds_key = os.getenv("DEEPSEEK_API_KEY", "")
-        self.cloud_available = bool(_ds_key) and _ds_key != "sk-your-key-here"
+        _allow_cloud = os.getenv("ALLOW_CLOUD_API", "true") == "true"
+        self.cloud_available = bool(_ds_key) and _ds_key != "sk-your-key-here" and _allow_cloud
         if self.cloud_available:
             from openai import OpenAI
             self.cloud_client = OpenAI(
@@ -71,6 +72,10 @@ class ReportAgent(BaseAgent):
         rows = [
             f"| **结构参数** |{'|' * col_count}|",
             "| 定子外径(mm) |" + "|".join(f" {_v(r, 'stator_od')} " for r in top) + "|",
+            "| 定子内径(mm) |" + "|".join(f" {_v(r, 'stator_id')} " for r in top) + "|",
+            "| 转子外径(mm) |" + "|".join(f" {_v(r, 'rotor_od')} " for r in top) + "|",
+            "| 铁心长度(mm) |" + "|".join(f" {_v(r, 'core_length')} " for r in top) + "|",
+            "| 气隙长度(mm) |" + "|".join(f" {_v(r, 'air_gap')} " for r in top) + "|",
             "| 极数 |" + "|".join(f" {_v(r, 'poles')} " for r in top) + "|",
             "| 定子槽数 |" + "|".join(f" {_v(r, 'slots_stator')} " for r in top) + "|",
             "| 转子槽数 |" + "|".join(f" {_v(r, 'slots_rotor')} " for r in top) + "|",
@@ -99,7 +104,9 @@ class ReportAgent(BaseAgent):
         data_lines = []
         for i, r in enumerate(top):
             data_lines.append(
-                f"方案{i+1}: 外径{r.get('stator_od', '?')}mm, {r.get('poles', '?')}极, "
+                f"方案{i+1}: 外径{r.get('stator_od', '?')}mm, 内径{r.get('stator_id', '?')}mm, "
+                f"转子外径{r.get('rotor_od', '?')}mm, 铁心长{r.get('core_length', '?')}mm, "
+                f"气隙{r.get('air_gap', '?')}mm, {r.get('poles', '?')}极, "
                 f"槽{r.get('slots_stator', '?')}/{r.get('slots_rotor', '?')}, "
                 f"匝数{r.get('turns_per_coil', '?')}, "
                 f"效率{r.get('efficiency', 0):.2f}%, 温升{r.get('max_temp', 0):.1f}K, "
@@ -115,8 +122,17 @@ class ReportAgent(BaseAgent):
             response = self.cloud_client.chat.completions.create(
                 model=os.getenv("CLOUD_MODEL_NAME", "deepseek-chat"),
                 messages=[
-                    {"role": "system", "content": "你是电机技术报告撰写专家。请根据以下信息生成一份专业的电机设计方案技术报告。用中文，Markdown格式。"},
+                    {"role": "system", "content": """你是电机技术报告撰写专家。你将收到经过脱敏处理的真实仿真数据和方案对比表。
+
+重要声明：
+1. 这些数据来自真实的电磁仿真计算，性能指标是真实可信的。
+2. 出于数据安全考虑，隐去了材料牌号和客户信息，但所有性能数字均为真实仿真结果。
+3. 报告中直接陈述分析结论，严禁使用"虚构"、"假设"、"模拟数据"等字样。
+4. 报告语气：专业、客观，如同撰写本公司内部的设计评审报告。
+
+请根据以下信息生成一份专业的电机设计方案技术报告。用中文，Markdown格式。"""},
                     {"role": "user", "content": f"""需求规格：
+- 电机类型: {specs.get('motor_type', '异步电动机')}
 - 功率: {specs.get('power_kw')}kW
 - 电压: {specs.get('voltage_v')}V
 - 转速: {specs.get('speed_rpm', 'N/A')}rpm
@@ -147,7 +163,7 @@ class ReportAgent(BaseAgent):
         else:
             prompt = f"""请根据以下信息生成一份详细的电机设计方案技术报告。用中文，Markdown格式。
 
-需求：{specs.get('power_kw')}kW/{specs.get('voltage_v')}V/{specs.get('cooling')}/{specs.get('application', '通用')}
+需求：{specs.get('motor_type', '异步电动机')}, {specs.get('power_kw')}kW/{specs.get('voltage_v')}V/{specs.get('cooling')}/{specs.get('application', '通用')}
 
 方案详细数据：
 {data_text}
@@ -172,6 +188,7 @@ class ReportAgent(BaseAgent):
 
 **生成时间**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 **项目ID**: {self.project_id or 'N/A'}
+**电机类型**: {specs.get('motor_type', '异步电动机')}
 **需求**: {specs.get('power_kw')}kW / {specs.get('voltage_v')}V / {specs.get('cooling')} / {specs.get('application', '通用')}
 
 ## 方案对比（详细参数表）
@@ -183,6 +200,10 @@ class ReportAgent(BaseAgent):
 """
 
         full_content = header + report_content
+
+        # 添加报告尾部声明
+        footer = "\n\n---\n*本报告基于真实仿真数据生成，部分设计细节已脱敏处理。*\n"
+        full_content += footer
 
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(full_content)

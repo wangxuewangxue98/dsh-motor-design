@@ -12,7 +12,7 @@
     <aside class="sidebar">
         <div class="sidebar-header">
             <div class="logo">Motor-AI</div>
-            <div class="subtitle">电机设计AI辅助系统 v1.02.01</div>
+            <div class="subtitle">电机设计AI辅助系统 v1.03.01</div>
         </div>
         <nav class="nav">
             <a class="nav-item active" data-tab="dashboard">仪表盘</a>
@@ -34,7 +34,10 @@
                 <span class="status-dot status-dot--checking"></span>
                 <span id="sidebarStatusText">检查中...</span>
             </div>
-            <div class="version-info" style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">v1.02.01 | 2026-07-27</div>
+            <div class="version-info" style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">
+                v1.03.01 | 2026-07-27
+                <span id="envBadge" style="display:inline-block;margin-left:6px;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;color:#fff;background:#6b7280;">--</span>
+            </div>
         </div>
     </aside>
 
@@ -45,7 +48,7 @@
         <section class="tab-content active" id="tab-dashboard">
             <div class="page-header">
                 <h2>系统仪表盘 <span style="font-size:14px;color:var(--text-secondary);font-weight:normal;">Motor-AI</span></h2>
-                <p class="page-desc">电机设计AI辅助系统 v1.02.01 (2026-07-27) — 辩证制衡双轨 + 数据飞轮 + 全本地零上云</p>
+                <p class="page-desc">电机设计AI辅助系统 v1.03.01 (2026-07-27) — 环境分离双轨 + 辩证制衡 + 全本地零上云</p>
             </div>
             <div class="status-grid" id="statusGrid">
                 <div class="status-card" id="cardOllama">
@@ -483,6 +486,66 @@
                 </div>
                 <div class="settings-actions">
                     <button class="btn btn-primary btn-lg" onclick="saveSettings()">保存设置</button>
+                </div>
+
+                <!-- ===== 网络访问配置 ===== -->
+                <div class="settings-section" style="margin-top:24px;">
+                    <h3>网络访问</h3>
+                    <p class="page-desc" style="margin-bottom:16px;">局域网手机扫码访问 / Tailscale 远程接入 / 外部可达性检测</p>
+
+                    <div class="form-row">
+                        <label>绑定地址</label>
+                        <select class="input" id="setBindHost" style="width:auto;min-width:280px;">
+                            <option value="127.0.0.1">127.0.0.1 — 仅本机（最安全）</option>
+                            <option value="0.0.0.0">0.0.0.0 — 所有网卡（局域网+Tailscale）</option>
+                        </select>
+                        <button class="btn btn-secondary" onclick="saveNetworkConfig()" style="margin-left:8px;">应用</button>
+                    </div>
+                    <div class="form-row">
+                        <label>当前状态</label>
+                        <div id="networkStatusBox" style="font-size:13px;color:var(--text-secondary);flex:1;">
+                            <span id="netStatusText">检测中...</span>
+                        </div>
+                    </div>
+
+                    <div class="form-row" style="align-items:flex-start;">
+                        <label>局域网二维码</label>
+                        <div style="flex:1;display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+                            <button class="btn btn-secondary" onclick="showNetworkQRCode()">生成二维码</button>
+                            <span id="netLanUrl" style="font-size:13px;color:var(--text-secondary);"></span>
+                        </div>
+                    </div>
+
+                    <div class="form-row" style="align-items:flex-start;">
+                        <label>Tailscale</label>
+                        <div style="flex:1;">
+                            <div id="tailscaleStatus" style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;">检测中...</div>
+                            <div style="font-size:12px;color:var(--text-light);">
+                                未安装？<a href="https://tailscale.com/download" target="_blank" style="color:var(--primary);">下载 Tailscale</a>
+                                ｜ 安装后登录同一账号，P15v + 手机即可远程互访，流量加密，无需开放公网端口。
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-row" style="align-items:flex-start;">
+                        <label>外部访问检测</label>
+                        <div style="flex:1;display:flex;gap:8px;flex-wrap:wrap;">
+                            <button class="btn btn-secondary" onclick="checkNetworkAccess('localhost')">检测本机</button>
+                            <button class="btn btn-secondary" onclick="checkNetworkAccess('lan')">检测局域网</button>
+                            <button class="btn btn-secondary" onclick="checkNetworkAccess('tailscale')">检测 Tailscale</button>
+                            <span id="netCheckResult" style="font-size:13px;align-self:center;"></span>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <label>安全提示</label>
+                        <div style="flex:1;font-size:12px;color:var(--text-secondary);line-height:1.6;">
+                            ⚠️ 绑定 0.0.0.0 后，同一网络内的设备均可访问。请确保：<br>
+                            1. 在可信的 Wi-Fi 网络中使用（勿在公共场合开放）<br>
+                            2. 运行 <code>Scripts\setup_firewall.bat</code>（管理员）配置防火墙规则，限制来源 IP 段<br>
+                            3. 演示完毕后及时切回 127.0.0.1
+                        </div>
+                    </div>
                 </div>
             </div>
         </section>

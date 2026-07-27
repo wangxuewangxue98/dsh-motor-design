@@ -1,0 +1,1278 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Motor-AI v1.02.01 软件说明书</title>
+<style>
+:root {
+  --primary: #2563eb;
+  --primary-light: #3b82f6;
+  --primary-dark: #1e40af;
+  --bg: #f8fafc;
+  --bg-card: #ffffff;
+  --border: #e2e8f0;
+  --text: #1e293b;
+  --text-secondary: #64748b;
+  --text-tertiary: #94a3b8;
+  --green: #16a34a;
+  --green-light: #dcfce7;
+  --red: #dc2626;
+  --red-light: #fee2e2;
+  --orange: #ea580c;
+  --orange-light: #ffedd5;
+  --purple: #9333ea;
+  --purple-light: #f3e8ff;
+  --code-bg: #f1f5f9;
+  --code-text: #334155;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, "Microsoft YaHei", "PingFang SC", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  font-size: 15px;
+}
+.container { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+
+/* ===== Cover ===== */
+.cover {
+  background: linear-gradient(135deg, var(--primary-dark), var(--primary));
+  color: #fff;
+  padding: 80px 24px 60px;
+  text-align: center;
+  margin-bottom: 40px;
+}
+.cover h1 { font-size: 2.4em; margin-bottom: 8px; letter-spacing: 1px; }
+.cover .subtitle { font-size: 1.15em; opacity: 0.9; margin-bottom: 24px; }
+.cover .version-badge {
+  display: inline-block;
+  background: rgba(255,255,255,0.2);
+  border: 1px solid rgba(255,255,255,0.3);
+  padding: 6px 20px;
+  border-radius: 20px;
+  font-size: 1em;
+  margin-bottom: 20px;
+}
+.cover .meta { font-size: 0.9em; opacity: 0.8; line-height: 1.9; }
+
+/* ===== TOC ===== */
+.toc {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 28px 32px;
+  margin-bottom: 40px;
+}
+.toc h2 { font-size: 1.2em; margin-bottom: 16px; color: var(--primary-dark); }
+.toc ol { padding-left: 20px; }
+.toc li { margin-bottom: 6px; }
+.toc a { color: var(--primary); text-decoration: none; }
+.toc a:hover { text-decoration: underline; }
+.toc .sub { padding-left: 20px; font-size: 0.9em; color: var(--text-secondary); }
+
+/* ===== Section ===== */
+.section {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 32px;
+  margin-bottom: 24px;
+}
+.section h2 {
+  font-size: 1.5em;
+  color: var(--primary-dark);
+  border-bottom: 3px solid var(--primary);
+  padding-bottom: 10px;
+  margin-bottom: 20px;
+}
+.section h3 {
+  font-size: 1.2em;
+  color: var(--text);
+  margin-top: 28px;
+  margin-bottom: 12px;
+}
+.section h4 {
+  font-size: 1.05em;
+  color: var(--primary);
+  margin-top: 20px;
+  margin-bottom: 8px;
+}
+.section p { margin-bottom: 12px; }
+.section ul, .section ol { padding-left: 22px; margin-bottom: 12px; }
+.section li { margin-bottom: 6px; }
+
+/* ===== Code ===== */
+code {
+  background: var(--code-bg);
+  color: var(--code-text);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+  font-size: 0.9em;
+}
+pre {
+  background: #1e293b;
+  color: #e2e8f0;
+  padding: 16px 20px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin-bottom: 16px;
+  font-size: 0.85em;
+  line-height: 1.6;
+}
+pre code {
+  background: none;
+  color: inherit;
+  padding: 0;
+}
+
+/* ===== Table ===== */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 16px;
+  font-size: 0.92em;
+}
+th {
+  background: var(--primary);
+  color: #fff;
+  padding: 10px 14px;
+  text-align: left;
+  font-weight: 600;
+}
+td {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border);
+}
+tr:nth-child(even) td { background: #f8fafc; }
+
+/* ===== Cards / Boxes ===== */
+.info-box {
+  background: #eff6ff;
+  border-left: 4px solid var(--primary);
+  padding: 14px 18px;
+  border-radius: 0 8px 8px 0;
+  margin-bottom: 16px;
+}
+.warn-box {
+  background: #fffbeb;
+  border-left: 4px solid var(--orange);
+  padding: 14px 18px;
+  border-radius: 0 8px 8px 0;
+  margin-bottom: 16px;
+}
+.success-box {
+  background: #f0fdf4;
+  border-left: 4px solid var(--green);
+  padding: 14px 18px;
+  border-radius: 0 8px 8px 0;
+  margin-bottom: 16px;
+}
+.danger-box {
+  background: #fef2f2;
+  border-left: 4px solid var(--red);
+  padding: 14px 18px;
+  border-radius: 0 8px 8px 0;
+  margin-bottom: 16px;
+}
+
+/* ===== Tag ===== */
+.tag {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 4px;
+  font-size: 0.82em;
+  font-weight: 600;
+}
+.tag-pro { background: var(--green-light); color: var(--green); }
+.tag-con { background: var(--red-light); color: var(--red); }
+.tag-info { background: #dbeafe; color: var(--primary); }
+.tag-local { background: var(--purple-light); color: var(--purple); }
+
+/* ===== Architecture Diagram ===== */
+.arch-diagram {
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 28px;
+  margin: 20px 0;
+  text-align: center;
+}
+.arch-layer {
+  background: var(--bg-card);
+  border: 2px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 20px;
+  margin-bottom: 10px;
+  position: relative;
+}
+.arch-layer h5 {
+  font-size: 0.85em;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+}
+.arch-modules {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+.arch-module {
+  background: var(--primary-light);
+  color: #fff;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 0.85em;
+  font-weight: 500;
+}
+.arch-module.green { background: var(--green); }
+.arch-module.red { background: var(--red); }
+.arch-module.purple { background: var(--purple); }
+.arch-module.orange { background: var(--orange); }
+.arch-arrow {
+  color: var(--text-tertiary);
+  font-size: 1.4em;
+  margin: 2px 0;
+}
+
+/* ===== Pipeline ===== */
+.pipeline {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin: 16px 0;
+}
+.pipeline-node {
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 0.85em;
+  font-weight: 600;
+  text-align: center;
+  min-width: 100px;
+}
+.pipeline-node.start { background: var(--primary); color: #fff; }
+.pipeline-node.normal { background: #dbeafe; color: var(--primary-dark); }
+.pipeline-node.pro { background: var(--green); color: #fff; }
+.pipeline-node.con { background: var(--red); color: #fff; }
+.pipeline-node.gate { background: var(--orange); color: #fff; }
+.pipeline-node.end { background: var(--purple); color: #fff; }
+.pipeline-arrow { color: var(--text-tertiary); font-size: 1.2em; }
+.pipeline-fork { display: flex; flex-direction: column; gap: 4px; }
+
+/* ===== Footer ===== */
+.footer {
+  text-align: center;
+  padding: 40px 24px;
+  color: var(--text-tertiary);
+  font-size: 0.88em;
+  border-top: 1px solid var(--border);
+  margin-top: 40px;
+}
+</style>
+</head>
+<body>
+
+<!-- ===== 封面 ===== -->
+<div class="cover">
+  <h1>Motor-AI</h1>
+  <div class="subtitle">电机设计 AI 辅助系统</div>
+  <div class="version-badge">v1.02.01 &nbsp;|&nbsp; 辩证制衡体系</div>
+  <div class="meta">
+    <strong>版本号：</strong>1.02.01 (三段式 X.YY.ZZ)<br>
+    <strong>发布日期：</strong>2026-07-27<br>
+    <strong>核心特性：</strong>双轨辩证制衡 · 全本地零上云 · Motor-CAD COM 自动化 · 数据飞轮进化<br>
+    <strong>适用平台：</strong>Windows 10/11 (64位)
+  </div>
+</div>
+
+<div class="container">
+
+<!-- ===== 目录 ===== -->
+<div class="toc">
+  <h2>目 录</h2>
+  <ol>
+    <li><a href="#sec1">系统概述</a></li>
+    <li><a href="#sec2">系统架构</a></li>
+    <li><a href="#sec3">环境要求与安装</a></li>
+    <li><a href="#sec4">系统配置</a></li>
+    <li><a href="#sec5">功能面板详解</a>
+      <div class="sub">
+        5.1 仪表盘 | 5.2 需求解析 | 5.3 批量求解 | 5.4 方案对比 | 5.5 报告中心 | 5.6 历史记录 | 5.7 系统设置
+      </div>
+    </li>
+    <li><a href="#sec6">AI 团队 — 多智能体辩证工作流</a></li>
+    <li><a href="#sec7">辩证制衡体系</a>
+      <div class="sub">7.1 放大轨 | 7.2 收敛轨四剑客 | 7.3 决策门</div>
+    </li>
+    <li><a href="#sec8">战略雷达</a></li>
+    <li><a href="#sec9">沙盘推演（蒙特卡洛引擎）</a></li>
+    <li><a href="#sec10">进化仪表盘（数据飞轮）</a></li>
+    <li><a href="#sec11">审计日志</a></li>
+    <li><a href="#sec12">Motor-CAD COM 自动化</a></li>
+    <li><a href="#sec13">API 接口参考</a></li>
+    <li><a href="#sec14">常见问题与故障排除</a></li>
+    <li><a href="#sec15">版本历史</a></li>
+  </ol>
+</div>
+
+<!-- ===== 1. 系统概述 ===== -->
+<div class="section" id="sec1">
+  <h2>1. 系统概述</h2>
+
+  <p>Motor-AI 是一套面向电机设计工程师的 <strong>AI 辅助设计系统</strong>，将自然语言需求解析、Motor-CAD 自动化批量求解、多智能体辩证评审、蒙特卡洛风险沙盘、数据飞轮进化五大能力集成于单一 Web 平台。</p>
+
+  <p>v1.02.01 的核心设计哲学是 <strong>"放大火花，举起镜子"</strong>——既用 AI 放大工程师的创意与直觉（放大轨），也用 AI 收敛团队的一厢情愿与盲点（收敛轨），双轨并行，在决策门交汇，强制工程师同时阅读"支持"与"反对"意见后方可决策。</p>
+
+  <div class="info-box">
+    <strong>设计理念</strong>
+    <ul>
+      <li><strong>本地优先</strong>：所有 AI 智能体运行于本地 Ollama Qwen2.5-3B，数据不出机</li>
+      <li><strong>严格脱敏</strong>：调用云端 API 时自动剥离几何尺寸、材料牌号、客户信息</li>
+      <li><strong>辩证制衡</strong>：放大轨与收敛轨并行，决策门强制双报告齐备</li>
+      <li><strong>越用越聪明</strong>：采纳/拒绝决策自动驱动技能模板进化与规则挖掘</li>
+    </ul>
+  </div>
+
+  <h3>核心能力一览</h3>
+  <table>
+    <thead>
+      <tr><th width="22%">能力</th><th width="18%">技术</th><th>说明</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>需求解析</td><td>本地 LLM + 正则</td><td>自然语言 → 结构化电机规格 JSON，支持电机类型识别</td></tr>
+      <tr><td>批量求解</td><td>Motor-CAD COM</td><td>参数扫描矩阵自动求解，电磁分析+热分析+耦合分析</td></tr>
+      <tr><td>辩证评审</td><td>LangGraph 双轨</td><td>放大轨(评审推荐师) + 收敛轨(四剑客) 并行生成报告</td></tr>
+      <tr><td>沙盘推演</td><td>蒙特卡洛引擎</td><td>1000 次参数扰动，5 种失效模式分类，P5/P50/P95 输出</td></tr>
+      <tr><td>数据飞轮</td><td>进化引擎</td><td>采纳→技能模板生成+规则挖掘；拒绝→失败特征记录</td></tr>
+      <tr><td>报告生成</td><td>本地/云端 LLM</td><td>Markdown 格式技术报告，含五维度方案说明</td></tr>
+      <tr><td>审计追溯</td><td>SQLite 日志</td><td>全流程操作可溯源，每个智能体每步操作有记录</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ===== 2. 系统架构 ===== -->
+<div class="section" id="sec2">
+  <h2>2. 系统架构</h2>
+
+  <p>Motor-AI 采用 <strong>五层架构</strong>，从底层数据到顶层界面完全解耦：</p>
+
+  <div class="arch-diagram">
+    <div class="arch-layer">
+      <h5>Web 界面层 (Flask + HTML/CSS/JS)</h5>
+      <div class="arch-modules">
+        <div class="arch-module">仪表盘</div>
+        <div class="arch-module">需求解析</div>
+        <div class="arch-module">批量求解</div>
+        <div class="arch-module">方案对比</div>
+        <div class="arch-module">报告中心</div>
+        <div class="arch-module">AI团队</div>
+        <div class="arch-module">沙盘推演</div>
+        <div class="arch-module">战略雷达</div>
+        <div class="arch-module">进化仪表盘</div>
+        <div class="arch-module">审计日志</div>
+      </div>
+    </div>
+    <div class="arch-arrow">↕ SSE 流式推送</div>
+    <div class="arch-layer">
+      <h5>编排层 (LangGraph 多智能体)</h5>
+      <div class="arch-modules">
+        <div class="arch-module">需求分析师</div>
+        <div class="arch-module">方案生成师</div>
+        <div class="arch-module green">评审推荐师 (放大轨)</div>
+        <div class="arch-module red">收敛四剑客 (收敛轨)</div>
+        <div class="arch-module orange">决策门</div>
+        <div class="arch-module">报告撰写员</div>
+      </div>
+    </div>
+    <div class="arch-arrow">↕</div>
+    <div class="arch-layer">
+      <h5>求解层 (Motor-CAD COM 自动化)</h5>
+      <div class="arch-modules">
+        <div class="arch-module">COM 连接器</div>
+        <div class="arch-module">电磁分析</div>
+        <div class="arch-module">热分析</div>
+        <div class="arch-module">耦合分析</div>
+        <div class="arch-module">模板管理</div>
+        <div class="arch-module">变量白名单</div>
+      </div>
+    </div>
+    <div class="arch-arrow">↕</div>
+    <div class="arch-layer">
+      <h5>智能引擎层 (本地 + 云端)</h5>
+      <div class="arch-modules">
+        <div class="arch-module purple">Ollama Qwen2.5-3B</div>
+        <div class="arch-module purple">DeepSeek API (可选)</div>
+        <div class="arch-module purple">蒙特卡洛引擎</div>
+        <div class="arch-module purple">数据飞轮</div>
+        <div class="arch-module purple">进化引擎</div>
+      </div>
+    </div>
+    <div class="arch-arrow">↕</div>
+    <div class="arch-layer">
+      <h5>数据存储层 (全本地)</h5>
+      <div class="arch-modules">
+        <div class="arch-module">SQLite (designs.db)</div>
+        <div class="arch-module">知识库 (JSON)</div>
+        <div class="arch-module">技能模板</div>
+        <div class="arch-module">失败特征</div>
+        <div class="arch-module">审计日志</div>
+        <div class="arch-module">.mot 模板</div>
+      </div>
+    </div>
+  </div>
+
+  <h3>目录结构</h3>
+  <pre><code>D:\MotorDesign\
+├── app/                    # Web 界面
+│   ├── app.py              # Flask 后端 (38 个 API 端点)
+│   ├── templates/index.html # 12 个功能面板
+│   ├── static/app.js       # 前端交互逻辑
+│   ├── static/v102.js      # v1.02 辩证面板逻辑
+│   └── static/style.css    # 样式表
+├── Agents/                 # 多智能体 (LangGraph)
+│   ├── orchestrator.py     # 双轨编排器 (核心)
+│   ├── requirement_agent.py # 需求分析师
+│   ├── design_agent.py     # 方案生成师
+│   ├── review_agent.py     # 评审推荐师 (放大轨)
+│   ├── reverse_reviewer.py # 逆向评审师 (收敛1)
+│   ├── reality_checker.py  # 现实检验师 (收敛2)
+│   ├── sandbox_simulator.py # 沙盘推演师 (收敛3)
+│   ├── devils_advocate.py  # 魔鬼代言人 (收敛4)
+│   ├── report_agent.py     # 报告撰写员
+│   └── base_agent.py       # 智能体基类
+├── Core/                   # 核心引擎
+│   ├── monte_carlo.py      # 蒙特卡洛沙盘引擎
+│   ├── flywheel.py         # 数据飞轮引擎
+│   ├── evolution_engine.py # 进化引擎
+│   └── audit_logger.py     # 审计日志
+├── Scripts/                # 工具脚本
+│   ├── motor_tools.py      # Motor-CAD 求解封装
+│   ├── ai_tools.py         # AI 调用工具
+│   ├── db_tools.py         # 数据库工具
+│   ├── template_manager.py # 模板管理
+│   └── com_diagnose.py     # COM 诊断工具
+├── motorcad_auto/          # COM 自动化包
+│   ├── connector.py        # COM 连接器
+│   ├── analysis.py         # 分析模块
+│   ├── config.py           # 配置/变量白名单
+│   ├── params.py           # 参数映射
+│   └── runner.py           # 运行器
+├── Knowledge/              # 知识库
+│   ├── feedback_store.py   # 反馈存储
+│   └── skill_templates/    # 技能模板
+├── KnowledgeBase/          # 数据库
+│   └── designs.db          # SQLite 主数据库
+├── Templates/              # Motor-CAD 模板
+│   └── Templates.mot       # .mot 模板文件
+├── Reports/                # 生成的报告
+├── Releases/               # 物理备份包
+├── .env                    # 环境配置
+├── .env.example            # 配置模板
+├── VERSION.json            # 版本信息
+├── CHANGELOG.md            # 变更日志
+└── start_ui.bat            # 启动脚本</code></pre>
+</div>
+
+<!-- ===== 3. 环境要求与安装 ===== -->
+<div class="section" id="sec3">
+  <h2>3. 环境要求与安装</h2>
+
+  <h3>3.1 硬件要求</h3>
+  <table>
+    <thead><tr><th>项目</th><th>最低要求</th><th>推荐配置</th></tr></thead>
+    <tbody>
+      <tr><td>CPU</td><td>Intel i5 / AMD R5</td><td>Intel i7-12700H 或更高</td></tr>
+      <tr><td>内存</td><td>8 GB</td><td>16 GB（7B 模型需 32 GB）</td></tr>
+      <tr><td>显卡</td><td>无（CPU 推理）</td><td>NVIDIA 4GB+ 显存（GPU 加速）</td></tr>
+      <tr><td>硬盘</td><td>5 GB 可用空间</td><td>SSD 10 GB+（含模型权重）</td></tr>
+    </tbody>
+  </table>
+
+  <h3>3.2 软件依赖</h3>
+  <table>
+    <thead><tr><th>软件</th><th>版本</th><th>用途</th></tr></thead>
+    <tbody>
+      <tr><td>Windows</td><td>10/11 (64位)</td><td>操作系统</td></tr>
+      <tr><td>Python</td><td>3.10+ (64位)</td><td>主运行时</td></tr>
+      <tr><td>Motor-CAD</td><td>11.1.5 (32位, 正式授权)</td><td>电磁/热仿真求解器</td></tr>
+      <tr><td>Ollama</td><td>最新版</td><td>本地 LLM 推理引擎</td></tr>
+      <tr><td>pywin32</td><td>最新版</td><td>COM/ActiveX 自动化</td></tr>
+      <tr><td>Flask</td><td>2.x+</td><td>Web 后端</td></tr>
+      <tr><td>LangGraph</td><td>0.2+</td><td>多智能体编排</td></tr>
+      <tr><td>LangChain-Ollama</td><td>最新版</td><td>本地模型集成</td></tr>
+      <tr><td>numpy</td><td>1.x+</td><td>蒙特卡洛模拟</td></tr>
+      <tr><td>python-dotenv</td><td>最新版</td><td>环境变量管理</td></tr>
+    </tbody>
+  </table>
+
+  <h3>3.3 安装步骤</h3>
+  <ol>
+    <li><strong>克隆/复制项目</strong>：将 <code>D:\MotorDesign</code> 目录完整复制到目标机器</li>
+    <li><strong>创建虚拟环境</strong>：
+      <pre><code>cd D:\MotorDesign
+python -m venv venv
+venv\Scripts\activate</code></pre>
+    </li>
+    <li><strong>安装 Python 依赖</strong>：
+      <pre><code>pip install flask langgraph langchain-ollama pywin32 numpy python-dotenv openai</code></pre>
+    </li>
+    <li><strong>安装 Ollama 并拉取模型</strong>：
+      <pre><code># 安装 Ollama 后执行
+ollama pull qwen2.5:3b-instruct-q4_K_M</code></pre>
+    </li>
+    <li><strong>配置环境变量</strong>：复制 <code>.env.example</code> 为 <code>.env</code>，按实际环境填写</li>
+    <li><strong>放置 Motor-CAD 模板</strong>：将 <code>.mot</code> 文件放入 <code>Templates/</code> 目录</li>
+    <li><strong>启动系统</strong>：双击 <code>start_ui.bat</code></li>
+  </ol>
+
+  <div class="success-box">
+    <strong>启动成功标志</strong>：浏览器自动打开 <code>http://127.0.0.1:5000</code>，左侧侧边栏显示 12 个导航项，底部状态栏显示 "v1.02.01 | 2026-07-27"。
+  </div>
+</div>
+
+<!-- ===== 4. 系统配置 ===== -->
+<div class="section" id="sec4">
+  <h2>4. 系统配置</h2>
+
+  <h3>4.1 环境变量 (.env)</h3>
+  <p>所有配置集中在项目根目录的 <code>.env</code> 文件中，使用 <code>.env.example</code> 作为模板：</p>
+
+  <pre><code># ---- 系统版本 ----
+SYSTEM_NAME=Motor-AI
+SYSTEM_VERSION=1.02.01
+VERSION_DATE=2026-07-27 01:43
+
+# ---- 本地模型 ----
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+LOCAL_MODEL_NAME=qwen2.5:3b-instruct-q4_K_M
+USE_GPU=true
+
+# ---- 云端模型 (DeepSeek) ----
+# 保持占位符则全本地运行，填入真实 Key 则启用云端增强
+DEEPSEEK_API_KEY=sk-your-key-here
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+CLOUD_MODEL_NAME=deepseek-chat
+
+# ---- Motor-CAD ----
+MOTORCAD_EXE_PATH=D:\Motor-CAD\11_1_5\Motor-CAD_11_1_5.exe
+MOTORCAD_INSTALL_DIR=D:\Motor-CAD\11_1_5
+MOTORCAD_PROGID=MotorCAD.AppAutomation
+MOTORCAD_USE_MODE=auto
+MOTORCAD_TEMPLATE_FILE=Templates.mot</code></pre>
+
+  <h3>4.2 关键配置说明</h3>
+  <table>
+    <thead><tr><th>配置项</th><th>可选值</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>MOTORCAD_USE_MODE</code></td>
+        <td><code>auto</code> / <code>manual</code> / <code>simulation</code></td>
+        <td>
+          <code>auto</code>：尝试 COM 自动化，失败则降级模拟<br>
+          <code>manual</code>：不调用 COM，导出参数 CSV → 手动 Motor-CAD 求解 → 导入结果<br>
+          <code>simulation</code>：纯经验模型估算，不启动 Motor-CAD
+        </td>
+      </tr>
+      <tr>
+        <td><code>DEEPSEEK_API_KEY</code></td>
+        <td>占位符 / 真实 Key</td>
+        <td>
+          占位符 <code>sk-your-key-here</code> → 全本地零上云<br>
+          真实 Key → 启用云端深度分析与报告润色（自动脱敏）
+        </td>
+      </tr>
+      <tr>
+        <td><code>LOCAL_MODEL_NAME</code></td>
+        <td>Ollama 模型名</td>
+        <td>4GB 显存推荐 <code>qwen2.5:3b-instruct-q4_K_M</code> (2.5GB)</td>
+      </tr>
+      <tr>
+        <td><code>USE_GPU</code></td>
+        <td><code>true</code> / <code>false</code></td>
+        <td>7B 模型建议关闭（4GB 显存不足）</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="warn-box">
+    <strong>安全提示</strong>：<code>.env</code> 文件已加入 <code>.gitignore</code>，不会被提交到 Git 仓库。云端 API Key 仅存储在本地，系统在调用云端前会自动执行脱敏处理，剥离几何尺寸、材料牌号和客户信息。
+  </div>
+
+  <h3>4.3 界面配置入口</h3>
+  <p>除 <code>.env</code> 文件外，也可通过 Web 界面的 <strong>系统设置</strong> 面板在线配置，修改后点击"保存设置"即可生效（写入 <code>.env</code>）。支持配置项包括：本地模型名称、GPU 加速开关、云端 API Key、云端模型名称、Motor-CAD 路径与使用模式。</p>
+</div>
+
+<!-- ===== 5. 功能面板详解 ===== -->
+<div class="section" id="sec5">
+  <h2>5. 功能面板详解</h2>
+
+  <p>系统左侧导航栏共 <strong>12 个功能面板</strong>，分为基础工作流（7 个）和高级分析（5 个）两组。</p>
+
+  <h3>5.1 仪表盘 <span class="tag tag-info">首页</span></h3>
+  <p>系统启动后的默认页面，一览全局状态。</p>
+  <ul>
+    <li><strong>四张状态卡片</strong>：
+      <ul>
+        <li><span class="tag tag-local">本地 AI</span> Ollama 运行状态与模型名称</li>
+        <li><span class="tag tag-info">云端 AI</span> DeepSeek API 连通性与模型</li>
+        <li><span class="tag tag-info">数据库</span> 已存储方案总数</li>
+        <li><span class="tag tag-info">Motor-CAD</span> COM 连接状态</li>
+      </ul>
+    </li>
+    <li><strong>快捷操作</strong>：新建需求解析、查看历史记录、系统设置</li>
+    <li><strong>工作流程图</strong>：四步流程导航（需求解析 → 批量求解 → 方案对比 → 生成报告）</li>
+  </ul>
+
+  <h3>5.2 需求解析</h3>
+  <p>将客户的自然语言需求描述转化为结构化的电机规格参数。</p>
+
+  <h4>操作步骤</h4>
+  <ol>
+    <li>在左侧文本框粘贴客户需求描述（邮件、文档内容等）</li>
+    <li>可点击底部示例标签快速加载测试用例（叉车/伺服/无人机/矿用/家电）</li>
+    <li>点击"AI 解析需求"按钮，本地 AI 自动提取参数</li>
+    <li>解析结果以表单形式显示在右侧，所有字段均可手动编辑修正</li>
+    <li>点击"下一步：批量求解"进入求解阶段</li>
+  </ol>
+
+  <h4>解析字段</h4>
+  <table>
+    <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>motor_type</td><td>文本</td><td>电机类型（默认"异步电动机"，支持永磁同步/无刷直流/开关磁阻）</td></tr>
+      <tr><td>power_kw</td><td>数字</td><td>额定功率 (kW)</td></tr>
+      <tr><td>voltage_v</td><td>数字</td><td>额定电压 (V)</td></tr>
+      <tr><td>speed_rpm</td><td>数字/null</td><td>额定转速 (rpm)</td></tr>
+      <tr><td>cooling</td><td>文本</td><td>冷却方式（自然风冷/水冷/油冷/未知）</td></tr>
+      <tr><td>efficiency_target</td><td>数字/null</td><td>效率目标 (%)</td></tr>
+      <tr><td>stator_od_limit</td><td>数字/null</td><td>定子外径限制 (mm)</td></tr>
+      <tr><td>application</td><td>文本</td><td>应用场景（叉车/无人机/电动汽车/工业泵/家电/通用）</td></tr>
+    </tbody>
+  </table>
+
+  <div class="info-box">
+    <strong>解析引擎</strong>：系统使用三级解析策略——(1) 正则表达式快速提取数字与关键词；(2) 本地 Ollama Qwen2.5-3B 深度理解语义；(3) 云端 DeepSeek API 增强解析（需配置真实 Key）。三级自动降级，确保离线可用。
+  </div>
+
+  <h3>5.3 批量求解</h3>
+  <p>根据解析的规格参数，生成参数扫描矩阵，调用 Motor-CAD 批量求解。</p>
+
+  <h4>三种求解模式</h4>
+  <table>
+    <thead><tr><th width="18%">模式</th><th width="14%">耗时</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>COM 自动化</td><td>~200s/组</td><td>自动修改 .mot 参数 → 电磁分析 → 热分析 → 读取结果，全自动</td></tr>
+      <tr><td>半自动求解</td><td>~30s/组</td><td>自动修改参数并启动 Motor-CAD，用户手动点击"求解热模型"按钮，自动读取结果</td></tr>
+      <tr><td>手动导入</td><td>—</td><td>导出参数 CSV → 在 Motor-CAD GUI 手动求解 → 导入结果 CSV</td></tr>
+      <tr><td>纯模拟</td><td><1s/组</td><td>经验模型估算，不启动 Motor-CAD，用于快速验证流程</td></tr>
+    </tbody>
+  </table>
+
+  <h4>参数矩阵</h4>
+  <p>系统根据需求规格自动生成参数扫描矩阵，包含以下参数：</p>
+  <ul>
+    <li><strong>核心参数</strong>：定子外径 (stator_od)、极数 (poles)、定子槽数 (slots_stator)、转子槽数 (slots_rotor)、线圈匝数 (turns_per_coil)</li>
+    <li><strong>结构参数 (v1.02.03 扩展)</strong>：
+      <ul>
+        <li>定子内径 (stator_id) = OD × 0.58~0.65</li>
+        <li>转子外径 (rotor_od) = 定子内径 − 2 × 气隙</li>
+        <li>铁心长度 (core_length) = 60 + 功率 × 2.5</li>
+        <li>气隙 (air_gap) = 0.5~1.0 mm</li>
+        <li>齿宽 (tooth_width) = π × 内径 / (2 × 槽数)</li>
+        <li>轭厚 (yoke_thickness)</li>
+        <li>轴径 (shaft_dia)</li>
+      </ul>
+    </li>
+    <li><strong>运行参数</strong>：电压 (voltage)、转速 (speed)</li>
+  </ul>
+
+  <div class="info-box">
+    <strong>实时进度</strong>：求解过程中，进度条和日志区域实时显示每条方案的求解状态（如"求解进度: 3/10..."），COM 模式下还显示电磁分析/热分析的阶段进度。
+  </div>
+
+  <h3>5.4 方案对比</h3>
+  <p>对批量求解结果进行排序、筛选、AI 点评和深度分析。</p>
+
+  <h4>功能</h4>
+  <ul>
+    <li><strong>Top-N 排序</strong>：按效率降序显示 Top 5/10/20 方案</li>
+    <li><strong>效率筛选</strong>：设置最低效率阈值过滤方案</li>
+    <li><strong>本地 AI 点评</strong>：Qwen2.5-3B 逐方案生成五维度评价（结构/电磁/热/损耗/总结）</li>
+    <li><strong>云端深度分析</strong>：DeepSeek API 生成专业对比报告（自动脱敏）</li>
+    <li><strong>方案反馈</strong>：对方案标记"采纳"或"拒绝"，驱动数据飞轮</li>
+  </ul>
+
+  <h4>对比表字段</h4>
+  <table>
+    <thead><tr><th>分类</th><th>字段</th></tr></thead>
+    <tbody>
+      <tr><td>基本信息</td><td>序号、求解模式、效率、温升、转矩、功率</td></tr>
+      <tr><td>结构参数</td><td>定子外径、定子内径、转子外径、铁心长度、气隙、齿宽、轭厚、轴径</td></tr>
+      <tr><td>电磁参数</td><td>极数、定子槽数、转子槽数、线圈匝数、齿磁密、气隙磁密、电密</td></tr>
+      <tr><td>损耗参数</td><td>铜耗、铁耗、总损耗、功率因数</td></tr>
+      <tr><td>热参数</td><td>发热因数、铜线温度、磁钢温度</td></tr>
+    </tbody>
+  </table>
+
+  <h3>5.5 报告中心</h3>
+  <p>生成完整的电机设计方案技术报告，支持预览、下载和管理历史报告。</p>
+
+  <h4>报告结构</h4>
+  <ol>
+    <li><strong>需求概述</strong>：电机类型、功率、电压、转速、冷却方式、效率目标、应用场景</li>
+    <li><strong>方案对比表</strong>：Markdown 表格，含结构/电磁/损耗/热参数四大类</li>
+    <li><strong>方案设计说明</strong>：槽配合选择原则、参数设计思路</li>
+    <li><strong>性能对比分析</strong>：效率、温升、磁密饱和度、损耗分布</li>
+    <li><strong>推荐方案论证</strong>：从五维度详细论证最佳方案</li>
+    <li><strong>风险提示</strong>：磁饱和风险、热风险、制造可行性</li>
+    <li><strong>优化建议</strong>：下一步优化方向</li>
+    <li><strong>脱敏声明</strong>：报告尾部自动附加"本报告基于真实仿真数据生成，部分设计细节已脱敏处理。"</li>
+  </ol>
+
+  <div class="info-box">
+    <strong>报告生成引擎</strong>：(1) 本地模板报告（Ollama 未启动时）；(2) 本地 LLM 草稿 + 云端润色；(3) 云端直接生成。三级自动选择。
+  </div>
+
+  <h3>5.6 历史记录</h3>
+  <p>查看所有历史求解结果，支持 CSV 导出备份。</p>
+  <ul>
+    <li><strong>统计卡片</strong>：总方案数、最高效率、平均效率</li>
+    <li><strong>结果表格</strong>：全部求解记录，含结构参数、电磁参数、损耗、热参数等 33 个字段</li>
+    <li><strong>CSV 导出</strong>：一键导出全部数据为 CSV 文件</li>
+  </ul>
+
+  <h3>5.7 系统设置</h3>
+  <p>在线配置系统参数，修改后保存即写入 <code>.env</code> 文件。</p>
+  <ul>
+    <li><strong>本地 AI 模型</strong>：模型名称（下拉选择/手动输入）、GPU 加速开关</li>
+    <li><strong>云端 AI</strong>：DeepSeek API Key、模型名称</li>
+    <li><strong>Motor-CAD</strong>：EXE 路径、COM ProgID、使用模式（auto/manual/simulation）、连接状态检测</li>
+  </ul>
+</div>
+
+<!-- ===== 6. AI 团队 ===== -->
+<div class="section" id="sec6">
+  <h2>6. AI 团队 — 多智能体辩证工作流</h2>
+
+  <p>AI 团队面板是系统的核心功能，一键启动 LangGraph 多智能体工作流，自动完成从需求解析到报告生成的全流程。</p>
+
+  <h3>6.1 工作流总览</h3>
+
+  <div class="pipeline">
+    <div class="pipeline-node start">需求分析师</div>
+    <div class="pipeline-arrow">→</div>
+    <div class="pipeline-node normal">方案生成师</div>
+    <div class="pipeline-arrow">→</div>
+    <div class="pipeline-fork">
+      <div class="pipeline-node pro">评审推荐师 (放大)</div>
+      <div class="pipeline-node con">收敛阵营 (收敛)</div>
+    </div>
+    <div class="pipeline-arrow">→</div>
+    <div class="pipeline-node gate">决策门</div>
+    <div class="pipeline-arrow">→</div>
+    <div class="pipeline-node end">报告撰写员</div>
+  </div>
+
+  <h3>6.2 各节点职责</h3>
+  <table>
+    <thead><tr><th>序号</th><th>节点</th><th>职责</th><th>引擎</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>需求分析师</td><td>解析客户描述，提取电机规格 JSON（含电机类型）</td><td><span class="tag tag-local">本地 LLM</span></td></tr>
+      <tr><td>2</td><td>方案生成师</td><td>生成参数矩阵，批量求解，存入数据库</td><td>Motor-CAD COM</td></tr>
+      <tr><td>3a</td><td>评审推荐师 <span class="tag tag-pro">放大</span></td><td>生成支持报告，强化推荐理由</td><td><span class="tag tag-local">本地 LLM</span> / 云端可选</td></tr>
+      <tr><td>3b</td><td>收敛阵营 <span class="tag tag-con">收敛</span></td><td>四剑客联合生成反对报告（详见第 7 节）</td><td><span class="tag tag-local">本地 LLM</span></td></tr>
+      <tr><td>4</td><td>决策门</td><td>双报告齐备后解锁采纳/拒绝按钮</td><td>UI 交互</td></tr>
+      <tr><td>5</td><td>报告撰写员</td><td>生成正式 Markdown 技术报告</td><td><span class="tag tag-local">本地 LLM</span> / 云端可选</td></tr>
+    </tbody>
+  </table>
+
+  <h3>6.3 操作步骤</h3>
+  <ol>
+    <li>在"客户需求描述"文本框输入需求文字</li>
+    <li>选择方案数量（2/10/30/50 组）</li>
+    <li>可选：勾选"云端评审"和"云端报告"启用云端增强</li>
+    <li>点击"启动 AI 团队"按钮</li>
+    <li>观察流水线各节点状态变化（等待中 → 运行中 → 完成）</li>
+    <li>底部实时日志栏显示详细运行进度</li>
+    <li>双报告生成后，决策门区域出现复选框</li>
+    <li>勾选"我已阅读支持报告"和"我已阅读反对报告"</li>
+    <li>点击"采纳方案"或"拒绝并记录"</li>
+    <li>报告撰写员生成正式报告，可下载</li>
+  </ol>
+
+  <h3>6.4 实时消息栏</h3>
+  <p>AI 团队面板底部有 200px 高的可滚动消息栏，实时显示运行日志。支持三种事件级别：</p>
+  <ul>
+    <li><strong>step_start</strong>（蓝色箭头）：节点开始执行，如"需求分析师 启动"</li>
+    <li><strong>progress</strong>（信息/成功/警告/错误）：子步骤进度，含时间戳，如"求解进度: 3/10... 效率 92.3%"</li>
+    <li><strong>step_done</strong>（绿色对勾）：节点完成，含结果摘要</li>
+  </ul>
+
+  <div class="info-box">
+    <strong>后台线程架构</strong>：LangGraph 编排器在后台线程中运行 <code>compiled.stream()</code>，通过两个队列（<code>_progress_queue</code> 和 <code>result_queue</code>）向主线程推送进度。主线程每 0.3 秒轮询队列，通过 SSE 实时推送到浏览器。收敛阵营 4 个 Agent 各推送 [1/4]~[4/4] 进度。
+  </div>
+</div>
+
+<!-- ===== 7. 辩证制衡体系 ===== -->
+<div class="section" id="sec7">
+  <h2>7. 辩证制衡体系</h2>
+
+  <p>v1.02.01 的核心创新——<strong>"放大火花，举起镜子"</strong>。放大轨用 AI 强化推荐理由，收敛轨用 AI 举起镜子照出盲点，双轨并行，在决策门交汇。</p>
+
+  <h3>7.1 放大轨 — 评审推荐师 <span class="tag tag-pro">放大系统</span></h3>
+  <p>评审推荐师从 Top-N 方案中选出最优，生成<strong>支持报告</strong>，从五个维度强化推荐理由：</p>
+  <ul>
+    <li><strong>结构</strong>：槽配合合理性、匝数、内外径比例、铁心长度</li>
+    <li><strong>电磁</strong>：磁密范围 (1.5~1.9T)、电密合理性 (<8A/mm²)</li>
+    <li><strong>热性能</strong>：温升 (<100K)、发热因数</li>
+    <li><strong>损耗</strong>：铜耗/铁耗比例分析</li>
+    <li><strong>总结</strong>：综合评价与推荐意见</li>
+  </ul>
+
+  <h3>7.2 收敛轨 — 收敛四剑客 <span class="tag tag-con">收敛系统</span></h3>
+  <p>四个收敛 Agent 联合生成<strong>反对报告</strong>，从不同角度挑战放大轨的推荐：</p>
+
+  <table>
+    <thead><tr><th width="14%">Agent</th><th width="18%">角色</th><th>核心任务</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>逆向评审师</strong></td>
+        <td>秩序护盾</td>
+        <td>在被淘汰方案中寻找"异类品味"，防止单一设计风格独断。假设被放弃的方案可能被低估了，为它辩护。</td>
+      </tr>
+      <tr>
+        <td><strong>现实检验师</strong></td>
+        <td>秩序护盾</td>
+        <td>TRL 1-9 技术成熟度评估，把"理论上可行"和"能量产"分开。内置 7 种电机技术的 TRL 评级数据库。</td>
+      </tr>
+      <tr>
+        <td><strong>沙盘推演师</strong></td>
+        <td>压力测试</td>
+        <td>调用蒙特卡洛引擎，1000 次参数扰动模拟，展示最惨失败情形。防止信念变固执。</td>
+      </tr>
+      <tr>
+        <td><strong>魔鬼代言人</strong></td>
+        <td>灵魂拷问</td>
+        <td>假设方案已失败，倒推"遗书"挑战一厢情愿。用事后诸葛亮的口吻逼你看清盲点。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="info-box">
+    <strong>全本地运行</strong>：收敛四剑客全部使用本地 Qwen2.5-3B（ChatOllama），零云端调用，数据不出机。每个 Agent 推送 [1/4]~[4/4] 进度到消息栏。
+  </div>
+
+  <h3>7.3 决策门</h3>
+  <p>决策门是辩证体系的收束点，设计理念是 <strong>"强迫你同时看到硬币的两面"</strong>。</p>
+
+  <div class="warn-box">
+    <strong>决策门规则</strong>：
+    <ol>
+      <li>必须同时生成支持报告与反对报告，决策门区域才会出现</li>
+      <li>必须勾选"我已阅读支持报告"复选框</li>
+      <li>必须勾选"我已阅读反对报告"复选框</li>
+      <li>两个复选框都勾选后，"采纳方案"和"拒绝并记录"按钮才解锁</li>
+      <li><strong>采纳</strong>：触发数据飞轮——生成技能模板、挖掘设计规则、提升模板权重</li>
+      <li><strong>拒绝</strong>：触发数据飞轮——记录失败特征、惩罚模板权重</li>
+    </ol>
+  </div>
+</div>
+
+<!-- ===== 8. 战略雷达 ===== -->
+<div class="section" id="sec8">
+  <h2>8. 战略雷达</h2>
+
+  <p>扫描本地知识库与历史项目，发现被低估的机会与能力盲点。在逆共识处下注。</p>
+
+  <h3>功能</h3>
+  <ul>
+    <li><strong>指标卡片</strong>：历史项目数、采纳方案数、技能模板数、能力盲点数</li>
+    <li><strong>机会信号</strong>：扫描历史数据，发现高效低温方案、技能覆盖率等机会信号</li>
+    <li><strong>能力盲点</strong>：基于失败特征分析，识别系统当前的能力缺口</li>
+    <li><strong>一键扫描</strong>：点击"扫描机会"自动分析全部历史数据</li>
+  </ul>
+</div>
+
+<!-- ===== 9. 沙盘推演 ===== -->
+<div class="section" id="sec9">
+  <h2>9. 沙盘推演（蒙特卡洛引擎）</h2>
+
+  <p>对候选方案进行 1000 次参数扰动模拟，展示最惨失败情形，防止信念变固执。</p>
+
+  <h3>9.1 引擎参数</h3>
+  <table>
+    <thead><tr><th>参数</th><th>默认值</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>模拟次数</td><td>1000</td><td>可选 100/500/1000 次</td></tr>
+      <tr><td>扰动方式</td><td>高斯噪声 ±5%</td><td>对所有关键参数施加随机扰动</td></tr>
+      <tr><td>输出百分位</td><td>P5 / P50 / P95</td><td>悲观/中位/乐观三种情形</td></tr>
+    </tbody>
+  </table>
+
+  <h3>9.2 失效模式分类</h3>
+  <table>
+    <thead><tr><th>失效模式</th><th>严重度</th><th>判定条件</th></tr></thead>
+    <tbody>
+      <tr><td>热失控 (thermal_runaway)</td><td><span class="tag" style="background:#fee2e2;color:#dc2626">严重</span></td><td>温升超过绝缘等级限值</td></tr>
+      <tr><td>磁饱和 (magnetic_saturation)</td><td><span class="tag" style="background:#fee2e2;color:#dc2626">高</span></td><td>齿磁密 > 1.9T 或气隙磁密 > 1.2T</td></tr>
+      <tr><td>铜耗过高 (copper_loss_excess)</td><td><span class="tag" style="background:#ffedd5;color:#ea580c">中</span></td><td>铜耗占总损耗 > 70%</td></tr>
+      <tr><td>退磁风险 (demagnetization)</td><td><span class="tag" style="background:#fee2e2;color:#dc2626">严重</span></td><td>高温 + 过载电流导致磁钢不可逆退磁</td></tr>
+      <tr><td>效率崩塌 (efficiency_collapse)</td><td><span class="tag" style="background:#fee2e2;color:#dc2626">高</span></td><td>效率跌破目标值 5 个百分点以上</td></tr>
+    </tbody>
+  </table>
+
+  <h3>9.3 操作步骤</h3>
+  <ol>
+    <li>选择方案来源（Top 方案 / 上次工作流结果）</li>
+    <li>选择模拟次数（100/500/1000）</li>
+    <li>点击"开始推演"</li>
+    <li>查看汇总卡片：平均失效率、最差失效率、最佳失效率</li>
+    <li>查看详情行：每种失效模式的 P5/P50/P95 分布</li>
+  </ol>
+
+  <div class="info-box">
+    <strong>技术实现</strong>：纯 numpy 实现，不依赖外部库，数据不出机。每次扰动对效率、温升、磁密、铜耗、转矩等参数施加 ±5% 高斯噪声，然后按失效模式判定条件分类统计。
+  </div>
+</div>
+
+<!-- ===== 10. 进化仪表盘 ===== -->
+<div class="section" id="sec10">
+  <h2>10. 进化仪表盘（数据飞轮）</h2>
+
+  <p>数据飞轮引擎让系统<strong>越用越聪明</strong>：每次采纳/拒绝决策自动沉淀为知识。</p>
+
+  <h3>10.1 飞轮四步</h3>
+  <ol>
+    <li><strong>数据生成</strong>：每个项目自动记录需求/参数/结果/AI 决策/用户修正/客户反馈</li>
+    <li><strong>技能化</strong>：成功方案自动抽象为"设计技能模板"，验证一次权重 +1</li>
+    <li><strong>知识喂养</strong>：从已采纳项目挖掘新规则，自动更新本体</li>
+    <li><strong>闭环迭代</strong>：采纳→强化模板；拒绝→弱化模板 + 记录失败特征</li>
+  </ol>
+
+  <h3>10.2 指标卡片</h3>
+  <table>
+    <thead><tr><th>指标</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>总方案数</td><td>数据库中所有求解方案总数</td></tr>
+      <tr><td>采纳方案</td><td>用户标记"采纳"的方案数</td></tr>
+      <tr><td>采纳率</td><td>采纳方案 / 总方案数</td></tr>
+      <tr><td>AI 接管率</td><td>AI 团队全自动完成（无人工干预）的方案占比</td></tr>
+      <tr><td>技能模板</td><td>系统自动生成的可复用设计技能模板数</td></tr>
+      <tr><td>设计规则</td><td>从历史数据挖掘出的设计规则数</td></tr>
+      <tr><td>失败特征</td><td>用户拒绝方案时记录的失败模式数</td></tr>
+    </tbody>
+  </table>
+
+  <h3>10.3 功能</h3>
+  <ul>
+    <li><strong>技能模板库</strong>：展示已生成的技能模板，含适用条件、参数范围、验证次数、权重</li>
+    <li><strong>设计规则</strong>：展示已挖掘的设计规则，如"水冷电机效率 > 93% 时温升 < 80K"</li>
+    <li><strong>进化历史</strong>：时间线展示每次技能生成/规则挖掘/失败记录事件</li>
+    <li><strong>挖掘新规则</strong>：手动触发规则挖掘，从最新历史数据中提取规律</li>
+  </ul>
+</div>
+
+<!-- ===== 11. 审计日志 ===== -->
+<div class="section" id="sec11">
+  <h2>11. 审计日志</h2>
+
+  <p>全流程操作可溯源，每个智能体的每一步操作都有记录。</p>
+
+  <h3>功能</h3>
+  <ul>
+    <li><strong>统计卡片</strong>：总日志数、今日日志数、活跃智能体数</li>
+    <li><strong>日志表格</strong>：时间、智能体名称、操作类型、状态（成功/失败）、耗时 (ms)、详情</li>
+    <li><strong>智能体指标</strong>：各 Agent 的调用次数、成功率、平均耗时</li>
+  </ul>
+
+  <div class="info-box">
+    <strong>日志存储</strong>：所有审计日志存储在 <code>KnowledgeBase/designs.db</code> 的 <code>audit_logs</code> 表中，SQLite 格式，支持 SQL 查询导出。
+  </div>
+</div>
+
+<!-- ===== 12. Motor-CAD COM ===== -->
+<div class="section" id="sec12">
+  <h2>12. Motor-CAD COM 自动化</h2>
+
+  <p>Motor-AI 通过 COM/ActiveX 接口对接 Motor-CAD 11.1.5，实现全自动化求解。</p>
+
+  <h3>12.1 技术规格</h3>
+  <table>
+    <thead><tr><th>项目</th><th>规格</th></tr></thead>
+    <tbody>
+      <tr><td>Motor-CAD 版本</td><td>11.1.5 (2017-02-12 发布, 32位, 正式授权)</td></tr>
+      <tr><td>COM ProgID</td><td><code>MotorCAD.AppAutomation</code></td></tr>
+      <tr><td>CLSID</td><td>{4ACD06EB-5486-42AF-91DB-FB752E64C465}</td></tr>
+      <tr><td>Python 位数</td><td>64位 + pywin32 (COM 跨位数可用)</td></tr>
+      <tr><td>连接方式</td><td><code>win32com.client.Dispatch("MotorCAD.AppAutomation")</code></td></tr>
+      <tr><td>启动时间</td><td>从零启动约 82 秒；已运行时秒连</td></tr>
+    </tbody>
+  </table>
+
+  <h3>12.2 已验证可用的 COM 方法</h3>
+  <table>
+    <thead><tr><th>方法</th><th>用途</th><th>耗时</th></tr></thead>
+    <tbody>
+      <tr><td><code>LoadFromFile(path)</code></td><td>加载 .mot 模板文件</td><td>~1s</td></tr>
+      <tr><td><code>SetVariable(name, value)</code></td><td>设置参数变量</td><td>~0.1s</td></tr>
+      <tr><td><code>GetVariable(name)</code></td><td>读取结果变量 (返回 (code, value) 元组)</td><td>~0.1s</td></tr>
+      <tr><td><code>ShowMagneticContext()</code></td><td>切换到电磁上下文</td><td>~0.5s</td></tr>
+      <tr><td><code>ShowThermalContext()</code></td><td>切换到热上下文</td><td>~0.5s</td></tr>
+      <tr><td><code>DoMagneticCalculation()</code></td><td>电磁分析</td><td>~190-200s</td></tr>
+      <tr><td><code>DoSteadyStateAnalysis()</code></td><td>热稳态分析</td><td>~7-10s</td></tr>
+      <tr><td><code>DoMagneticThermalCalculation()</code></td><td>电磁热耦合分析</td><td>~195s</td></tr>
+      <tr><td><code>SaveToFile(path)</code></td><td>保存 .mot 文件</td><td>~1s</td></tr>
+    </tbody>
+  </table>
+
+  <h3>12.3 变量白名单机制</h3>
+  <p>某些变量调用 <code>GetVariable</code> 会无限挂起（如 <code>OperatingSpeed</code>、<code>MaxTemperature</code>、<code>T_[Housing_Average]</code>）。系统采用<strong>白名单机制</strong>，仅查询已验证的变量名：</p>
+
+  <table>
+    <thead><tr><th>类别</th><th>已验证变量名</th></tr></thead>
+    <tbody>
+      <tr><td>通用</td><td><code>Program_Version</code>, <code>Program_Module</code>, <code>Pole_Number</code>, <code>Slot_Number</code>, <code>DCBusVoltage</code>, <code>PeakCurrent</code>, <code>WindingConnection</code></td></tr>
+      <tr><td>热结果</td><td><code>T_[Winding_Average]</code>, <code>T_[Winding_Max]</code></td></tr>
+      <tr><td>电磁结果</td><td><code>Shaft_Torque_[pu]</code>, <code>TorqueRippleMsVw</code>, <code>OutputPower</code>, <code>InputPower</code>, <code>ElectromagneticPower</code>, <code>Loss_[Stator_Copper]</code>, <code>Loss_[Stator_Back_Iron]</code>, <code>Loss_[Stator_Tooth]</code>, <code>Shaft_Speed</code>, <code>TotalLoss</code></td></tr>
+    </tbody>
+  </table>
+
+  <h3>12.4 ActiveX 注册模式</h3>
+  <p>Motor-CAD 菜单"默认设置 → 控件注册"有三个选项：</p>
+  <ul>
+    <li><strong>多客户端 (id=93)</strong>：多实例并发</li>
+    <li><strong>单客户端 (id=94)</strong>：<span class="tag" style="background:#dcfce7;color:#16a34a">推荐</span> COM 可用</li>
+    <li><strong>免注册 (id=95)</strong>：<span class="tag" style="background:#fee2e2;color:#dc2626">禁用</span> COM 不可用</li>
+  </ul>
+  <p>系统自动检测并修复 ActiveX 注册模式，如果检测到"免注册"会自动切换为"单客户端设置"。</p>
+
+  <div class="warn-box">
+    <strong>COM 线程限制</strong>：Motor-CAD COM 使用 STA (Single-Threaded Apartment) 模型，所有 COM 调用必须在调用 <code>CoInitialize()</code> 的同一线程内执行。系统在 <code>connect()</code> 时初始化 COM，后续调用在同一工作线程内完成。
+  </div>
+</div>
+
+<!-- ===== 13. API 接口参考 ===== -->
+<div class="section" id="sec13">
+  <h2>13. API 接口参考</h2>
+
+  <p>Flask 后端共提供 <strong>38 个 API 端点</strong>，按功能分类如下：</p>
+
+  <h3>13.1 系统与配置</h3>
+  <table>
+    <thead><tr><th>方法</th><th>路径</th><th>功能</th></tr></thead>
+    <tbody>
+      <tr><td>GET</td><td><code>/</code></td><td>主页面</td></tr>
+      <tr><td>GET</td><td><code>/api/status</code></td><td>系统状态（Ollama/云端/数据库/Motor-CAD）</td></tr>
+      <tr><td>GET</td><td><code>/api/settings</code></td><td>读取系统设置</td></tr>
+      <tr><td>POST</td><td><code>/api/settings</code></td><td>保存系统设置</td></tr>
+      <tr><td>GET</td><td><code>/api/test-cases</code></td><td>获取测试用例</td></tr>
+    </tbody>
+  </table>
+
+  <h3>13.2 需求解析与求解</h3>
+  <table>
+    <thead><tr><th>方法</th><th>路径</th><th>功能</th></tr></thead>
+    <tbody>
+      <tr><td>POST</td><td><code>/api/parse</code></td><td>AI 解析需求</td></tr>
+      <tr><td>POST</td><td><code>/api/preview-params</code></td><td>预览参数矩阵</td></tr>
+      <tr><td>POST</td><td><code>/api/solve</code></td><td>批量求解 (SSE 流式)</td></tr>
+      <tr><td>GET</td><td><code>/api/solve-log</code></td><td>获取求解日志</td></tr>
+    </tbody>
+  </table>
+
+  <h3>13.3 Motor-CAD 操作</h3>
+  <table>
+    <thead><tr><th>方法</th><th>路径</th><th>功能</th></tr></thead>
+    <tbody>
+      <tr><td>POST</td><td><code>/api/motorcad/import</code></td><td>导入 Motor-CAD JSON 结果</td></tr>
+      <tr><td>POST</td><td><code>/api/motorcad/export-params</code></td><td>导出参数表 JSON</td></tr>
+      <tr><td>GET</td><td><code>/api/motorcad/guide</code></td><td>获取操作指南</td></tr>
+      <tr><td>POST</td><td><code>/api/motorcad/upload-csv</code></td><td>上传 CSV 结果文件</td></tr>
+      <tr><td>POST</td><td><code>/api/motorcad/download-params</code></td><td>下载参数 CSV</td></tr>
+      <tr><td>POST</td><td><code>/api/semi-auto/solve</code></td><td>半自动求解</td></tr>
+      <tr><td>GET</td><td><code>/api/semi-auto/status</code></td><td>半自动状态</td></tr>
+      <tr><td>POST</td><td><code>/api/semi-auto/cancel</code></td><td>取消半自动</td></tr>
+    </tbody>
+  </table>
+
+  <h3>13.4 结果与对比</h3>
+  <table>
+    <thead><tr><th>方法</th><th>路径</th><th>功能</th></tr></thead>
+    <tbody>
+      <tr><td>GET</td><td><code>/api/results</code></td><td>获取全部结果</td></tr>
+      <tr><td>GET</td><td><code>/api/results/top</code></td><td>获取 Top-N 方案</td></tr>
+      <tr><td>POST</td><td><code>/api/review</code></td><td>本地 AI 点评</td></tr>
+      <tr><td>POST</td><td><code>/api/check-desensitize</code></td><td>检查脱敏数据</td></tr>
+      <tr><td>POST</td><td><code>/api/cloud-analysis</code></td><td>云端深度分析</td></tr>
+    </tbody>
+  </table>
+
+  <h3>13.5 报告</h3>
+  <table>
+    <thead><tr><th>方法</th><th>路径</th><th>功能</th></tr></thead>
+    <tbody>
+      <tr><td>POST</td><td><code>/api/report</code></td><td>生成报告 (SSE 流式)</td></tr>
+      <tr><td>GET</td><td><code>/api/reports</code></td><td>报告列表</td></tr>
+      <tr><td>GET</td><td><code>/api/report/read</code></td><td>读取报告内容</td></tr>
+      <tr><td>GET</td><td><code>/api/export-csv</code></td><td>导出 CSV</td></tr>
+    </tbody>
+  </table>
+
+  <h3>13.6 AI 团队工作流</h3>
+  <table>
+    <thead><tr><th>方法</th><th>路径</th><th>功能</th></tr></thead>
+    <tbody>
+      <tr><td>POST</td><td><code>/api/workflow/run</code></td><td>启动 AI 团队 (SSE 流式)</td></tr>
+    </tbody>
+  </table>
+
+  <h3>13.7 进化与沙盘</h3>
+  <table>
+    <thead><tr><th>方法</th><th>路径</th><th>功能</th></tr></thead>
+    <tbody>
+      <tr><td>POST</td><td><code>/api/feedback</code></td><td>提交方案反馈（采纳/拒绝）</td></tr>
+      <tr><td>GET</td><td><code>/api/feedback/stats</code></td><td>反馈统计</td></tr>
+      <tr><td>GET</td><td><code>/api/feedback/recent</code></td><td>最近反馈</td></tr>
+      <tr><td>GET</td><td><code>/api/evolution/dashboard</code></td><td>进化仪表盘数据</td></tr>
+      <tr><td>POST</td><td><code>/api/evolution/mine-rule</code></td><td>挖掘新规则</td></tr>
+      <tr><td>POST</td><td><code>/api/evolution/create-skill</code></td><td>创建技能模板</td></tr>
+      <tr><td>GET</td><td><code>/api/flywheel/status</code></td><td>数据飞轮状态</td></tr>
+      <tr><td>POST</td><td><code>/api/sandbox/simulate</code></td><td>沙盘推演模拟</td></tr>
+      <tr><td>POST</td><td><code>/api/convergence/run</code></td><td>收敛阵营运行</td></tr>
+    </tbody>
+  </table>
+
+  <h3>13.8 审计日志</h3>
+  <table>
+    <thead><tr><th>方法</th><th>路径</th><th>功能</th></tr></thead>
+    <tbody>
+      <tr><td>GET</td><td><code>/api/audit/logs</code></td><td>审计日志列表</td></tr>
+      <tr><td>GET</td><td><code>/api/audit/stats</code></td><td>审计统计</td></tr>
+      <tr><td>GET</td><td><code>/api/audit/agent-metrics</code></td><td>智能体指标</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ===== 14. 常见问题 ===== -->
+<div class="section" id="sec14">
+  <h2>14. 常见问题与故障排除</h2>
+
+  <h3>Q1: 启动后界面显示"Ollama 未启动"</h3>
+  <p><strong>原因</strong>：Ollama 服务未运行或模型未拉取。</p>
+  <p><strong>解决</strong>：</p>
+  <ol>
+    <li>打开终端执行 <code>ollama serve</code> 启动服务</li>
+    <li>执行 <code>ollama pull qwen2.5:3b-instruct-q4_K_M</code> 拉取模型</li>
+    <li>确认 <code>http://127.0.0.1:11434/api/tags</code> 可访问</li>
+    <li>刷新浏览器页面</li>
+  </ol>
+
+  <h3>Q2: Motor-CAD COM 连接失败</h3>
+  <p><strong>原因</strong>：ActiveX 注册模式为"免注册"，或 Motor-CAD 未安装/未授权。</p>
+  <p><strong>解决</strong>：</p>
+  <ol>
+    <li>打开 Motor-CAD → 菜单"默认设置 → 控件注册" → 选择"单客户端设置"</li>
+    <li>或运行 <code>python Scripts/com_diagnose.py</code> 执行 7 步诊断</li>
+    <li>确认 Motor-CAD 为正式授权版本（非 Demo）</li>
+    <li>如仍失败，将使用模式改为 <code>manual</code> 或 <code>simulation</code></li>
+  </ol>
+
+  <h3>Q3: COM 连接超时（约 60 秒后失败）</h3>
+  <p><strong>原因</strong>：Motor-CAD v11.1.5 需 80-120 秒启动，但 Dispatch 内部超时仅 60 秒。</p>
+  <p><strong>解决</strong>：系统已内置预启动模式——先手动启动 Motor-CAD exe，等待 90 秒完全加载后再 Dispatch 连接已运行实例。通常从零启动约 82 秒可连接成功。</p>
+
+  <h3>Q4: AI 团队工作流卡住，决策门一直"等待中"</h3>
+  <p><strong>原因</strong>：LangGraph 并行节点写入冲突（<code>InvalidUpdateError</code>）或前端未检查 HTTP 状态码。</p>
+  <p><strong>解决</strong>：v1.02.02 已修复——并行节点返回值不再包含 <code>step</code>/<code>status</code> 字段，<code>errors</code> 改为 <code>Annotated[List[str], operator.add]</code> 允许并行追加。如仍出现，检查 Ollama 是否正常运行。</p>
+
+  <h3>Q5: 评审报告中出现"虚构"字样</h3>
+  <p><strong>原因</strong>：云端 AI 对脱敏数据产生"自我免责"理解，声明为"虚构报告"。</p>
+  <p><strong>解决</strong>：v1.02.04 已修复——所有云端提示词重写，明确告知 AI "收到的脱敏数据来自真实电磁仿真，严禁使用虚构/假设/模拟数据等字样"。报告尾部自动附加脱敏声明。</p>
+
+  <h3>Q6: 正式报告中出现"极数: 不详"</h3>
+  <p><strong>原因</strong>：<code>poles</code> 字段仅存在于嵌套的 <code>params</code> 字典中，但报告代码直接用 <code>r.get('poles')</code> 取值。</p>
+  <p><strong>解决</strong>：v1.02.04 已修复——<code>_run_simulated</code> 和 <code>_run_motorcad_with_instance</code> 返回值新增 <code>poles</code>、<code>voltage</code>、<code>speed</code> 字段。</p>
+
+  <h3>Q7: <code>GetVariable</code> 无限挂起</h3>
+  <p><strong>原因</strong>：某些变量名（如 <code>OperatingSpeed</code>、<code>MaxTemperature</code>）会导致 COM 调用无限等待。</p>
+  <p><strong>解决</strong>：系统采用白名单机制，仅查询已验证的变量名。返回 <code>code=-2</code> 表示变量不存在（不挂起）。</p>
+
+  <h3>Q8: 修改代码后界面无变化</h3>
+  <p><strong>原因</strong>：Flask 默认不热重载。</p>
+  <p><strong>解决</strong>：修改 Python 代码后必须重启 Web UI——关闭 <code>start_ui.bat</code> 窗口，重新双击启动。</p>
+
+  <h3>Q9: GPU 显存不足 (4GB)</h3>
+  <p><strong>解决</strong>：使用 <code>qwen2.5:3b-instruct-q4_K_M</code> (2.5GB 显存) 而非 7B 模型。在系统设置中关闭 GPU 加速改用 CPU 推理（较慢但稳定）。未来内存升级到 32GB 后可升级至 7B 模型。</p>
+
+  <h3>Q10: 数据库迁移</h3>
+  <p><strong>说明</strong>：系统启动时自动检测 <code>NEW_COLUMNS</code> 列表，对旧数据库执行 <code>ALTER TABLE ADD COLUMN</code>，无需手动迁移。当前数据库 schema 包含 33+ 字段。</p>
+</div>
+
+<!-- ===== 15. 版本历史 ===== -->
+<div class="section" id="sec15">
+  <h2>15. 版本历史</h2>
+
+  <h3>v1.02.01 (2026-07-27) — 辩证制衡体系</h3>
+  <table>
+    <thead><tr><th width="12%">类型</th><th>内容</th></tr></thead>
+    <tbody>
+      <tr><td><strong>新增</strong></td><td>辩证双轨编排器（放大轨 + 收敛轨并行）</td></tr>
+      <tr><td></td><td>收敛四剑客（逆向评审师/现实检验师/沙盘推演师/魔鬼代言人）</td></tr>
+      <tr><td></td><td>蒙特卡洛 1000 次沙盘推演引擎（5 种失效模式）</td></tr>
+      <tr><td></td><td>数据飞轮引擎（采纳→技能模板+规则挖掘；拒绝→失败特征）</td></tr>
+      <tr><td></td><td>决策门 UI（双复选框强制阅读双报告）</td></tr>
+      <tr><td></td><td>战略雷达面板、沙盘推演面板</td></tr>
+      <tr><td></td><td>进化仪表盘扩展（AI 接管率 + 失败特征数）</td></tr>
+      <tr><td><strong>修复</strong></td><td>云端门控漏洞（占位符 API Key 严格排除）</td></tr>
+      <tr><td></td><td>LangGraph 并行节点 InvalidUpdateError</td></tr>
+      <tr><td></td><td>实时进度推送（后台线程+队列架构）</td></tr>
+      <tr><td></td><td>结构参数扩展（7 个新参数）</td></tr>
+      <tr><td></td><td>需求解析添加电机类型字段</td></tr>
+      <tr><td></td><td>评审报告消除"虚构"声明</td></tr>
+      <tr><td></td><td>正式报告修复"参数不详"</td></tr>
+      <tr><td><strong>安全</strong></td><td>全本地零上云验证通过</td></tr>
+    </tbody>
+  </table>
+
+  <h3>v1.01.01 (2026-07-27) — 首个正式版本</h3>
+  <ul>
+    <li>Motor-CAD COM 自动化引擎（6 模块架构）</li>
+    <li>电磁分析 + 热分析 + 耦合分析</li>
+    <li>变量白名单机制（防止 GetVariable 挂起）</li>
+    <li>模板自动管理 + COM 诊断工具</li>
+    <li>Web UI 批量求解（SSE 流式进度推送）</li>
+    <li>本地 AI 模型集成（Ollama + Qwen2.5-3B）</li>
+    <li>反馈闭环 + 审计日志 + 知识库</li>
+    <li>版本号迁移到三段式 (X.YY.ZZ)</li>
+  </ul>
+
+  <h3>v1.00.01 (2026-07-24) — 初始骨架</h3>
+  <ul>
+    <li>初始项目骨架（Motor-CAD 批量求解脚本 + 本地 3B 模型测试）</li>
+    <li>Web 界面基础框架（Flask + SSE）</li>
+    <li>数据库存储（SQLite）</li>
+  </ul>
+
+  <h3>版本号规则</h3>
+  <p>采用三段式版本号 <code>X.YY.ZZ</code>（主版本.次版本.修订号）+ 描述后缀。</p>
+  <ul>
+    <li><strong>主版本 (X)</strong>：重大架构变更或里程碑</li>
+    <li><strong>次版本 (YY)</strong>：新功能或重要改进</li>
+    <li><strong>修订号 (ZZ)</strong>：Bug 修复或小幅调整</li>
+  </ul>
+</div>
+
+<div class="footer">
+  <p>Motor-AI v1.02.01 &nbsp;|&nbsp; 电机设计 AI 辅助系统 &nbsp;|&nbsp; 2026-07-27</p>
+  <p>辩证制衡 · 全本地零上云 · Motor-CAD COM 自动化 · 数据飞轮进化</p>
+  <p>本说明书基于项目源代码自动生成，如有疑问请参阅 <code>CHANGELOG.md</code> 或联系开发者</p>
+</div>
+
+</div>
+</body>
+</html>

@@ -43,6 +43,9 @@ instance/
 
 # ---- 环境配置 (含 API Key, 用 .env.example 作为模板) ----
 .env
+.env.dev
+.env.trial
+.env.local
 
 # ---- 加密/备份 ----
 *.zip

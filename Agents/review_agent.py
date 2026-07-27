@@ -35,9 +35,10 @@ class ReviewAgent(BaseAgent):
             **({"num_gpu": 0} if not use_gpu else {})
         )
 
-        # 云端客户端（按需）— v1.02.01: 严格排除占位符, 确保全本地零上云
+        # 云端客户端（按需）— v1.03.01: 严格排除占位符 + 试用版强制禁用
         _ds_key = os.getenv("DEEPSEEK_API_KEY", "")
-        self.cloud_available = bool(_ds_key) and _ds_key != "sk-your-key-here"
+        _allow_cloud = os.getenv("ALLOW_CLOUD_API", "true") == "true"
+        self.cloud_available = bool(_ds_key) and _ds_key != "sk-your-key-here" and _allow_cloud
         if self.cloud_available:
             from openai import OpenAI
             self.cloud_client = OpenAI(
@@ -64,6 +65,10 @@ class ReviewAgent(BaseAgent):
                 line += f", 定子槽{r['slots_stator']}/转子槽{r.get('slots_rotor', '?')}"
             if r.get('turns_per_coil'):
                 line += f", 匝数{r['turns_per_coil']}"
+            if r.get('stator_id'):
+                line += f", 内径{r['stator_id']}mm, 铁心长{r.get('core_length', '?')}mm"
+            if r.get('air_gap'):
+                line += f", 气隙{r['air_gap']}mm"
             line += f", 效率{r.get('efficiency', 0):.2f}%, 温升{r.get('max_temp', 0):.1f}K"
             line += f", 转矩{r.get('torque', 0):.1f}N·m"
             if r.get('stator_tooth_flux_density'):
@@ -87,20 +92,41 @@ class ReviewAgent(BaseAgent):
             response = self.cloud_client.chat.completions.create(
                 model=os.getenv("CLOUD_MODEL_NAME", "deepseek-chat"),
                 messages=[
-                    {"role": "system", "content": "你是一位资深电机设计工程师。请根据以下脱敏后的方案性能数据（含结构参数、电磁参数、损耗和热参数），进行详细的对比分析。从磁密饱和度、电密合理性、损耗分布、热性能等角度评估每个方案，指出优缺点、风险并给出推荐。用中文回答。"},
-                    {"role": "user", "content": f"需求规格：功率{specs.get('power_kw')}kW, 电压{specs.get('voltage_v')}V, 冷却{specs.get('cooling')}, 效率目标{specs.get('efficiency_target')}%\n\n方案详细对比（含结构/电磁/损耗/热参数）：\n{comparison_text}"}
+                    {"role": "system", "content": """你是一位资深电机设计评审专家。你将收到一批经过脱敏处理的电机方案性能数据（含结构参数、电磁参数、损耗和热参数）。
+
+重要声明：
+1. 这些数据来自真实的电磁仿真计算，性能指标（效率、温升、转矩、磁密等）是真实可信的。
+2. 出于数据安全考虑，只向你展示了性能结果，隐去了具体的材料牌号和客户信息。
+3. 你的任务是：基于这些真实的性能指标，对各方案进行专业对比分析，指出优缺点、风险并给出推荐。
+4. 报告中直接陈述分析结论，严禁使用"虚构"、"假设"、"模拟数据"等字样。
+5. 报告语气：专业、客观，如同你审阅的是本公司内部的设计方案。
+
+输出格式要求（逐方案点评）：
+## 方案1
+- 结构: 槽配合合理性、匝数是否适当、内外径比例
+- 电磁: 磁密是否在合理范围(齿磁密1.5~1.9T)、电密是否过高(>8A/mm²)
+- 热性能: 温升是否可接受(<100K)、发热因数评估
+- 损耗: 铜耗/铁耗比例分析
+- 总结: 优缺点综述
+
+## 方案2
+...
+
+## 推荐方案
+推荐方案X，因为..."""},
+                    {"role": "user", "content": f"需求规格：{specs.get('motor_type', '异步电动机')}, 功率{specs.get('power_kw')}kW, 电压{specs.get('voltage_v')}V, 冷却{specs.get('cooling')}, 效率目标{specs.get('efficiency_target')}%\n\n方案详细对比（含结构/电磁/损耗/热参数）：\n{comparison_text}"}
                 ],
                 temperature=0.3
             )
             review = response.choices[0].message.content
         else:
             # 本地点评
-            prompt = f"""你是电机设计评审专家。以下是基于规格"{specs.get('power_kw')}kW/{specs.get('voltage_v')}V/{specs.get('cooling')}"生成的Top5方案详细数据：
+            prompt = f"""你是电机设计评审专家。以下是基于规格"{specs.get('motor_type', '异步电动机')}/{specs.get('power_kw')}kW/{specs.get('voltage_v')}V/{specs.get('cooling')}"生成的Top5方案详细数据：
 
 {comparison_text}
 
 请逐方案做详细技术点评，每个方案包含：
-1. 结构特点（槽配合合理性、匝数是否适当）
+1. 结构特点（槽配合合理性、匝数是否适当、内外径比例、铁心长度）
 2. 电磁性能（磁密是否在合理范围1.5~1.9T、电密是否过高>8A/mm²）
 3. 热性能（温升是否可接受<100K、发热因数）
 4. 损耗分析（铜耗/铁耗比例）
