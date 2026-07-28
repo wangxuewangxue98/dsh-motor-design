@@ -5,6 +5,94 @@
 
 ---
 
+## [2.05.01] - 2026-07-29 (DEV)
+
+### D²L物理内核注入 — 分层类比选型法 + 运营数据飞轮
+
+将"分层类比选型法"完整编码到 Motor-AI 的三个核心智能体中，使系统不再是黑箱参数扫描器，而是一个懂得"为何选这个机座号"的物理知识引擎。
+
+#### Added — 物理内核基础
+- `Knowledge/y_series_physics.json` (82KB, 65型号): Y系列三相异步电动机型谱物理数据库，覆盖机座号80-280、2/4/6/8极、0.55-90kW，每条记录含扭矩/长径比/D²L/定子内外径/铁心长/气隙/槽配合/效率/绝缘等物理量
+- `Scripts/gen_y_series_db.py` (214行): Y系列数据库生成脚本，含65条RAW_DATA + 扭矩(T=9550·P/n)/长径比(λ=L/D)/D²L=((D/1000)²·(L/1000))自动计算 + 槽配合映射
+- `Scripts/physics_kernel.py` (850行): D²L物理内核模块，14+核心函数：
+  - `compute_torque()` / `compute_d2l()`: 基础物理量计算
+  - `find_closest_catalog()`: 按扭矩(极数过滤)查找最近Y系列型号
+  - `analogy_estimate()`: 类比推算 K_V=T_target/T_0; D'=D_0·K_V^(1/3); L'=L_0·K_V^(1/3)
+  - `apply_condition_factors()`: 三层条件修正 (直接影响层→阻断/间接修正层→系数/微调层→忽略)
+  - `shift_frame()`: 机座号跃迁判定 (微调<5%/细调5-20%±1-2/粗选>20%+2-3)
+  - `determine_scenario()`: 场景识别 (型谱模式 vs 类比模式)
+  - `focused_scan()`: 物理内核聚焦扫描 (±10-15%范围, 替代暴力网格扫描)
+  - `build_selection_narrative()`: 选型路径叙事生成
+
+#### Added — 运营数据飞轮
+- `Core/operation_flywheel.py` (709行): 运营数据飞轮引擎，双环飞轮的第二环
+  - SQLite三表: `operation_metrics`(步骤级) / `project_summary`(项目级) / `evolution_log`(进化日志)
+  - 三大进化机制: `evolve_question_strategy()`(追问策略) / `evolve_parameter_domain()`(参数域) / `evolve_ai_routing()`(AI路由)
+  - 三阈值检测: 质量(连续5次<70→行为重训) / 效率(连续3次<50%→调参) / 决策耗时(连续增长→UI优化)
+  - `get_operation_dashboard()`: 前端仪表盘数据聚合
+
+#### Changed — 智能体改造
+- `Agents/requirement_agent.py` (97→245行): 完全重写
+  - 三层分层提取: L1粗选(功率/电压/转速/扭矩/极数/冷却) + L2细调(工作制/过载/海拔/防护) + L3微调(安装/绝缘/轴承)
+  - 场景识别: 调用`determine_scenario()`判定型谱模式或类比模式
+  - 物理补全: 缺失扭矩时自动T=9550·P/n, 缺失极数时从转速推算
+  - 置信度评估: 加权评分(功率0.25/电压0.25/转速0.20/扭矩0.15/类型0.10/极数0.05)
+- `Scripts/motor_tools.py`: `generate_param_matrix()` 替换为物理内核聚焦扫描
+  - 调用`focused_scan()`生成5-15个物理聚焦方案(替代原30-50个暴力网格扫描)
+  - 每个方案含`_physics`字段: d_squared_l/lambda/estimated_torque/ref_model/scenario
+  - 异常时自动回退到`_generate_param_matrix_legacy()`(旧暴力扫描保留)
+- `Agents/review_agent.py` (166→317行): 新增物理逻辑解释
+  - `_build_physics_analysis()`: 选型路径叙事 + 物理核验表 + 分层对比(L1/L2/L3) + 机座号跃迁分析
+  - LLM提示词增加物理核验要求，要求每个方案附"物理核验"段落
+  - 返回结果新增`physics_analysis`字段(独立于LLM评审)
+- `Agents/orchestrator.py`: LangGraph工作流集成
+  - `WorkflowState`扩展: `scenario_info: dict` + `layered_specs: dict`
+  - 三节点(`_node_parse_requirement`/`_node_generate_designs`/`_node_generate_report`)集成运营指标记录
+  - 工作流末尾异步触发`run_all_evolution()`(非阻塞, 异常静默)
+
+#### Fixed
+- `physics_kernel.py`: 同步转速公式 `60*50//poles` → `120*50/poles` (原公式混淆极数与极对数, 4极误算750rpm应为1500rpm)
+
+#### Architecture
+- 新增4个文件, 修改4个文件, 总计 ~7,700 行代码
+- 物理内核作为独立模块, 所有智能体通过import调用, 不改动现有架构
+- 旧暴力扫描保留为legacy回退, 确保向后兼容
+
+---
+
+## [2.04.01] - 2026-07-28 (DEV)
+
+### Motor-CAD授权错误检测 + 客户端AI团队工作流 + 管理端任务管理 + 端口自动探测
+
+#### Added
+- `motor_tools.py`: `_detect_licence_error()` 新增 `activex_not_licensed` 类别，识别 "Dongle not licensed for Motor-CAD ActiveX Technology" 错误
+- `motor_tools.py`: 电磁分析后检测全零结果（授权失败的典型特征），抛出异常而非静默返回零值
+- `orchestrator.py`: 批量求解后检查 `_last_summary["licence_error"]`，通过 SSE 推送 `level=error` 事件
+- `task_manager.py`: 新增 `update_task_priority(task_id, priority)` 函数
+- `app.py`: 新增 `PUT /api/task/<task_id>/priority` 端点
+- 客户端 `ai_team_panel.py`: 多智能体协同工作流面板（需求输入/方案数量/6步骤状态卡片/实时日志/SSE流式）
+- 客户端 `ai_client.py`: `start_workflow()` SSE 流式 + `cancel_workflow()` + 端口自动探测(5000/5001) + 异步 `register_client()`
+- 管理端 `client_panel.py`: 运行中任务区域（任务ID/类型/状态/步骤/优先级/停止按钮/排序按钮）
+- 管理端 `api_client.py`: `get_active_tasks()` 方法 + 在线检测 `_is_backend_online()`
+
+#### Fixed
+- `motor_tools.py`: "Dongle not licensed for ActiveX" 错误被错误归类为 `dongle_busy`（可重试），现在正确识别为 `activex_not_licensed`（永久不可重试）
+- `orchestrator.py`: Motor-CAD 授权失败时工作流静默降级为模拟模式，客户端和管理端无任何错误提示
+- 客户端 `ai_client.py`: `register_client()` 中 `hostname` 字段误传 `client_id` 而非机器名
+- 客户端 `ai_client.py`: `register_client()` 在主线程同步调用，后端不在线时阻塞 UI 10 秒
+- 客户端 `config.py`: 默认 `api_port` 为 5001（trial），但用户运行 dev 后端（5000），导致连接拒绝
+- 管理端 `config.py`: `license_broker` 服务指向不存在的文件，进程崩溃→自动重启→无限循环
+- 管理端 `main_window.py`: `_check_motorcad()` 调用 `EnsureDispatch` 实际启动 Motor-CAD GUI（80+秒），状态一直显示"检测中"
+- 管理端 `api_client.py`: `cancel_task`/`reorder_task` URL 路径错误（`/api/tasks/` 应为 `/api/task/`）
+- 管理端 `task_panel`/`client_panel`/`user_panel`: QTimer 在主线程同步调用 API，后端不在线时阻塞 UI
+
+#### Changed
+- 客户端 `config.py`: 默认 `api_port` 5001→5000；`manager_base_url` 改为 `@property` 动态获取
+- 管理端 `task_panel`/`client_panel`/`user_panel`: 定时刷新改为后台线程+Signal异步模式，UI 零阻塞
+- 管理端 `api_client.py`: 所有 API 调用前先 `_is_backend_online()` 检测（socket 0.5s+5s缓存），离线时立即返回空
+
+---
+
 ## [2.02.03] - 2026-07-28 (TRIAL)
 
 ### 试用版任务调度面板开放

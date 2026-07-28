@@ -547,3 +547,170 @@ def cloud_polish_report(draft: str, desensitized_data: str) -> str:
         temperature=0.4,
     )
     return response.choices[0].message.content
+
+
+# ============================================================
+# AI 对话 (供客户端 AI 团队面板使用)
+# ============================================================
+
+MOTOR_DESIGN_SYSTEM_PROMPT = """你是 Motor-AI 电机设计助手，一位资深的电机设计工程师 AI。
+
+你的职责：
+1. 解答电机设计相关问题（电磁设计、热管理、结构设计、材料选择等）
+2. 分析电机性能参数（效率、功率因数、温升、转矩等）
+3. 提供设计优化建议和方案对比
+4. 辅助参数扫描和方案评估
+
+注意事项：
+- 回答要专业、简洁、实用
+- 如果用户提供具体数值，给出有针对性的建议
+- 涉及商业敏感信息（客户名称、合同号等）时提醒用户注意保密
+- 可以使用 Markdown 格式输出，提高可读性
+- 如果不确定，坦诚告知，不要编造数据
+"""
+
+
+def ai_chat(messages, model="auto", temperature=0.7):
+    """
+    AI 对话接口，支持多轮对话历史。
+
+    Args:
+        messages: 消息列表 [{"role": "user"|"assistant"|"system", "content": "..."}]
+        model: "auto" (优先云端) | "cloud" (强制云端) | "local" (强制本地)
+        temperature: 生成温度 (0-1)
+
+    Returns:
+        {"success": bool, "response": str, "model_used": str, "error": str}
+    """
+    # 脱敏检查用户消息
+    processed_messages = []
+    for msg in messages:
+        content = msg.get("content", "")
+        role = msg.get("role", "user")
+        if role == "user":
+            is_safe, warning = check_desensitize(content)
+            if not is_safe:
+                content = auto_desensitize(content)
+        processed_messages.append({"role": role, "content": content})
+
+    # 确保有 system prompt
+    has_system = any(m["role"] == "system" for m in processed_messages)
+    if not has_system:
+        processed_messages.insert(0, {"role": "system", "content": MOTOR_DESIGN_SYSTEM_PROMPT})
+
+    # 选择模型
+    use_cloud = False
+    use_local = False
+
+    if model == "cloud":
+        use_cloud = True
+    elif model == "local":
+        use_local = True
+    else:  # auto
+        use_cloud = bool(cloud_client)
+        use_local = not use_cloud and OLLAMA_AVAILABLE
+
+    # 云端对话
+    if use_cloud and cloud_client:
+        try:
+            response = cloud_client.chat.completions.create(
+                model=CLOUD_MODEL,
+                messages=processed_messages,
+                temperature=temperature,
+            )
+            return {
+                "success": True,
+                "response": response.choices[0].message.content,
+                "model_used": f"cloud:{CLOUD_MODEL}",
+                "error": "",
+            }
+        except Exception as e:
+            if use_local and OLLAMA_AVAILABLE:
+                pass  # 降级到本地
+            else:
+                return {"success": False, "response": "", "model_used": "", "error": str(e)}
+
+    # 本地对话
+    if OLLAMA_AVAILABLE:
+        try:
+            payload = {
+                "model": LOCAL_MODEL,
+                "messages": processed_messages,
+                "stream": False,
+                "options": {"temperature": temperature},
+            }
+            if not USE_GPU:
+                payload["options"]["num_gpu"] = 0
+
+            req = urllib.request.Request(
+                f"{OLLAMA_URL}/api/chat",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                result = json.loads(resp.read())
+            return {
+                "success": True,
+                "response": result.get("message", {}).get("content", "").strip(),
+                "model_used": f"local:{LOCAL_MODEL}",
+                "error": "",
+            }
+        except Exception as e:
+            return {"success": False, "response": "", "model_used": "", "error": str(e)}
+
+    return {
+        "success": False,
+        "response": "",
+        "model_used": "",
+        "error": "AI 服务不可用：云端未配置，本地 Ollama 未运行",
+    }
+
+
+def get_available_models():
+    """获取可用的 AI 模型列表"""
+    models = []
+
+    if cloud_client:
+        models.append({
+            "id": "cloud",
+            "name": f"DeepSeek ({CLOUD_MODEL})",
+            "type": "cloud",
+            "available": True,
+            "description": "云端大模型，适合复杂分析和深度推理",
+        })
+    else:
+        models.append({
+            "id": "cloud",
+            "name": "DeepSeek (未配置)",
+            "type": "cloud",
+            "available": False,
+            "description": "需要在管理端配置 DEEPSEEK_API_KEY",
+        })
+
+    if OLLAMA_AVAILABLE:
+        models.append({
+            "id": "local",
+            "name": f"Ollama ({LOCAL_MODEL})",
+            "type": "local",
+            "available": True,
+            "description": "本地大模型，数据不出机，适合快速问答",
+        })
+    else:
+        models.append({
+            "id": "local",
+            "name": "Ollama (未运行)",
+            "type": "local",
+            "available": False,
+            "description": "需要启动 Ollama 服务并加载模型",
+        })
+
+    models.append({
+        "id": "auto",
+        "name": "自动选择",
+        "type": "auto",
+        "available": True,
+        "description": "优先使用云端，不可用时降级到本地",
+    })
+
+    return models

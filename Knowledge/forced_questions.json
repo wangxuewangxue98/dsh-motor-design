@@ -1,0 +1,31 @@
+{
+  "rules": [
+    {
+      "param": "torque_nm",
+      "frequency": 1.0,
+      "keywords": [
+        "转矩",
+        "扭矩",
+        "力矩",
+        "torque"
+      ],
+      "message": "请补充torque_nm信息，这会影响电机选型精度",
+      "created_at": "2026-07-29T02:16:30.718465",
+      "trigger_count": 6
+    },
+    {
+      "param": "duty_cycle",
+      "frequency": 1.0,
+      "keywords": [
+        "工作制",
+        "断续",
+        "连续",
+        "周期",
+        "duty"
+      ],
+      "message": "请补充duty_cycle信息，这会影响电机选型精度",
+      "created_at": "2026-07-29T02:16:30.718481",
+      "trigger_count": 6
+    }
+  ]
+}

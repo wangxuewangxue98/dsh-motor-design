@@ -49,8 +49,9 @@ from devils_advocate import DevilsAdvocate
 import audit_logger
 
 # motor_tools 直接导入 (用于 generate_designs 节点的进度回调)
-from motor_tools import generate_param_matrix, batch_solve
+from motor_tools import generate_param_matrix, batch_solve, get_last_summary
 from evolution_engine import find_matching_templates
+from operation_flywheel import record_step_metric, record_project_summary, run_all_evolution
 
 
 # 节点名 → 状态名映射 (供 run/run_streaming 统一设置)
@@ -75,12 +76,15 @@ STEP_DISPLAY_NAMES = {
 
 
 class WorkflowState(TypedDict):
-    """工作流状态 (v1.02.02 双轨 - 修复并行冲突)"""
+    """工作流状态 (v2.04 物理内核 + 运营飞轮)"""
     raw_text: str
     specs: dict
     confidence: float
     results: List[dict]
     top_solutions: List[dict]
+    # v2.04: 物理内核
+    scenario_info: dict             # 场景识别结果 (catalog/analogy)
+    layered_specs: dict             # L1/L2/L3 分层规格
     # 放大轨
     review: str                    # 评审推荐意见 (支持报告)
     recommendation: str
@@ -192,41 +196,76 @@ class MotorAIOrchestrator:
         self._current_project_id = project_id
         self._set_project_id(project_id)
 
+        _start_ts = time.time()
         result = self.req_agent.safe_run(raw_text=state["raw_text"])
+        _duration_ms = int((time.time() - _start_ts) * 1000)
+
         if "error" in result:
             self._push_progress("parse_requirement", f"需求解析失败: {result['error']}", "error")
+            record_step_metric(project_id, "parse_requirement", "RequirementAgent",
+                               duration_ms=_duration_ms, quality_score=0,
+                               quality_issues=result["error"][:200])
             return {"errors": [result["error"]]}
+
+        # v2.04: 提取场景识别和分层规格
+        scenario_info = result.get("scenario_info", {})
+        layered_specs = result.get("layered_specs", {})
+        scenario = scenario_info.get("scenario", "catalog")
+        torque = scenario_info.get("corrected_torque_nm", "?")
 
         self._push_progress("parse_requirement",
                             f"需求解析完成: 类型={result['specs'].get('motor_type', '异步电动机')}, "
                             f"功率={result['specs'].get('power_kw', '?')}kW, "
                             f"电压={result['specs'].get('voltage_v', '?')}V, "
-                            f"转速={result['specs'].get('speed_rpm', '?')}rpm")
+                            f"转速={result['specs'].get('speed_rpm', '?')}rpm, "
+                            f"转矩={torque}Nm, 选型模式={scenario}")
+
+        # 记录运营指标
+        record_step_metric(project_id, "parse_requirement", "RequirementAgent",
+                           duration_ms=_duration_ms, quality_score=result.get("confidence", 0) * 100,
+                           quality_issues=json.dumps(result.get("extraction_notes", []),
+                                                     ensure_ascii=False)[:200])
+
         return {"specs": result["specs"], "confidence": result["confidence"],
+                "scenario_info": scenario_info,
+                "layered_specs": layered_specs,
                 "project_id": project_id,
                 "timestamp": datetime.now().isoformat()}
 
     def _node_generate_designs(self, state: WorkflowState) -> dict:
         count = state.get("solve_count", 10)
         specs = state.get("specs", {})
+        project_id = state.get("project_id", "")
+        scenario_info = state.get("scenario_info", {})
 
-        self._push_progress("generate_designs", f"开始生成参数矩阵 (目标 {count} 组方案)...")
-        self._push_progress("generate_designs", "查找匹配的技能模板...")
+        # v2.04: 物理内核进度提示
+        scenario = scenario_info.get("scenario", "catalog")
+        torque = scenario_info.get("corrected_torque_nm", "?")
+        poles = scenario_info.get("poles", "?")
+        self._push_progress("generate_designs",
+                            f"开始生成参数矩阵 (目标 {count} 组方案)...")
+        self._push_progress("generate_designs",
+                            f"物理内核: 选型模式={scenario}, 目标转矩={torque}Nm, 极数={poles}极")
+
+        _start_ts = time.time()
 
         # 1. 查找匹配的技能模板
+        self._push_progress("generate_designs", "查找匹配的技能模板...")
         matched = find_matching_templates(specs, top_n=3)
         if matched:
             self._push_progress("generate_designs",
                                 f"找到 {len(matched)} 个匹配模板: {', '.join(m.get('name', '?') for m in matched[:2])}")
 
-        # 2. 生成参数矩阵
-        self._push_progress("generate_designs", "生成参数扫描矩阵...")
+        # 2. 生成参数矩阵 (v2.04: 使用物理内核聚焦扫描)
+        self._push_progress("generate_designs", "D²L 物理内核聚焦扫描...")
         params_list = generate_param_matrix(specs, count)
         self._push_progress("generate_designs",
                             f"参数矩阵生成完成: {len(params_list)} 组方案, 开始批量求解...")
 
         # 3. 批量求解 (带进度回调)
+        _first_fallback_reported = False
         def _batch_progress(idx, total, params, result):
+            nonlocal _first_fallback_reported
             mode_tag = "[MC]" if result.get("solve_mode") == "motorcad" else "[SIM]"
             eff = result.get("efficiency", 0)
             temp = result.get("max_temp", 0)
@@ -235,8 +274,30 @@ class MotorAIOrchestrator:
                                 f"OD={params.get('stator_od', '?')}mm "
                                 f"Poles={params.get('poles', '?')} "
                                 f"效率={eff:.1f}% 温升={temp:.0f}K")
+            # 首次降级时推送告警
+            if not _first_fallback_reported and result.get("fallback_reason"):
+                _first_fallback_reported = True
+                self._push_progress("generate_designs",
+                                    f"Motor-CAD 降级: {result['fallback_reason'][:100]}",
+                                    "warning")
 
         results = batch_solve(params_list, progress_cb=_batch_progress)
+
+        # v2.03.02: 检测 Motor-CAD 授权错误并推送告警
+        _summary = get_last_summary()
+        if _summary.get("licence_error"):
+            self._push_progress("generate_designs",
+                                f"[授权错误] {_summary['licence_error']}",
+                                "error")
+            self._push_progress("generate_designs",
+                                f"已自动降级为模拟模式完成 {len(results)} 组方案 "
+                                f"(MC={_summary.get('motorcad', 0)}, "
+                                f"SIM={_summary.get('simulation', 0)})",
+                                "warning")
+        elif _summary.get("fallback_reason"):
+            self._push_progress("generate_designs",
+                                f"Motor-CAD 降级提示: {_summary['fallback_reason'][:120]}",
+                                "warning")
 
         # 4. 按效率排序
         results.sort(key=lambda x: x.get("efficiency", 0), reverse=True)
@@ -248,6 +309,20 @@ class MotorAIOrchestrator:
                                 f"最优效率={best.get('efficiency', 0):.2f}%, "
                                 f"温升={best.get('max_temp', 0):.1f}K",
                                 "success")
+
+        # v2.04: 记录运营指标
+        _duration_ms = int((time.time() - _start_ts) * 1000)
+        _mc_count = _summary.get("motorcad", 0)
+        _sim_count = _summary.get("simulation", 0)
+        _quality = 80 if results else 0
+        if results:
+            eff_avg = sum(r.get("efficiency", 0) for r in results) / len(results)
+            _quality = min(100, eff_avg)
+        record_step_metric(project_id, "generate_designs", "DesignAgent",
+                           duration_ms=_duration_ms,
+                           quality_score=_quality,
+                           quality_issues=f"MC={_mc_count}, SIM={_sim_count}, "
+                                          f"results={len(results)}")
 
         return {"results": results,
                 "matched_templates": matched}
@@ -379,18 +454,51 @@ class MotorAIOrchestrator:
         review = state.get("review", "无评审意见")
         results = state.get("results", [])
         specs = state.get("specs", {})
+        project_id = state.get("project_id", "")
 
+        _start_ts = time.time()
         self._push_progress("generate_report", "调用本地 LLM 生成报告 (可能需要 30-60 秒)...")
 
         result = self.report_agent.safe_run(
             specs=specs, results=results, review=review, use_cloud=use_cloud)
 
+        _duration_ms = int((time.time() - _start_ts) * 1000)
+
         if "error" in result:
             self._push_progress("generate_report", f"报告生成失败: {result['error']}", "error")
+            record_step_metric(project_id, "generate_report", "ReportAgent",
+                               duration_ms=_duration_ms, quality_score=0,
+                               quality_issues=result["error"][:200])
             return {"errors": [result["error"]]}
 
         self._push_progress("generate_report",
                             f"报告已生成: {result.get('filename', '?')}", "success")
+
+        # v2.04: 记录运营指标 + 项目汇总
+        record_step_metric(project_id, "generate_report", "ReportAgent",
+                           duration_ms=_duration_ms,
+                           cost_cents=50 if use_cloud else 0,
+                           cost_mode="cloud" if use_cloud else "local",
+                           quality_score=90)
+        # 记录项目汇总 (供运营飞轮进化)
+        record_project_summary(
+            project_id=project_id, specs=specs,
+            total_duration_ms=0,  # 由各步骤汇总
+            total_cost_cents=50 if use_cloud else 0,
+            quality_overall=90,
+        )
+        # 触发运营飞轮进化 (异步, 不阻塞报告输出)
+        try:
+            evo_results = run_all_evolution()
+            _evo_count = sum(1 for v in evo_results.values()
+                             if v.get("evolved") or v.get("alerts"))
+            if _evo_count:
+                self._push_progress("generate_report",
+                                    f"运营飞轮: {_evo_count} 项进化触发",
+                                    "info")
+        except Exception as e:
+            pass  # 飞轮异常不影响主流程
+
         return {"report": result["report"],
                 "report_filepath": result["filepath"],
                 "report_filename": result["filename"]}
@@ -400,6 +508,7 @@ class MotorAIOrchestrator:
         return {
             "raw_text": raw_text, "specs": {}, "confidence": 0.0,
             "results": [], "top_solutions": [],
+            "scenario_info": {}, "layered_specs": {},
             "review": "", "recommendation": "",
             "con_report": "", "convergence_findings": {},
             "pro_report": "", "ready_for_confirm": False,

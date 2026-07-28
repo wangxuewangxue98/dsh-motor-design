@@ -20,6 +20,17 @@ exports/
 # ---- 测试报告 (可重新生成) ----
 Reports/com_diagnosis.json
 Reports/motor_tools_integration_test.json
+Reports/*.md
+Reports/*.mot
+
+# ---- 运行时数据 ----
+data/
+KnowledgeBase/*.db
+KnowledgeBase/*.db-shm
+KnowledgeBase/*.db-wal
+
+# ---- Motor-CAD 仿真输出 ----
+Templates/Templates/FEResultsData/
 
 # ---- Motor-CAD 临时文件 ----
 *.mot.tmp

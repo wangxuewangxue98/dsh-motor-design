@@ -101,7 +101,7 @@ def ensure_templates() -> dict:
 
 # ---- 求解模式跟踪 ----
 _solve_log = []  # 记录每次求解的模式和原因
-_last_summary = {"motorcad": 0, "simulation": 0, "fallback_reason": ""}
+_last_summary = {"motorcad": 0, "simulation": 0, "fallback_reason": "", "licence_error": ""}  # line 104
 _com_skip = False  # COM 连接失败后跳过后续重试
 _demo_detected = False  # 运行中检测到 Demo 或授权受限
 
@@ -111,7 +111,13 @@ def _log(msg, level="info"):
     entry = {"time": datetime.now().strftime("%H:%M:%S"), "level": level, "msg": msg}
     _solve_log.append(entry)
     prefix = "[WARN]" if level == "warn" else "[INFO]" if level == "info" else "[ERROR]"
-    print(f"[motor_tools] {prefix} {msg}")
+    # Windows 控制台默认 GBK 编码, 某些 Unicode 字符 (如 emoji) 会触发 UnicodeEncodeError
+    # 用 errors='replace' 安全输出, 防止编码异常中断工作流
+    try:
+        print(f"[motor_tools] {prefix} {msg}")
+    except UnicodeEncodeError:
+        safe_msg = msg.encode('gbk', errors='replace').decode('gbk')
+        print(f"[motor_tools] {prefix} {safe_msg}")
 
 
 def get_solve_log():
@@ -128,7 +134,7 @@ def reset_solve_log():
     """清空求解日志"""
     global _solve_log, _last_summary, _com_skip, _demo_detected
     _solve_log.clear()
-    _last_summary = {"motorcad": 0, "simulation": 0, "fallback_reason": ""}
+    _last_summary = {"motorcad": 0, "simulation": 0, "fallback_reason": "", "licence_error": ""}
     _com_skip = False
     _demo_detected = False
 
@@ -217,6 +223,15 @@ def _detect_licence_error(error_text: str) -> tuple:
         return (
             "demo_limit",
             "Motor-CAD 当前为 Demo 演示版，COM 自动化接口通常被禁用。请购买正式授权或联系 Motor Design Ltd 申请试用。",
+            True,
+        )
+    if "not licensed" in et and "activex" in et:
+        return (
+            "activex_not_licensed",
+            "Motor-CAD 加密狗不支持 ActiveX 自动化技术。当前授权不包含 COM/ActiveX 接口权限，"
+            "所有 GetVariable / DoMagneticCalculation / DoSteadyStateAnalysis / LoadFromFile 调用均被拒绝。"
+            "请联系 Motor Design Ltd 确认授权是否包含 ActiveX Automation 模块，"
+            "或在 .env 中设置 MOTORCAD_USE_MODE=simulation 使用模拟模式完成工作流。",
             True,
         )
     if "already accessing dongle" in et or "dongle" in et:
@@ -420,8 +435,43 @@ def _get_motorcad_instance():
 
 def generate_param_matrix(specs: dict, count: int = 30) -> list:
     """
-    根据需求规格生成参数扫描矩阵
-    返回参数字典列表，包含结构参数和电气参数
+    根据需求规格生成参数扫描矩阵 (v2.04 物理内核版)
+    ==============================================
+    改造: 放弃暴力网格扫描, 改为基于 D²L 物理内核的聚焦扫描
+
+    工作流:
+      1. 场景识别 (型谱模式 / 类比模式)
+      2. 型谱查表 或 D²L 类比推算 → 获得基准尺寸
+      3. 在基准尺寸 ±10~15% 范围内聚焦扫描
+      4. 每组方案附带物理核验信息 (_physics 字段)
+
+    效果: 方案数从 30-50 组降低到 5-15 组, 且物理意义明确
+
+    返回参数字典列表，包含结构参数和电气参数 (兼容旧格式):
+      - stator_od, stator_id, rotor_od, core_length, air_gap
+      - tooth_width, yoke_thickness, shaft_dia
+      - poles, voltage, peak_current, speed
+      - slots_stator, slots_rotor, turns_per_coil, parallel_circuits
+      - _physics: {d_squared_l, lambda, lambda_valid, estimated_torque, ref_model, scenario}
+    """
+    try:
+        from physics_kernel import focused_scan, determine_scenario
+        # 使用物理内核聚焦扫描
+        scenario_info = determine_scenario(specs)
+        designs = focused_scan(specs, count=count, scenario_info=scenario_info)
+        if designs:
+            return designs
+        # 物理内核失败则回退到旧逻辑
+        print("[motor_tools] 物理内核聚焦扫描未生成方案, 回退到暴力扫描")
+    except Exception as e:
+        print(f"[motor_tools] 物理内核异常, 回退到暴力扫描: {e}")
+
+    return _generate_param_matrix_legacy(specs, count)
+
+
+def _generate_param_matrix_legacy(specs: dict, count: int = 30) -> list:
+    """
+    [旧版] 暴力网格扫描 — 保留作为物理内核的降级回退
 
     结构参数 (v1.02.03 扩展):
       - stator_od: 定子外径 (mm)
@@ -544,6 +594,12 @@ def run_one_design(params: dict) -> dict:
             reason = str(e)
             _log(f"Motor-CAD 求解失败，降级为模拟模式: {reason}", "warn")
             _log("后续方案将直接使用模拟模式（跳过 COM 重试）", "warn")
+            # v2.03.02: 检测授权错误
+            if not _last_summary["licence_error"]:
+                cat, friendly, is_perm = _detect_licence_error(reason)
+                if cat != "motorcad_error":
+                    _last_summary["licence_error"] = friendly
+                    _log(f"授权错误检测: [{cat}] {friendly}", "error")
             _com_skip = True
             _last_summary["simulation"] += 1
             if not _last_summary["fallback_reason"]:
@@ -725,6 +781,20 @@ def batch_solve(param_list: list, verbose: bool = True, progress_cb=None) -> lis
                 except Exception as e:
                     reason = str(e)
                     _log(f"[{i+1}/{total}] Motor-CAD 求解失败: {reason}", "warn")
+                    # v2.03.02: 检测授权错误并生成友好消息
+                    # v2.04.01: 永久性错误 → 立即断开 COM, 后续方案直接模拟
+                    cat, friendly, is_perm = _detect_licence_error(reason)
+                    if cat != "motorcad_error" and not _last_summary["licence_error"]:
+                        _last_summary["licence_error"] = friendly
+                        _log(f"授权错误检测: [{cat}] {friendly}", "error")
+                    # 永久性授权错误 → 停止后续 COM 调用 (无论是否首次检测)
+                    if is_perm and mc_instance:
+                        _log(f"永久性授权错误 [{cat}], 停止后续 COM 调用, 剩余 {total - i - 1} 组方案直接使用模拟模式", "warn")
+                        try:
+                            mc_instance.disconnect()
+                        except Exception:
+                            pass
+                        mc_instance = None
                     _last_summary["simulation"] += 1
                     if not _last_summary["fallback_reason"]:
                         _last_summary["fallback_reason"] = reason
@@ -773,11 +843,11 @@ def batch_solve(param_list: list, verbose: bool = True, progress_cb=None) -> lis
     mc_count = _last_summary["motorcad"]
     sim_count = _last_summary["simulation"]
     if MOTORCAD_USE_MODE == "manual":
-        _log(f"📋 全部 {total} 组方案已生成占位数据，等待手动导入 Motor-CAD 求解结果", "info")
+        _log(f"[INFO] 全部 {total} 组方案已生成占位数据，等待手动导入 Motor-CAD 求解结果", "info")
     elif sim_count > 0 and mc_count == 0:
-        _log(f"⚠️ 全部 {total} 组方案使用模拟数据 (原因: {_last_summary['fallback_reason']})", "warn")
+        _log(f"[WARN] 全部 {total} 组方案使用模拟数据 (原因: {_last_summary['fallback_reason']})", "warn")
     elif sim_count > 0:
-        _log(f"⚠️ {total} 组中 {mc_count} 组 Motor-CAD 求解, {sim_count} 组模拟数据", "warn")
+        _log(f"[WARN] {total} 组中 {mc_count} 组 Motor-CAD 求解, {sim_count} 组模拟数据", "warn")
     else:
         _log(f"全部 {total} 组由 Motor-CAD 求解完成")
 
@@ -885,6 +955,18 @@ def _run_motorcad_with_instance(connector, params: dict) -> dict:
         efficiency = output_power / input_power * 100
     else:
         efficiency = 0.0
+
+    # v2.03.02: 检测 ActiveX 授权失败 (所有结果为 0)
+    if output_power == 0 and input_power == 0 and efficiency == 0:
+        _licence_msg = (
+            "Motor-CAD ActiveX 授权失败: DoMagneticCalculation 返回但所有变量为 0。"
+            "错误信息: Dongle not licensed for Motor-CAD ActiveX Technology。"
+            "加密狗不包含 ActiveX 自动化权限。"
+        )
+        _log(_licence_msg, "error")
+        _, friendly, is_permanent = _detect_licence_error(_licence_msg)
+        _last_summary["licence_error"] = friendly
+        raise RuntimeError(_licence_msg)
 
     # 计算转矩 (N·m): P / (2π × n / 60)
     if shaft_speed > 0 and output_power > 0:
@@ -1024,7 +1106,7 @@ def check_motorcad_status() -> dict:
                 status["activex_mode"] = mode
                 if mode == "none":
                     status["licence_note"] = (
-                        "⚠️ ActiveX 注册模式为 '免注册', COM 自动化不可用!\n"
+                        "[WARN] ActiveX 注册模式为 '免注册', COM 自动化不可用!\n"
                         "请在 Motor-CAD 菜单中切换: 默认设置 → 控件注册 → 单客户端设置\n"
                         "(切换后持久化, 重启 Motor-CAD 后仍然有效)"
                     )

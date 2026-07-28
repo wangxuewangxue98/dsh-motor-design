@@ -257,7 +257,7 @@ if __name__ == "__main__":
             tag = " [默认]" if t["is_default"] else ""
             print(f"  {t['name']}{tag} ({t['size_kb']} KB, {t['modified']})")
     else:
-        print("\n⚠️ 没有可用模板!")
+        print("\n[WARN] 没有可用模板!")
         print("请在 Motor-CAD GUI 中创建:")
         print("  1. 启动 Motor-CAD")
         print("  2. File -> New 选择电机类型")

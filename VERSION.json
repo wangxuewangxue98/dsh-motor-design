@@ -1,7 +1,7 @@
 {
     "system_name": "Motor-AI",
-    "version": "2.03.02",
-    "version_date": "2026-07-28 01:45",
+    "version": "2.05.01",
+    "version_date": "2026-07-29 02:22",
     "description": "电机设计AI辅助系统",
     "version_scheme": "主版本.次版本.修订号 (X.YY.ZZ)",
     "version_suffix": {
@@ -10,6 +10,49 @@
     },
     "changelog_file": "CHANGELOG.md",
     "changelog": [
+        {
+            "version": "2.05.01",
+            "date": "2026-07-29 02:22",
+            "tag": "v2.05.01-dev",
+            "env": "dev",
+            "summary": "D²L物理内核注入 — 分层类比选型法 + 运营数据飞轮",
+            "changes": [
+                "Knowledge/y_series_physics.json: Y系列三相异步电动机型谱物理数据库 (65型号, 机座号80-280, 2/4/6/8极, 0.55-90kW, 含D²L/长径比/槽配合等物理量)",
+                "Scripts/gen_y_series_db.py: Y系列数据库生成脚本 (RAW_DATA 65条 + 扭矩/长径比/D²L自动计算 + 槽配合映射)",
+                "Scripts/physics_kernel.py: D²L物理内核模块 (14+函数: 扭矩计算/型谱查表/类比推算/条件修正/机座号跃迁/场景识别/聚焦扫描/选型叙事)",
+                "Agents/requirement_agent.py: 重写为三层分层提取 (L1粗选/L2细调/L3微调) + 场景识别 (型谱模式/类比模式) + 物理补全(扭矩/极数自动计算)",
+                "Scripts/motor_tools.py: generate_param_matrix 替换为物理内核聚焦扫描 (±10-15%范围, 替代暴力网格扫描, 30-50→5-15方案), 旧版保留为_generate_param_matrix_legacy",
+                "Agents/review_agent.py: 新增物理逻辑解释 (选型路径叙事 + 物理核验表 + 分层对比 + 机座号跃迁分析), LLM提示词增加物理核验要求",
+                "Core/operation_flywheel.py: 运营数据飞轮引擎 (SQLite三表: operation_metrics/project_summary/evolution_log; 三大进化机制: 追问策略/参数域/AI路由; 三阈值检测: 质量/效率/决策耗时)",
+                "Agents/orchestrator.py: WorkflowState扩展scenario_info/layered_specs字段; 三节点集成运营指标记录; 工作流末尾异步触发run_all_evolution()",
+                "修复: physics_kernel.py 同步转速公式 60*50//poles→120*50/poles (极数与极对数混淆)"
+            ]
+        },
+        {
+            "version": "2.04.01",
+            "date": "2026-07-28 21:50",
+            "tag": "v2.04.01-dev",
+            "env": "dev",
+            "summary": "Motor-CAD授权错误检测 + 客户端AI团队工作流 + 管理端任务管理 + 端口自动探测",
+            "changes": [
+                "motor_tools.py: _detect_licence_error() 新增 activex_not_licensed 类别 (Dongle not licensed for ActiveX)",
+                "motor_tools.py: _run_motorcad_with_instance() 电磁分析后检测全零结果→抛出授权异常",
+                "motor_tools.py: batch_solve/run_one_design 异常处理中调用 _detect_licence_error 生成友好消息存入 _last_summary",
+                "orchestrator.py: _node_generate_designs 后检查 licence_error 推送 SSE level=error 事件",
+                "orchestrator.py: _batch_progress 首次降级时推送 level=warning 事件",
+                "task_manager.py: 新增 update_task_priority() 函数",
+                "app.py: 新增 PUT /api/task/<task_id>/priority 端点",
+                "客户端 ai_team_panel.py: 多智能体协同工作流面板 (需求输入/方案数量/6步骤状态卡片/实时日志/SSE)",
+                "客户端 ai_client.py: start_workflow() SSE流式 + cancel_workflow() + 端口自动探测(5000/5001)+异步register_client",
+                "客户端 config.py: 默认 api_port 5001→5000 + manager_base_url 动态获取",
+                "管理端 client_panel.py: 运行中任务区域 (任务ID/类型/状态/步骤/优先级/停止/排序)",
+                "管理端 api_client.py: get_active_tasks() + 修复cancel/reorder URL路径 + 在线检测+缓存",
+                "管理端 config.py: 移除 license_broker 服务 + 迁移逻辑(自动移除无效服务)",
+                "管理端 main_window.py: Motor-CAD检测改用psutil(删除EnsureDispatch) + 首次500ms检测",
+                "管理端 task_panel/client_panel/user_panel: 定时刷新改为后台线程+Signal异步模式",
+                "管理端 api_client.py: _is_backend_online() socket 0.5s+5s缓存, 后端离线时立即返回空"
+            ]
+        },
         {
             "version": "2.02.03",
             "date": "2026-07-28 02:25",

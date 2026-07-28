@@ -206,6 +206,29 @@ def cancel_task(task_id: str) -> bool:
     return True
 
 
+def update_task_priority(task_id: str, priority: int) -> bool:
+    """
+    更新任务优先级 (0=最高, 10=最低)。
+
+    Returns:
+        True 如果成功, False 如果任务不存在
+    """
+    priority = max(0, min(10, priority))
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT id FROM task_queue WHERE id = ?", (task_id,)
+        ).fetchone()
+        if not row:
+            return False
+        conn.execute(
+            "UPDATE task_queue SET priority = ?, updated_at = ? WHERE id = ?",
+            (priority, datetime.now().isoformat(), task_id)
+        )
+        conn.commit()
+    print(f"[task_manager] 任务优先级已更新: {task_id} → {priority}")
+    return True
+
+
 def cleanup_old_tasks(days: int = 30) -> int:
     """清理超过指定天数的已完成/已取消任务，返回删除数量"""
     with _get_conn() as conn:

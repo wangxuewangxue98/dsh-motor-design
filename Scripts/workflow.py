@@ -153,9 +153,9 @@ def analyze_and_report(raw_text: str, specs: dict, results: list) -> str:
     print("\n[7] 脱敏自检...")
     is_safe, warning = check_desensitize(comparison_text)
     if is_safe:
-        print(f"    ✅ {warning}，可以发送云端")
+        print(f"    [OK] {warning}，可以发送云端")
     else:
-        print(f"    ⚠️ {warning}，需要脱敏处理")
+        print(f"    [WARN] {warning}，需要脱敏处理")
 
     # 云端深度分析
     print("\n[8] 云端深度分析...")

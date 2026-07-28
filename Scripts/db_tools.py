@@ -266,6 +266,38 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_status ON task_queue(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_task_created ON task_queue(created_at DESC)")
         conn.commit()
+
+        # v2.04.01: AI 团队工作流结果表 (过程交付物 + 最终报告)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ai_team_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id TEXT DEFAULT '',
+                client_id TEXT DEFAULT '',
+                source TEXT DEFAULT 'dev',
+                raw_text TEXT DEFAULT '',
+                motor_type TEXT DEFAULT '',
+                power_kw REAL,
+                voltage_v REAL,
+                speed_rpm REAL,
+                efficiency REAL,
+                max_temp REAL,
+                specs_json TEXT DEFAULT '{}',
+                results_json TEXT DEFAULT '[]',
+                results_count INTEGER DEFAULT 0,
+                review TEXT DEFAULT '',
+                con_report TEXT DEFAULT '',
+                report TEXT DEFAULT '',
+                report_filename TEXT DEFAULT '',
+                recommendation TEXT DEFAULT '',
+                has_licence_error INTEGER DEFAULT 0,
+                created_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_aitr_client ON ai_team_results(client_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_aitr_project ON ai_team_results(project_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_aitr_created ON ai_team_results(created_time DESC)")
+        conn.commit()
         print(f"[db_tools] 数据库就绪: {DB_PATH}")
 
 
@@ -548,4 +580,71 @@ def get_project_by_id(project_id: str) -> dict:
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        return dict(row) if row else None
+
+
+# ============================================================
+# v2.04.01: AI 团队工作流结果管理
+# ============================================================
+def save_ai_team_result(data: dict) -> int:
+    """保存 AI 团队工作流完整结果 (过程交付物 + 报告)"""
+    specs = data.get("specs") or {}
+    results = data.get("results") or []
+    top = results[0] if results else {}
+
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute("""
+            INSERT INTO ai_team_results (
+                project_id, client_id, source, raw_text,
+                motor_type, power_kw, voltage_v, speed_rpm,
+                efficiency, max_temp,
+                specs_json, results_json, results_count,
+                review, con_report, report, report_filename,
+                recommendation, has_licence_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            data.get("project_id", ""),
+            data.get("client_id", ""),
+            data.get("source", "dev"),
+            data.get("raw_text", ""),
+            specs.get("motor_type", ""),
+            specs.get("power_kw"),
+            specs.get("voltage_v"),
+            specs.get("speed_rpm"),
+            top.get("efficiency"),
+            top.get("max_temp"),
+            json.dumps(specs, ensure_ascii=False),
+            json.dumps(results, ensure_ascii=False),
+            len(results),
+            data.get("review", ""),
+            data.get("con_report", ""),
+            data.get("report", ""),
+            data.get("report_filename", ""),
+            data.get("recommendation", ""),
+            1 if data.get("has_licence_error") else 0,
+        ))
+        conn.commit()
+        return cur.lastrowid
+
+
+def get_ai_team_results(client_id: str = None, limit: int = 200, offset: int = 0) -> list:
+    """查询 AI 团队结果列表 (可选按 client_id 过滤)"""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        sql = "SELECT * FROM ai_team_results WHERE 1=1"
+        params = []
+        if client_id:
+            sql += " AND client_id = ?"
+            params.append(client_id)
+        sql += " ORDER BY created_time DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_ai_team_result(result_id: int) -> dict:
+    """按 ID 获取 AI 团队结果详情"""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM ai_team_results WHERE id = ?", (result_id,)).fetchone()
         return dict(row) if row else None

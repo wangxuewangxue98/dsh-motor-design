@@ -82,6 +82,7 @@ try:
         local_parse_requirements, local_review_solutions, local_draft_report,
         cloud_parse_requirements, cloud_deep_analysis, cloud_polish_report,
         check_desensitize, auto_desensitize,
+        ai_chat, get_available_models,
     )
 except Exception as e:
     AI_OK = False
@@ -107,6 +108,7 @@ try:
         get_user_by_username, get_user_by_email, get_user_by_id, create_user,
         get_all_users, update_user, get_product_lines, get_product_line_by_id,
         create_project, get_projects_by_user, get_project_by_id,
+        save_ai_team_result, get_ai_team_results, get_ai_team_result,
     )
     init_db()
 except Exception as e:
@@ -194,6 +196,7 @@ try:
     from task_manager import (
         create_task, update_task, get_task, get_active_tasks,
         get_all_tasks, get_tasks_by_status, cancel_task as _cancel_task,
+        update_task_priority as _update_task_priority,
         STATUS_QUEUED, STATUS_RUNNING, STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED,
         TYPE_SOLVE, TYPE_WORKFLOW,
     )
@@ -968,8 +971,39 @@ def api_cloud_analysis():
 
 
 # ============================================================
-# API：报告生成
+# API：AI 对话 (供客户端 AI 团队面板)
 # ============================================================
+@app.route("/api/ai/chat", methods=["POST"])
+def api_ai_chat():
+    """AI 对话接口，支持多轮对话"""
+    if not AI_OK:
+        return jsonify({"error": f"AI 模块未加载: {AI_ERR}"}), 500
+
+    data = request.get_json()
+    messages = data.get("messages", [])
+    model = data.get("model", "auto")
+    temperature = data.get("temperature", 0.7)
+
+    if not messages:
+        return jsonify({"error": "消息不能为空"}), 400
+
+    try:
+        result = ai_chat(messages, model=model, temperature=temperature)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"success": False, "response": "", "model_used": "", "error": str(e)}), 500
+
+
+@app.route("/api/ai/models", methods=["GET"])
+def api_ai_models():
+    """获取可用的 AI 模型列表"""
+    if not AI_OK:
+        return jsonify({"models": [], "error": f"AI 模块未加载: {AI_ERR}"})
+    try:
+        models = get_available_models()
+        return jsonify({"models": models, "ai_ok": AI_OK})
+    except Exception as e:
+        return jsonify({"models": [], "error": str(e)})
 @app.route("/api/report", methods=["POST"])
 def api_report():
     """生成完整报告（含详细参数对比表）"""
@@ -1488,6 +1522,62 @@ def api_workflow_run():
 
 
 # ============================================================
+# API：AI 团队工作流结果 (v2.04.01)
+# ============================================================
+@app.route("/api/ai_team/results", methods=["POST"])
+def api_ai_team_save_result():
+    """客户端上传 AI 团队工作流完整结果"""
+    if not DB_OK:
+        return jsonify({"error": "Database not available"}), 500
+    data = request.get_json()
+    if not data or not data.get("raw_text"):
+        return jsonify({"error": "raw_text required"}), 400
+
+    try:
+        result_id = save_ai_team_result(data)
+        return jsonify({"success": True, "id": result_id})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ai_team/results", methods=["GET"])
+def api_ai_team_results():
+    """查询 AI 团队工作流结果列表 (管理端方案库)"""
+    if not DB_OK:
+        return jsonify({"error": "Database not available"}), 500
+    client_id = request.args.get("client_id", "")
+    limit = request.args.get("limit", 200, type=int)
+    offset = request.args.get("offset", 0, type=int)
+    try:
+        rows = get_ai_team_results(client_id=client_id or None, limit=limit, offset=offset)
+        # 列表中不返回大文本字段，减少传输
+        for r in rows:
+            r.pop("review", None)
+            r.pop("con_report", None)
+            r.pop("report", None)
+        return jsonify({"success": True, "results": rows})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ai_team/results/<int:result_id>", methods=["GET"])
+def api_ai_team_result_detail(result_id: int):
+    """获取 AI 团队工作流结果详情"""
+    if not DB_OK:
+        return jsonify({"error": "Database not available"}), 500
+    try:
+        row = get_ai_team_result(result_id)
+        if not row:
+            return jsonify({"error": "not found"}), 404
+        return jsonify({"success": True, "result": row})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================================
 # API：反馈（采纳/拒绝）
 # ============================================================
 @app.route("/api/feedback", methods=["POST"])
@@ -1887,6 +1977,21 @@ def api_task_cancel(task_id):
     return jsonify({"status": "cancelled", "task_id": task_id})
 
 
+@app.route("/api/task/<task_id>/priority", methods=["PUT"])
+def api_task_priority(task_id):
+    """更新任务优先级"""
+    if not TASK_MANAGER_OK:
+        return jsonify({"error": "TaskManager not available"}), 500
+    data = request.get_json(silent=True) or {}
+    priority = data.get("priority")
+    if priority is None or not isinstance(priority, int):
+        return jsonify({"error": "priority (int 0-10) required"}), 400
+    success = _update_task_priority(task_id, priority)
+    if not success:
+        return jsonify({"error": "Task not found"}), 404
+    return jsonify({"status": "ok", "task_id": task_id, "priority": priority})
+
+
 @app.route("/api/network/status")
 def api_network_status():
     """获取网络访问状态：本机IP、Tailscale、端口监听、绑定地址"""
@@ -2262,8 +2367,129 @@ def api_admin_adjust_points(user_id):
 
 
 # ============================================================
-# v2.02.01: 产品线配置 API
+# v1.03.01: 客户端设备管理 API
 # ============================================================
+_CLIENT_SETTINGS_FILE = os.path.join(BASE_DIR, "data", "client_settings.json")
+
+
+def _load_client_settings():
+    """加载客户端设置 (JSON 文件)"""
+    try:
+        if os.path.exists(_CLIENT_SETTINGS_FILE):
+            with open(_CLIENT_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _save_client_settings(settings):
+    """保存客户端设置"""
+    os.makedirs(os.path.dirname(_CLIENT_SETTINGS_FILE), exist_ok=True)
+    with open(_CLIENT_SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(settings, f, ensure_ascii=False, indent=2)
+
+
+# 默认客户端配置
+DEFAULT_CLIENT_CONFIG = {
+    "allowed_solve_modes": ["local", "remote", "ask"],
+    "privacy_level": "strict",
+    "max_concurrent_tasks": 1,
+    "ai_models_allowed": ["auto", "cloud", "local"],
+    "auto_update": True,
+    "update_channel": "stable",
+    "motorcad_required": False,
+    "notes": "",
+}
+
+
+@app.route("/api/admin/clients")
+def api_admin_clients():
+    """管理员获取所有客户端列表"""
+    if not g.user or g.user.get("role") != "admin":
+        return jsonify({"error": "需要管理员权限"}), 403
+    settings = _load_client_settings()
+    clients = []
+    for client_id, cfg in settings.items():
+        clients.append({
+            "client_id": client_id,
+            "hostname": cfg.get("hostname", ""),
+            "last_seen": cfg.get("last_seen", ""),
+            "registered_at": cfg.get("registered_at", ""),
+            "tailscale_ip": cfg.get("tailscale_ip", ""),
+            "version": cfg.get("version", ""),
+            "config": cfg.get("config", DEFAULT_CLIENT_CONFIG),
+            "online": cfg.get("online", False),
+        })
+    return jsonify({"clients": clients, "total": len(clients)})
+
+
+@app.route("/api/admin/clients/<client_id>", methods=["PUT"])
+def api_admin_update_client(client_id):
+    """管理员更新客户端配置"""
+    if not g.user or g.user.get("role") != "admin":
+        return jsonify({"error": "需要管理员权限"}), 403
+    data = request.get_json() or {}
+    settings = _load_client_settings()
+    if client_id not in settings:
+        settings[client_id] = {"config": dict(DEFAULT_CLIENT_CONFIG)}
+    # 更新配置字段
+    cfg = settings[client_id].setdefault("config", dict(DEFAULT_CLIENT_CONFIG))
+    for key in ("allowed_solve_modes", "privacy_level", "max_concurrent_tasks",
+                "ai_models_allowed", "auto_update", "update_channel",
+                "motorcad_required", "notes"):
+        if key in data:
+            cfg[key] = data[key]
+    _save_client_settings(settings)
+    return jsonify({"status": "ok", "client_id": client_id, "config": cfg})
+
+
+@app.route("/api/admin/clients/<client_id>", methods=["GET"])
+def api_admin_get_client(client_id):
+    """管理员获取单个客户端配置"""
+    if not g.user or g.user.get("role") != "admin":
+        return jsonify({"error": "需要管理员权限"}), 403
+    settings = _load_client_settings()
+    client = settings.get(client_id, {})
+    return jsonify({
+        "client_id": client_id,
+        "hostname": client.get("hostname", ""),
+        "last_seen": client.get("last_seen", ""),
+        "tailscale_ip": client.get("tailscale_ip", ""),
+        "version": client.get("version", ""),
+        "config": client.get("config", DEFAULT_CLIENT_CONFIG),
+    })
+
+
+@app.route("/api/client/register", methods=["POST"])
+def api_client_register():
+    """客户端注册/心跳 (客户端启动时调用)"""
+    data = request.get_json() or {}
+    client_id = data.get("client_id", "")
+    if not client_id:
+        return jsonify({"error": "client_id 不能为空"}), 400
+
+    settings = _load_client_settings()
+    if client_id not in settings:
+        settings[client_id] = {
+            "config": dict(DEFAULT_CLIENT_CONFIG),
+            "registered_at": datetime.now().isoformat(),
+        }
+
+    settings[client_id].update({
+        "hostname": data.get("hostname", ""),
+        "tailscale_ip": data.get("tailscale_ip", ""),
+        "version": data.get("version", ""),
+        "last_seen": datetime.now().isoformat(),
+        "online": True,
+    })
+    _save_client_settings(settings)
+
+    # 返回该客户端的配置 (管理员设定的)
+    return jsonify({
+        "status": "ok",
+        "config": settings[client_id].get("config", DEFAULT_CLIENT_CONFIG),
+    })
 @app.route("/api/product-lines")
 def api_product_lines():
     """获取产品线列表"""
