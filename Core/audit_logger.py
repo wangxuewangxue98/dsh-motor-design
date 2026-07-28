@@ -73,14 +73,28 @@ def log(agent_name: str, action: str, parameters: Any = None,
         f.write(log_line + "\n")
 
 
-def get_recent_logs(limit: int = 50) -> list:
-    """获取最近的审计日志"""
+def get_recent_logs(limit: int = 50, offset: int = 0, agent: str = "",
+                    action: str = "", start_date: str = "", end_date: str = "") -> list:
+    """获取审计日志（支持过滤）"""
     conn = _get_conn()
     try:
-        rows = conn.execute(
-            "SELECT id, timestamp, agent_name, action, parameters, result, status, duration_ms, project_id FROM audit_log ORDER BY id DESC LIMIT ?",
-            (limit,)
-        ).fetchall()
+        query = "SELECT id, timestamp, agent_name, action, parameters, result, status, duration_ms, project_id FROM audit_log WHERE 1=1"
+        params = []
+        if agent:
+            query += " AND agent_name = ?"
+            params.append(agent)
+        if action:
+            query += " AND action = ?"
+            params.append(action)
+        if start_date:
+            query += " AND timestamp >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND timestamp <= ?"
+            params.append(end_date)
+        query += " ORDER BY id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = conn.execute(query, params).fetchall()
         return [
             {
                 "id": r[0], "timestamp": r[1], "agent_name": r[2], "action": r[3],

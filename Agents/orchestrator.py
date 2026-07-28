@@ -55,6 +55,8 @@ from operation_flywheel import (
     record_step_metric, record_project_summary, run_all_evolution,
     record_ui_interaction, record_report_metric,
 )
+from cost_tracker import TaskCostTracker
+import human_checkpoint as hc
 import json as _json
 
 
@@ -100,6 +102,7 @@ STEP_STATUS_MAP = {
     "review_solutions": "reviewed",
     "convergence_review": "converged",
     "decision_gate": "ready",
+    "human_approval": "approved",
     "generate_report": "completed",
 }
 
@@ -110,12 +113,24 @@ STEP_DISPLAY_NAMES = {
     "review_solutions": "评审推荐师",
     "convergence_review": "收敛阵营",
     "decision_gate": "决策门",
+    "human_approval": "人工确认",
     "generate_report": "报告撰写员",
 }
 
 
+def _estimate_tokens(text) -> int:
+    """粗略估算token数 (中英文混合约4字符/token)"""
+    if not text:
+        return 0
+    if isinstance(text, dict):
+        text = json.dumps(text, ensure_ascii=False)
+    elif not isinstance(text, str):
+        text = str(text)
+    return max(1, len(text) // 4)
+
+
 class WorkflowState(TypedDict):
-    """工作流状态 (v2.04 物理内核 + 运营飞轮)"""
+    """工作流状态 (v2.04 物理内核 + 运营飞轮 + v2.05.03 人机协作)"""
     raw_text: str
     specs: dict
     confidence: float
@@ -133,6 +148,9 @@ class WorkflowState(TypedDict):
     # 决策门
     pro_report: str                # 放大轨最终报告
     ready_for_confirm: bool        # 双报告齐备, 可交付用户确认
+    checkpoint_id: str             # v2.05.03: 人工检查点ID
+    human_decision: str            # v2.05.03: 人工决策结果
+    human_comment: str             # v2.05.03: 人工批注
     # 报告
     report: str
     report_filepath: str
@@ -172,6 +190,9 @@ class MotorAIOrchestrator:
         # 实时进度队列 (线程安全)
         self._progress_queue = queue.Queue()
 
+        # v2.05.03: 成本追踪器 (每个工作流实例重新绑定project_id)
+        self.cost_tracker = TaskCostTracker()
+
     def _build_graph(self):
         graph = StateGraph(WorkflowState)
 
@@ -180,6 +201,7 @@ class MotorAIOrchestrator:
         graph.add_node("review_solutions", self._node_review_solutions)
         graph.add_node("convergence_review", self._node_convergence_review)
         graph.add_node("decision_gate", self._node_decision_gate)
+        graph.add_node("human_approval", self._node_human_approval)
         graph.add_node("generate_report", self._node_generate_report)
 
         graph.add_edge(START, "parse_requirement")
@@ -199,7 +221,16 @@ class MotorAIOrchestrator:
         # 双轨汇入决策门
         graph.add_edge("review_solutions", "decision_gate")
         graph.add_edge("convergence_review", "decision_gate")
-        graph.add_edge("decision_gate", "generate_report")
+        # v2.05.03: 决策门之后进入人工确认 (双报告齐备时) 或直达报告
+        graph.add_conditional_edges(
+            "decision_gate",
+            self._after_decision_gate,
+            {
+                "need_human": "human_approval",
+                "skip": "generate_report",
+            }
+        )
+        graph.add_edge("human_approval", "generate_report")
         graph.add_edge("generate_report", END)
 
         return graph
@@ -210,12 +241,20 @@ class MotorAIOrchestrator:
             return ["review_pro", "review_con"]
         return ["skip"]
 
+    def _after_decision_gate(self, state: WorkflowState) -> str:
+        """v2.05.03: 决策门后路由, 双报告齐备则进入人工确认"""
+        if state.get("ready_for_confirm") and state.get("results"):
+            return "need_human"
+        return "skip"
+
     def _set_project_id(self, project_id: str):
         for agent in [self.req_agent, self.design_agent, self.review_agent,
                       self.report_agent, self.reverse_reviewer,
                       self.reality_checker, self.sandbox_simulator,
                       self.devils_advocate]:
             agent.project_id = project_id
+        # v2.05.03: 同步成本追踪器project_id
+        self.cost_tracker.project_id = project_id
 
     # ==================== 进度回调 ====================
     def _push_progress(self, step: str, message: str, level: str = "info"):
@@ -264,6 +303,14 @@ class MotorAIOrchestrator:
                            duration_ms=_duration_ms, quality_score=result.get("confidence", 0) * 100,
                            quality_issues=json.dumps(result.get("extraction_notes", []),
                                                      ensure_ascii=False)[:200])
+
+        # v2.05.03: 记录AI成本 (本地)
+        tokens_in = _estimate_tokens(state["raw_text"])
+        tokens_out = _estimate_tokens(result)
+        self.cost_tracker.project_id = project_id
+        self.cost_tracker.record_ai_step("parse_requirement", tokens_in=tokens_in,
+                                         tokens_out=tokens_out, model_type="local",
+                                         detail={"confidence": result.get("confidence", 0)})
 
         return {"specs": result["specs"], "confidence": result["confidence"],
                 "scenario_info": scenario_info,
@@ -363,6 +410,14 @@ class MotorAIOrchestrator:
                            quality_issues=f"MC={_mc_count}, SIM={_sim_count}, "
                                           f"results={len(results)}")
 
+        # v2.05.03: 记录电脑计算耗时成本
+        self.cost_tracker.project_id = project_id
+        self.cost_tracker.record_compute_time("generate_designs",
+                                              cpu_hours=_duration_ms / 3600000.0,
+                                              detail={"mc_count": _mc_count,
+                                                      "sim_count": _sim_count,
+                                                      "results": len(results)})
+
         return {"results": results,
                 "matched_templates": matched}
 
@@ -400,6 +455,16 @@ class MotorAIOrchestrator:
                            cost_mode="cloud" if use_cloud else "local",
                            quality_score=_quality,
                            quality_issues=f"top={top_count}, physics={'Y' if has_physics else 'N'}")
+
+        # v2.05.03: 记录AI评审成本
+        self.cost_tracker.project_id = project_id
+        model_type = "cloud" if use_cloud else "local"
+        tokens_in = _estimate_tokens(state.get("results", [])) + _estimate_tokens(state.get("specs", {}))
+        tokens_out = _estimate_tokens(result.get("review", "")) + _estimate_tokens(result.get("recommendation", ""))
+        self.cost_tracker.record_ai_step("review_solutions", tokens_in=tokens_in,
+                                         tokens_out=tokens_out, model_type=model_type,
+                                         detail={"top_count": top_count,
+                                                 "has_physics": has_physics})
 
         self._push_progress("review_solutions",
                             f"支持报告已生成 (推荐 {top_count} 个方案)",
@@ -506,6 +571,14 @@ class MotorAIOrchestrator:
         _conv_duration = int((time.time() - _conv_start) * 1000)
         self._push_progress("convergence_review", "反对报告生成完成", "success")
 
+        # v2.05.03: 记录收敛阵营AI成本 (统一记为本地, 因四剑客默认本地运行)
+        self.cost_tracker.project_id = project_id
+        tokens_in = _estimate_tokens(results) + _estimate_tokens(specs)
+        tokens_out = _estimate_tokens(con_report)
+        self.cost_tracker.record_ai_step("convergence_review", tokens_in=tokens_in,
+                                         tokens_out=tokens_out, model_type="local",
+                                         detail={"agents": ["reverse", "reality", "sandbox", "devils"]})
+
         return {"con_report": con_report,
                 "convergence_findings": findings}
 
@@ -526,18 +599,78 @@ class MotorAIOrchestrator:
 
     # ==================== 决策门 ====================
     def _node_decision_gate(self, state: WorkflowState) -> dict:
-        """决策门: 要求支持报告与反对报告同时齐备"""
+        """决策门: 要求支持报告与反对报告同时齐备, 并创建人工检查点"""
         pro = state.get("review", "")
         con = state.get("con_report", "")
         ready = bool(pro and con)
+        project_id = state.get("project_id", "")
+        checkpoint_id = ""
 
-        if ready:
+        if ready and project_id:
             self._push_progress("decision_gate", "双报告齐备, 决策门已解锁", "success")
+            # v2.05.03: 创建人工检查点 (设计-方案终选)
+            checkpoint_id = hc.create_checkpoint(
+                project_id=project_id,
+                checkpoint_type="design_final_select",
+                title="方案终选确认",
+                description="请审阅支持报告与反对报告,确认或覆盖AI推荐的最终方案",
+                context={
+                    "review": pro[:1000],
+                    "con_report": con[:1000],
+                    "recommendation": state.get("recommendation", "")[:500],
+                    "top_solutions": state.get("top_solutions", [])[:3],
+                },
+                timeout_seconds=hc.DEFAULT_TIMEOUTS["design_final_select"],  # 24h
+                default_action="auto_first"
+            )
+            self._push_progress("decision_gate", f"人工检查点已创建: {checkpoint_id}", "info")
         else:
             self._push_progress("decision_gate", "报告未齐备, 决策门锁定", "warn")
 
         return {"pro_report": pro,
-                "ready_for_confirm": ready}
+                "ready_for_confirm": ready,
+                "checkpoint_id": checkpoint_id}
+
+    # ==================== 人工确认 ====================
+    def _node_human_approval(self, state: WorkflowState) -> dict:
+        """v2.05.03: 人工确认节点 - 阻塞等待用户决策或超时默认"""
+        checkpoint_id = state.get("checkpoint_id", "")
+        project_id = state.get("project_id", "")
+        if not checkpoint_id:
+            return {"human_decision": "auto_skip", "human_comment": "无检查点"}
+
+        self._push_progress("human_approval", "等待人工确认 (方案终选)...", "info")
+        # v2.05.03: 开始记录人工等待时间
+        self.cost_tracker.project_id = project_id
+        human_event = self.cost_tracker.start_human_step("human_approval",
+                                                          detail={"checkpoint_id": checkpoint_id})
+
+        def _progress_cb(remaining: int):
+            # 每60秒推送一次倒计时
+            if remaining % 60 == 0:
+                self._push_progress("human_approval",
+                                    f"人工确认倒计时: 剩余 {remaining//60} 分钟", "info")
+
+        result = hc.wait_for_decision(checkpoint_id, poll_interval=2.0,
+                                      on_progress=_progress_cb)
+
+        decision = result.get("decision", "auto_first")
+        comment = result.get("comment", "")
+        is_timeout = result.get("timeout", False)
+
+        # 结束人工等待成本记录
+        self.cost_tracker.end_human_step(human_event, decision=decision)
+
+        if is_timeout:
+            self._push_progress("human_approval",
+                                f"人工确认超时, 默认执行: {decision}", "warn")
+        else:
+            self._push_progress("human_approval",
+                                f"收到人工决策: {decision}", "success")
+
+        return {"human_decision": decision,
+                "human_comment": comment,
+                "ready_for_confirm": True}
 
     # ==================== 报告 ====================
     def _node_generate_report(self, state: WorkflowState) -> dict:
@@ -573,13 +706,39 @@ class MotorAIOrchestrator:
                            cost_cents=50 if use_cloud else 0,
                            cost_mode="cloud" if use_cloud else "local",
                            quality_score=90)
-        # 记录项目汇总 (供运营飞轮进化)
-        record_project_summary(
-            project_id=project_id, specs=specs,
-            total_duration_ms=0,  # 由各步骤汇总
-            total_cost_cents=50 if use_cloud else 0,
-            quality_overall=90,
-        )
+
+        # v2.05.03: 记录报告生成AI成本
+        self.cost_tracker.project_id = project_id
+        model_type = "cloud" if use_cloud else "local"
+        tokens_in = _estimate_tokens(specs) + _estimate_tokens(results) + _estimate_tokens(review)
+        tokens_out = _estimate_tokens(result.get("report", ""))
+        self.cost_tracker.record_ai_step("generate_report", tokens_in=tokens_in,
+                                         tokens_out=tokens_out, model_type=model_type,
+                                         detail={"filename": result.get("filename", "")})
+
+        # 生成并保存成本报告 + 运营分析
+        try:
+            cost_report = self.cost_tracker.generate_report()
+            # 记录项目汇总 (供运营飞轮进化) - 使用真实成本数据
+            total_cost_cents = int(cost_report.get("total_cost", 0) * 100)
+            total_duration_ms = sum(
+                e.get("duration_ms", 0) for e in cost_report.get("detailed_breakdown", [])
+            )
+            record_project_summary(
+                project_id=project_id, specs=specs,
+                total_duration_ms=total_duration_ms,
+                total_cost_cents=total_cost_cents,
+                quality_overall=90,
+            )
+        except Exception:
+            # 成本统计异常不影响主流程
+            record_project_summary(
+                project_id=project_id, specs=specs,
+                total_duration_ms=_duration_ms,
+                total_cost_cents=50 if use_cloud else 0,
+                quality_overall=90,
+            )
+
         # 触发运营飞轮进化 (异步, 不阻塞报告输出)
         try:
             evo_results = run_all_evolution()
@@ -653,6 +812,13 @@ class MotorAIOrchestrator:
                 return [{"step": "generate_report",
                          "message": "报告撰写员开始生成报告..."}]
         elif node_name == "decision_gate":
+            # v2.05.03: 双报告齐备时进入人工确认, 否则直达报告
+            if state_update.get("ready_for_confirm") and state_update.get("checkpoint_id"):
+                return [{"step": "human_approval",
+                         "message": "等待人工确认: 请审阅双报告并做出决策..."}]
+            return [{"step": "generate_report",
+                     "message": "报告撰写员开始生成正式设计报告..."}]
+        elif node_name == "human_approval":
             return [{"step": "generate_report",
                      "message": "报告撰写员开始生成正式设计报告..."}]
         return []
@@ -774,6 +940,21 @@ class MotorAIOrchestrator:
                         "step": ns["step"],
                         "message": ns["message"],
                     }
+                    # v2.05.03: 人工确认节点额外推送 human_input_required 事件
+                    if ns["step"] == "human_approval":
+                        checkpoint_id = state_update.get("checkpoint_id", "")
+                        cp_info = hc.get_decision_context(checkpoint_id) if checkpoint_id else {}
+                        yield {
+                            "type": "human_input_required",
+                            "step": "human_approval",
+                            "checkpoint_id": checkpoint_id,
+                            "title": cp_info.get("title", "人工确认"),
+                            "description": cp_info.get("description", ""),
+                            "context": cp_info.get("context", {}),
+                            "timeout_seconds": cp_info.get("timeout_seconds", 86400),
+                            "default_action": cp_info.get("default_action", "auto_first"),
+                            "options": cp_info.get("options", ["approve", "reject", "override"]),
+                        }
 
         # 3. drain 剩余进度事件
         while not self._progress_queue.empty():

@@ -182,6 +182,31 @@ try:
 except Exception as e:
     FLYWHEEL_OK = False
 
+# ---- v2.05.03: 成本核算 / 运营分析师 / 人工检查点 ----
+COST_OK = True
+COST_ERR = ""
+try:
+    from cost_tracker import get_project_cost_report, format_report_markdown
+except Exception as e:
+    COST_OK = False
+    COST_ERR = str(e)
+
+ANALYST_OK = True
+ANALYST_ERR = ""
+try:
+    from operation_analyst import analyze_cost_report
+except Exception as e:
+    ANALYST_OK = False
+    ANALYST_ERR = str(e)
+
+HUMAN_CP_OK = True
+HUMAN_CP_ERR = ""
+try:
+    import human_checkpoint as hc
+except Exception as e:
+    HUMAN_CP_OK = False
+    HUMAN_CP_ERR = str(e)
+
 # ---- v1.03.02: 全局进度广播 ----
 PROGRESS_HUB_OK = True
 try:
@@ -1495,6 +1520,10 @@ def api_workflow_run():
                         elif "errors" in update:
                             yield f"data: {json.dumps({'type': 'step_error', 'step': 'generate_report', 'error': update['errors'][0] if update['errors'] else 'unknown'}, ensure_ascii=False)}\n\n"
 
+                # ---- v2.05.03: 需要人工输入 ----
+                elif event_type == "human_input_required":
+                    yield f"data: {json.dumps({'type': 'human_input_required', 'step': update.get('step', ''), 'checkpoint_id': update.get('checkpoint_id', ''), 'title': update.get('title', '人工确认'), 'description': update.get('description', ''), 'context': update.get('context', {}), 'timeout_seconds': update.get('timeout_seconds', 86400), 'default_action': update.get('default_action', 'auto_first'), 'options': update.get('options', ['approve', 'reject', 'override'])}, ensure_ascii=False)}\n\n"
+
                 # ---- fatal: 致命错误 ----
                 elif event_type == "fatal":
                     yield f"data: {json.dumps({'type': 'fatal', 'error': update.get('error', 'unknown')}, ensure_ascii=False)}\n\n"
@@ -1519,6 +1548,84 @@ def api_workflow_run():
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ============================================================
+# API：人工确认 / 成本报告 / 运营分析 (v2.05.03)
+# ============================================================
+@app.route("/api/workflow/human_input", methods=["POST"])
+def api_workflow_human_input():
+    """提交人工决策,解除工作流阻塞"""
+    if not HUMAN_CP_OK:
+        return jsonify({"error": f"Human checkpoint not available: {HUMAN_CP_ERR}"}), 500
+    data = request.get_json()
+    checkpoint_id = data.get("checkpoint_id", "").strip()
+    decision = data.get("decision", "").strip()
+    comment = data.get("comment", "")
+    if not checkpoint_id or not decision:
+        return jsonify({"error": "checkpoint_id and decision required"}), 400
+    ok = hc.submit_decision(checkpoint_id, decision, comment)
+    if not ok:
+        return jsonify({"error": "Checkpoint not found or already decided"}), 404
+    return jsonify({"success": True, "checkpoint_id": checkpoint_id, "decision": decision})
+
+
+@app.route("/api/human/checkpoints", methods=["GET"])
+def api_human_checkpoints():
+    """获取待处理的人工检查点"""
+    if not HUMAN_CP_OK:
+        return jsonify({"error": f"Human checkpoint not available: {HUMAN_CP_ERR}"}), 500
+    project_id = request.args.get("project_id", "")
+    try:
+        pending = hc.list_pending_checkpoints(project_id or None)
+        return jsonify({"success": True, "checkpoints": pending})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/human/checkpoint/<checkpoint_id>", methods=["GET"])
+def api_human_checkpoint_detail(checkpoint_id: str):
+    """获取检查点详情 (含决策上下文)"""
+    if not HUMAN_CP_OK:
+        return jsonify({"error": f"Human checkpoint not available: {HUMAN_CP_ERR}"}), 500
+    cp = hc.get_checkpoint(checkpoint_id)
+    if not cp:
+        return jsonify({"error": "Checkpoint not found"}), 404
+    return jsonify({"success": True, "checkpoint": cp,
+                    "context": hc.get_decision_context(checkpoint_id)})
+
+
+@app.route("/api/cost/report/<project_id>", methods=["GET"])
+def api_cost_report(project_id: str):
+    """获取项目成本报告"""
+    if not COST_OK:
+        return jsonify({"error": f"Cost tracker not available: {COST_ERR}"}), 500
+    try:
+        report = get_project_cost_report(project_id)
+        report["markdown"] = format_report_markdown(report)
+        return jsonify({"success": True, "report": report})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/cost/analyze/<project_id>", methods=["GET"])
+def api_cost_analyze(project_id: str):
+    """获取项目运营分析建议"""
+    if not COST_OK or not ANALYST_OK:
+        return jsonify({"error": f"Analyst not available: {COST_ERR or ANALYST_ERR}"}), 500
+    try:
+        context = request.args.get("context", "{}")
+        try:
+            context = json.loads(context)
+        except Exception:
+            context = {}
+        result = analyze_cost_report(project_id, context)
+        return jsonify({"success": True, "analysis": result})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 
 # ============================================================
@@ -1776,11 +1883,16 @@ def api_convergence_run():
 # ============================================================
 @app.route("/api/audit/logs")
 def api_audit_logs():
-    """获取审计日志"""
+    """获取审计日志（支持过滤）"""
     if not AUDIT_OK:
         return jsonify({"error": "Audit system not available"}), 500
     limit = int(request.args.get("limit", 50))
-    return jsonify({"logs": audit_logger.get_recent_logs(limit)})
+    offset = int(request.args.get("offset", 0))
+    agent = request.args.get("agent", "")
+    action = request.args.get("action", "")
+    start_date = request.args.get("start_date", "")
+    end_date = request.args.get("end_date", "")
+    return jsonify({"logs": audit_logger.get_recent_logs(limit, offset, agent, action, start_date, end_date)})
 
 
 @app.route("/api/audit/stats")

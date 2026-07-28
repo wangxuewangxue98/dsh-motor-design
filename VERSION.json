@@ -1,7 +1,7 @@
 {
     "system_name": "Motor-AI",
-    "version": "2.05.02",
-    "version_date": "2026-07-29 03:51",
+    "version": "2.05.03",
+    "version_date": "2026-07-29 06:46",
     "description": "电机设计AI辅助系统",
     "version_scheme": "主版本.次版本.修订号 (X.YY.ZZ)",
     "version_suffix": {
@@ -10,6 +10,22 @@
     },
     "changelog_file": "CHANGELOG.md",
     "changelog": [
+        {
+            "version": "2.05.03",
+            "date": "2026-07-29 06:46",
+            "tag": "v2.05.03-dev",
+            "env": "dev",
+            "summary": "人机协作检查点 + 成本核算模型 + 运营分析师 + 客户端交换区",
+            "changes": [
+                "Core/cost_tracker.py: 成本核算模块 (TaskCostTracker类, AI Token/电脑/人工三维度计费, cost_events表, generate_report() + format_report_markdown())",
+                "Core/human_checkpoint.py: 人机协作检查点系统 (9种检查点类型+超时默认动作, human_checkpoints表, create/wait/submit决策链, 内存缓存+线程锁)",
+                "Agents/operation_analyst.py: 运营分析师智能体 (6维度分析: 人工耗时/AI成本/电脑耗时/历史均值/超时默认/决策效率, risk_level评估)",
+                "Agents/orchestrator.py: 新增human_approval阻塞节点(decision_gate->human_approval->generate_report), 各节点集成cost_tracker成本记录, SSE新增human_input_required事件",
+                "app/app.py: 新增5个API端点 (POST /api/workflow/human_input, GET /api/human/checkpoints, GET /api/human/checkpoint/<id>, GET /api/cost/report/<pid>, GET /api/cost/analyze/<pid>)",
+                "客户端 ai_client.py: 新增submit_human_decision() 调用POST /api/workflow/human_input",
+                "客户端 ai_team_panel.py: 新增人机协作交换区 (检查点展示/超时倒计时/批准-拒绝-覆盖按钮/成本实时统计/备注输入), STEPS新增human_approval步骤, _handle_human_input_required事件处理"
+            ]
+        },
         {
             "version": "2.05.02",
             "date": "2026-07-29 03:51",

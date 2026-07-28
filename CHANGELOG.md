@@ -5,6 +5,26 @@
 
 ---
 
+## [2.05.03] - 2026-07-29 (DEV)
+
+### Added — 人机协作 + 成本核算
+- **成本核算模块** (`Core/cost_tracker.py`): `TaskCostTracker`类, 三维度计费 (AI Token: 本地0.6/1.2元, 云端3/6元; 电脑1元/h; 人工20元/h), `cost_events`表, `generate_report()`输出完整成本报告, `format_report_markdown()`格式化Markdown
+- **人机协作检查点** (`Core/human_checkpoint.py`): 9种检查点类型 (design_final_select 24h / customer_service_confirm 2h / 等), 对应超时默认动作 (auto_first / auto_confirm / auto_reject / 等), `human_checkpoints`表, `create_checkpoint()`→`wait_for_decision()`→`submit_decision()`完整决策链
+- **运营分析师智能体** (`Agents/operation_analyst.py`): 6维度分析 (人工耗时/AI成本/电脑耗时/历史均值对比/超时默认/决策效率), `risk_level`风险评估 (low/medium/high), `analyze_cost_report()`独立入口
+- **编排器human_approval节点** (`Agents/orchestrator.py`): 在`decision_gate`和`generate_report`之间插入阻塞节点, 调用`hc.wait_for_decision()`等待人工决策, 各节点集成`cost_tracker`成本记录, SSE新增`human_input_required`事件
+- **5个Flask API端点** (`app/app.py`): `POST /api/workflow/human_input` (提交决策), `GET /api/human/checkpoints` (待处理列表), `GET /api/human/checkpoint/<id>` (详情), `GET /api/cost/report/<pid>` (成本报告), `GET /api/cost/analyze/<pid>` (运营分析)
+
+### Added — 客户端人机协作交换区
+- **ai_client.py**: 新增`submit_human_decision()`方法, 调用`POST /api/workflow/human_input`提交人工决策
+- **ai_team_panel.py 交换区**: 在步骤卡片区和日志区之间插入人机协作交换区卡片, 展示检查点标题/描述/上下文/成本统计/超时默认提示, 超时倒计时 (QTimer每秒刷新), 批准/拒绝/覆盖三按钮+备注输入框
+- **ai_team_panel.py STEPS**: 新增`human_approval`步骤 (与decision_gate共编号4), 步骤4改为双卡片容器
+- **ai_team_panel.py 事件处理**: `_handle_human_input_required()`展示交换区, `_submit_decision()`后台提交, `_on_decision_submitted()`回调, `_hide_exchange()`清理
+
+### Fixed
+- `Core/cost_tracker.py`: `format_report_markdown()`函数缩进错误修复 (8空格→4空格)
+
+---
+
 ## [2.05.02] - 2026-07-29 (DEV)
 
 ### Added — 新增进化机制
