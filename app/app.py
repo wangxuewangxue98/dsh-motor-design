@@ -2652,6 +2652,110 @@ def api_points_membership():
 
 
 # ============================================================
+# v2.05.02: 运营数据飞轮 API
+# ============================================================
+
+@app.route("/api/operation/dashboard")
+def api_operation_dashboard():
+    """运营仪表盘: 效率/成本/质量/进化规则/UI交互统计"""
+    try:
+        from operation_flywheel import get_operation_dashboard
+        data = get_operation_dashboard()
+        return jsonify({"status": "ok", "data": data})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/operation/evolution-log")
+def api_evolution_log():
+    """进化历史日志"""
+    try:
+        from operation_flywheel import _get_conn
+        conn = _get_conn()
+        try:
+            limit = request.args.get("limit", 50, type=int)
+            rows = conn.execute(
+                "SELECT id, timestamp, agent, trigger_type, action_taken, rule_data "
+                "FROM evolution_log ORDER BY id DESC LIMIT ?",
+                (limit,)
+            ).fetchall()
+            logs = []
+            for r in rows:
+                entry = {
+                    "id": r[0], "timestamp": r[1], "agent": r[2],
+                    "trigger_type": r[3], "action_taken": r[4],
+                }
+                try:
+                    entry["rule_data"] = json.loads(r[5]) if r[5] else None
+                except (json.JSONDecodeError, TypeError):
+                    entry["rule_data"] = r[5]
+                logs.append(entry)
+            return jsonify({"status": "ok", "logs": logs, "count": len(logs)})
+        finally:
+            conn.close()
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/operation/ui-feedback", methods=["POST"])
+def api_ui_feedback():
+    """前端上报UI交互数据 (参数修改/直接通过)"""
+    try:
+        from operation_flywheel import record_ui_interaction
+        data = request.get_json(force=True)
+        project_id = data.get("project_id", "")
+        param_name = data.get("param_name", "")
+        action = data.get("action", "")  # "modify" or "pass"
+        value_from = data.get("value_from", "")
+        value_to = data.get("value_to", "")
+
+        if not project_id or not param_name or not action:
+            return jsonify({"status": "error", "message": "缺少必要参数"}), 400
+
+        result = record_ui_interaction(project_id, param_name, action, value_from, value_to)
+        return jsonify({"status": "ok", "result": result})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/operation/report-feedback", methods=["POST"])
+def api_report_feedback():
+    """前端上报报告阅读数据 (章节停留时间/滚动次数)"""
+    try:
+        from operation_flywheel import record_report_metric
+        data = request.get_json(force=True)
+        project_id = data.get("project_id", "")
+        section_name = data.get("section_name", "")
+        view_time_s = data.get("view_time_s", 0)
+        scroll_count = data.get("scroll_count", 0)
+
+        if not project_id or not section_name:
+            return jsonify({"status": "error", "message": "缺少必要参数"}), 400
+
+        result = record_report_metric(project_id, section_name, view_time_s, scroll_count)
+        return jsonify({"status": "ok", "result": result})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/operation/trigger-evolution", methods=["POST"])
+def api_trigger_evolution():
+    """手动触发飞轮进化 (管理员)"""
+    try:
+        from operation_flywheel import run_all_evolution
+        results = run_all_evolution()
+        evolved_count = sum(1 for v in results.values()
+                            if v.get("evolved") or v.get("alerts"))
+        return jsonify({
+            "status": "ok",
+            "evolved_count": evolved_count,
+            "results": results,
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ============================================================
 # 启动
 # ============================================================
 if __name__ == "__main__":

@@ -1,23 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-运营数据飞轮引擎 (Operation Flywheel) v2.04
-=============================================
+运营数据飞轮引擎 (Operation Flywheel) v2.05.02
+================================================
 扩展效果飞轮(采纳/拒绝)之外的第二条链路: 效率/成本/质量反馈
 
 双环架构:
   效果飞轮 (flywheel.py): 采纳/拒绝 → 技能模板进化
   运营飞轮 (本模块):     效率/成本/质量 → 智能体自我进化
 
-进化机制:
-  1. 需求分析师: 学习追问策略 (缺失参数 → 强制追问)
-  2. 方案生成师: 学习高效参数域 (采纳方案分布 → 更新推荐范围)
-  3. AI调用策略: 学习本地/云端路由 (成本比 → 自动切换)
-  4. 评审推荐师: 学习报告结构优化 (决策耗时 → 调整模板)
+六大进化机制:
+  1. 需求分析师: 学习追问策略 (缺失参数+领域关键词 → 强制追问)
+  2. 方案生成师: 学习高效参数域 (采纳分布→更新范围 + 低效区间剔除 + 超时降量)
+  3. AI调用策略: 学习本地/云端路由 (连续5次成本比>3×且质量提升<5% → 切本地)
+  4. 评审推荐师: 学习报告结构优化 (决策耗时→关键指标前置/可视化/魔鬼代言人提示词)
+  5. 决策界面:   学习信息优先级 (高频修改参数→提升位置 / 常通过参数→自动折叠)
+  6. 阈值告警:   连续低质量/低效率/耗时增长 → 推送改进建议
 
-阈值触发:
-  - 同一智能体连续5次质量评分<70 → 触发行为重训
-  - 同类项目连续3次方案有效率<50% → 调整默认参数矩阵
-  - 人工决策环节平均耗时连续3次增长 → 推送界面优化建议
+闭环: 进化规则自动注入各智能体 (requirement_agent/motor_tools/orchestrator/review_agent)
 """
 import json
 import os
@@ -31,6 +30,8 @@ DB_PATH = r"D:\MotorDesign\KnowledgeBase\designs.db"
 EVOLUTION_RULES_PATH = r"D:\MotorDesign\Knowledge\evolution_rules.json"
 FORCED_QUESTIONS_PATH = r"D:\MotorDesign\Knowledge\forced_questions.json"
 PARAM_DOMAIN_PATH = r"D:\MotorDesign\Knowledge\efficient_param_domain.json"
+REPORT_STRUCTURE_PATH = r"D:\MotorDesign\Knowledge\report_structure_rules.json"
+UI_PRIORITY_PATH = r"D:\MotorDesign\Knowledge\ui_priority_rules.json"
 
 # ── 阈值常量 ──────────────────────────────────────────────────
 QUALITY_THRESHOLD = 70          # 质量评分阈值
@@ -40,6 +41,16 @@ EFFICIENCY_CONSECUTIVE_TRIGGER = 3  # 连续N次低效率触发调整
 COST_RATIO_THRESHOLD = 3.0      # 云端/本地成本比阈值
 QUALITY_GAIN_THRESHOLD = 0.05   # 质量提升阈值 (5%)
 DECISION_TIME_GROWTH_TRIGGER = 3  # 决策耗时连续增长次数
+
+# v2.05.02 新增阈值
+ROUTING_CONSECUTIVE_TRIGGER = 5    # AI路由连续N次满足条件才切换
+LOW_EFFICIENCY_INTERVAL_THRESHOLD = 40  # 参数区间有效率低于此值→剔除
+DECISION_TIME_LONG_THRESHOLD = 1800     # 决策耗时>30分钟(秒)→报告结构优化
+UI_MODIFY_FREQ_THRESHOLD = 3            # 参数被修改≥N次→提升到界面顶部
+UI_PASS_FREQ_THRESHOLD = 5              # 参数被直接通过≥N次→自动折叠
+DEVILS_LOW_QUALITY_THRESHOLD = 60       # 魔鬼代言人质量评分低于此值→优化提示词
+QUESTION_FREQ_THRESHOLD = 0.30          # 参数缺失频率>30%→生成追问规则
+DESIGN_COUNT_TIMEOUT_RATIO = 0.7        # 超时项目方案数量缩减到原值的70%
 
 
 def _get_conn():
@@ -82,6 +93,29 @@ def _get_conn():
             trigger_detail TEXT,
             action_taken TEXT,
             rule_data TEXT
+        )
+    """)
+    # v2.05.02: UI交互记录 (参数修改/直接通过)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ui_interactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id TEXT NOT NULL,
+            param_name TEXT NOT NULL,
+            action TEXT NOT NULL,
+            value_from TEXT,
+            value_to TEXT,
+            timestamp TEXT NOT NULL
+        )
+    """)
+    # v2.05.02: 报告阅读记录 (章节停留时间/滚动次数)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS report_metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id TEXT NOT NULL,
+            section_name TEXT NOT NULL,
+            view_time_s REAL DEFAULT 0,
+            scroll_count INTEGER DEFAULT 0,
+            timestamp TEXT NOT NULL
         )
     """)
     return conn
@@ -165,9 +199,83 @@ def record_project_summary(project_id: str, specs: dict,
         conn.close()
 
 
+def record_ui_interaction(project_id: str, param_name: str, action: str,
+                          value_from: str = "", value_to: str = "") -> dict:
+    """
+    记录用户在决策界面的参数交互
+
+    参数:
+      project_id: 项目ID
+      param_name: 参数名 (如 efficiency_target, mounting, insulation_class)
+      action: "modify" (用户修改了参数) 或 "pass" (用户直接通过未修改)
+      value_from: 修改前的值 (modify时填写)
+      value_to: 修改后的值 (modify时填写)
+    """
+    conn = _get_conn()
+    try:
+        ts = datetime.now().isoformat()
+        conn.execute(
+            "INSERT INTO ui_interactions (project_id, param_name, action, "
+            "value_from, value_to, timestamp) VALUES (?,?,?,?,?,?)",
+            (project_id, param_name, action, value_from, value_to, ts)
+        )
+        conn.commit()
+        return {"project_id": project_id, "param": param_name, "action": action, "recorded": True}
+    finally:
+        conn.close()
+
+
+def record_report_metric(project_id: str, section_name: str,
+                         view_time_s: float = 0, scroll_count: int = 0) -> dict:
+    """
+    记录用户在阅读报告时的行为数据
+
+    参数:
+      project_id: 项目ID
+      section_name: 报告章节名 (如 "物理核验表", "方案对比", "风险提示")
+      view_time_s: 该章节停留时间(秒)
+      scroll_count: 该章节内滚动次数
+    """
+    conn = _get_conn()
+    try:
+        ts = datetime.now().isoformat()
+        conn.execute(
+            "INSERT INTO report_metrics (project_id, section_name, view_time_s, "
+            "scroll_count, timestamp) VALUES (?,?,?,?,?)",
+            (project_id, section_name, view_time_s, scroll_count, ts)
+        )
+        conn.commit()
+        return {"project_id": project_id, "section": section_name, "recorded": True}
+    finally:
+        conn.close()
+
+
 # ═══════════════════════════════════════════════════════════════
 # 2. 进化机制: 需求分析师 — 追问策略
 # ═══════════════════════════════════════════════════════════════
+
+# 参数中文别名映射 (用于从issue文本中智能匹配参数名)
+_PARAM_ALIASES = {
+    "torque_nm": ["转矩", "扭矩", "力矩"],
+    "duty_cycle": ["工作制", "S1", "S2", "S3", "S4", "duty"],
+    "overload_pct": ["过载", "超载"],
+    "altitude_m": ["海拔", "高原"],
+    "protection_class": ["防护", "IP"],
+    "frequency_hz": ["频率", "Hz"],
+    "starting_torque_ratio": ["起动转矩", "启动转矩", "堵转"],
+    "ambient_temp_c": ["环境温度", "工作温度"],
+    "ed_pct": ["负载持续率", "ED", "暂载率"],
+    "mounting": ["安装方式", "底脚", "法兰"],
+    "insulation_class": ["绝缘等级", "绝缘"],
+    "cooling": ["冷却方式", "水冷", "风冷"],
+}
+
+
+def _param_alias_match(param: str, text: str) -> bool:
+    """检查文本中是否包含参数的中文别名"""
+    aliases = _PARAM_ALIASES.get(param, [])
+    return any(alias in text for alias in aliases)
+
 
 def evolve_question_strategy() -> dict:
     """
@@ -191,16 +299,20 @@ def evolve_question_strategy() -> dict:
         # 分析缺失参数模式
         missing_params = defaultdict(int)
         total_low = len(low_quality)
+        # v2.05.02: 扩展检测的参数列表
+        detectable_params = [
+            "torque_nm", "duty_cycle", "overload_pct", "altitude_m",
+            "protection_class", "frequency_hz", "starting_torque_ratio",
+            "ambient_temp_c", "ed_pct", "mounting", "insulation_class", "cooling",
+        ]
         for _, issues in low_quality:
             if issues:
                 try:
                     issue_list = json.loads(issues) if issues.startswith("[") else [issues]
                     for issue in issue_list:
-                        # 提取参数名 (如 "torque_nm缺失", "duty_cycle未指定")
-                        for keyword in ["torque_nm", "duty_cycle", "overload_pct",
-                                        "altitude_m", "protection_class", "frequency_hz",
-                                        "starting_torque_ratio", "ambient_temp_c"]:
-                            if keyword in str(issue):
+                        issue_str = str(issue)
+                        for keyword in detectable_params:
+                            if keyword in issue_str or _param_alias_match(keyword, issue_str):
                                 missing_params[keyword] += 1
                 except (json.JSONDecodeError, TypeError):
                     pass
@@ -238,16 +350,21 @@ def evolve_question_strategy() -> dict:
 
 
 def _get_param_keywords(param: str) -> list:
-    """获取参数对应的用户描述关键词"""
+    """获取参数对应的用户描述关键词 (v2.05.02 增强领域关键词)"""
     keyword_map = {
         "torque_nm": ["转矩", "扭矩", "力矩", "torque"],
-        "duty_cycle": ["工作制", "断续", "连续", "周期", "duty"],
-        "overload_pct": ["过载", "超载", "倍数", "overload"],
-        "altitude_m": ["海拔", "高原", "altitude"],
-        "protection_class": ["防护", "IP", "防爆", "protection"],
-        "frequency_hz": ["频率", "50Hz", "60Hz", "400Hz", "frequency"],
-        "starting_torque_ratio": ["起动转矩", "启动转矩", "堵转", "starting"],
-        "ambient_temp_c": ["环境温度", "工作温度", "ambient"],
+        "duty_cycle": ["工作制", "断续", "连续", "周期", "duty", "S3", "S4"],
+        "overload_pct": ["过载", "超载", "倍数", "overload", "150%", "200%"],
+        "altitude_m": ["海拔", "高原", "altitude", "3000米", "4000米"],
+        "protection_class": ["防护", "IP", "防爆", "protection", "IP65", "IP55"],
+        "frequency_hz": ["频率", "50Hz", "60Hz", "400Hz", "frequency", "中频"],
+        "starting_torque_ratio": ["起动转矩", "启动转矩", "堵转", "starting",
+                                  "重载", "频繁起动", "破碎机", "搅拌机", " crusher", "mixer"],
+        "ambient_temp_c": ["环境温度", "工作温度", "ambient", "高温", "低温", "-40", "60度"],
+        "ed_pct": ["负载持续率", "ED", "暂载率", "40%", "60%"],
+        "mounting": ["安装", "底脚", "法兰", "B3", "B5", "B35", "mounting"],
+        "insulation_class": ["绝缘", "insulation", "F级", "H级", "B级"],
+        "cooling": ["冷却", "水冷", "风冷", "油冷", "cooling", "强制风冷"],
     }
     return keyword_map.get(param, [param])
 
@@ -314,7 +431,89 @@ def evolve_parameter_domain() -> dict:
                            f"更新{len(updated)}个参数范围",
                            json.dumps(updated, ensure_ascii=False))
 
-        return {"evolved": len(updated) > 0, "updated_ranges": updated,
+        # v2.05.02: 低效区间剔除 — 分析质量低的方案参数, 标记排除区间
+        low_quality_designs = conn.execute(
+            "SELECT project_id, quality_issues FROM operation_metrics "
+            "WHERE step = 'generate_designs' AND quality_score < 80 "
+            "ORDER BY timestamp DESC LIMIT 30"
+        ).fetchall()
+
+        exclusion_zones = []
+        if low_quality_designs:
+            # 从project_summary中获取这些低质量项目的采纳参数
+            for pid, issues in low_quality_designs:
+                adopted = conn.execute(
+                    "SELECT adopted_params FROM project_summary WHERE project_id = ?",
+                    (pid,)
+                ).fetchone()
+                if adopted and adopted[0]:
+                    try:
+                        params = json.loads(adopted[0])
+                        # 标记低效区间
+                        for key in ["stator_od", "core_length"]:
+                            if key in params and params[key] is not None:
+                                val = float(params[key])
+                                zone_key = f"exclude_{key}"
+                                existing = domain.setdefault("exclusion_zones", {}).setdefault(zone_key, [])
+                                if not any(abs(z["value"] - val) < val * 0.05 for z in existing):
+                                    existing.append({
+                                        "value": round(val, 1),
+                                        "reason": f"低质量项目{pid}: 质量<{QUALITY_THRESHOLD}",
+                                        "count": 1,
+                                    })
+                                else:
+                                    for z in existing:
+                                        if abs(z["value"] - val) < val * 0.05:
+                                            z["count"] += 1
+                                            break
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+            # 标记高频低效区间 (出现≥2次的)
+            for zone_key, zones in domain.get("exclusion_zones", {}).items():
+                high_freq = [z for z in zones if z["count"] >= 2]
+                if high_freq:
+                    exclusion_zones.append(f"{zone_key}: {len(high_freq)}个低效区间")
+                    domain.setdefault("exclusion_zones", {})[zone_key] = zones
+
+        # v2.05.02: 超时降量 — 分析方案生成耗时, 对慢项目降低默认方案数
+        slow_projects = conn.execute(
+            "SELECT project_id, duration_ms FROM operation_metrics "
+            "WHERE step = 'generate_designs' AND duration_ms > 120000 "  # >2分钟
+            "ORDER BY timestamp DESC LIMIT 10"
+        ).fetchall()
+
+        design_count_adjustments = []
+        if len(slow_projects) >= 2:
+            # 获取这些项目的类型
+            for pid, dur in slow_projects:
+                ptype_row = conn.execute(
+                    "SELECT project_type FROM project_summary WHERE project_id = ?",
+                    (pid,)
+                ).fetchone()
+                ptype = ptype_row[0] if ptype_row else "通用电机"
+                old_count = domain.get("design_count", {}).get(ptype, 30)
+                new_count = max(15, int(old_count * DESIGN_COUNT_TIMEOUT_RATIO))
+                domain.setdefault("design_count", {})[ptype] = new_count
+                design_count_adjustments.append(
+                    f"{ptype}: {old_count}→{new_count} (超时{dur/1000:.0f}s)")
+
+        if exclusion_zones or design_count_adjustments:
+            domain["last_updated"] = datetime.now().isoformat()
+            _save_param_domain(domain)
+            if exclusion_zones:
+                _log_evolution("DesignAgent", "parameter_domain_exclude",
+                               f"标记{len(exclusion_zones)}个低效参数区间",
+                               json.dumps(exclusion_zones, ensure_ascii=False))
+            if design_count_adjustments:
+                _log_evolution("DesignAgent", "design_count_adjust",
+                               f"调整{len(design_count_adjustments)}类项目方案数",
+                               json.dumps(design_count_adjustments, ensure_ascii=False))
+
+        return {"evolved": len(updated) > 0 or len(exclusion_zones) > 0,
+                "updated_ranges": updated,
+                "exclusion_zones": exclusion_zones,
+                "design_count_adjustments": design_count_adjustments,
                 "total_adopted": len(rows)}
     finally:
         conn.close()
@@ -328,7 +527,9 @@ def evolve_ai_routing() -> dict:
     """
     分析各步骤的云端 vs 本地成本与质量, 自动调整路由策略
 
-    触发条件: 某步骤云端成本 > 3×本地, 且质量提升 < 5%
+    v2.05.02 增强: 连续N次满足条件才切换 (避免偶发波动误判)
+    触发条件: 某步骤连续 ROUTING_CONSECUTIVE_TRIGGER(5) 次满足:
+              云端成本 > 3×本地, 且质量提升 < 5%
     进化动作: 将该步骤切换为本地优先
     """
     conn = _get_conn()
@@ -361,21 +562,52 @@ def evolve_ai_routing() -> dict:
             local = modes.get("local", {})
             cloud = modes.get("cloud", {})
 
+            # v2.05.02: 连续N次检查
             if local and cloud and local.get("count", 0) >= 3 and cloud.get("count", 0) >= 3:
                 cost_ratio = cloud["avg_cost"] / max(local["avg_cost"], 1)
                 quality_gain = (cloud["avg_quality"] - local["avg_quality"]) / 100.0
 
+                # 检查最近N条记录是否连续满足条件
+                recent_records = conn.execute(
+                    "SELECT cost_mode, cost_cents, quality_score FROM operation_metrics "
+                    "WHERE step = ? AND (cost_cents > 0 OR cost_mode = 'cloud') "
+                    "ORDER BY timestamp DESC LIMIT ?",
+                    (step, ROUTING_CONSECUTIVE_TRIGGER * 2)
+                ).fetchall()
+
+                # 计算每条记录的成本比和质量差
+                consecutive_count = 0
+                local_costs = [r[1] for r in recent_records if r[0] == "local"]
+                cloud_costs = [r[1] for r in recent_records if r[0] == "cloud"]
+                local_avg = sum(local_costs) / max(len(local_costs), 1)
+                cloud_avg = sum(cloud_costs) / max(len(cloud_costs), 1)
+
+                for mode, cost, quality in recent_records:
+                    if mode == "cloud" and local_avg > 0:
+                        ratio = cost / local_avg
+                        if ratio > COST_RATIO_THRESHOLD:
+                            consecutive_count += 1
+
+                meets_consecutive = consecutive_count >= ROUTING_CONSECUTIVE_TRIGGER
+
                 if cost_ratio > COST_RATIO_THRESHOLD and quality_gain < QUALITY_GAIN_THRESHOLD:
                     old_pref = routing_rules.get(step, {}).get("prefer", "auto")
-                    routing_rules[step] = {
-                        "prefer": "local",
-                        "reason": f"云端成本{cost_ratio:.1f}×本地, 质量提升仅{quality_gain*100:.1f}%",
-                        "cost_ratio": round(cost_ratio, 2),
-                        "quality_gain": round(quality_gain, 4),
-                        "updated_at": datetime.now().isoformat(),
-                    }
-                    if old_pref != "local":
-                        changes.append(f"{step}: {old_pref} → local (成本比{cost_ratio:.1f}×)")
+                    # v2.05.02: 连续满足或已有≥5条云端记录时触发
+                    should_switch = meets_consecutive or cloud.get("count", 0) >= ROUTING_CONSECUTIVE_TRIGGER
+
+                    if should_switch:
+                        routing_rules[step] = {
+                            "prefer": "local",
+                            "reason": f"云端成本{cost_ratio:.1f}×本地, 质量提升仅{quality_gain*100:.1f}%, "
+                                      f"连续{consecutive_count}次超阈值",
+                            "cost_ratio": round(cost_ratio, 2),
+                            "quality_gain": round(quality_gain, 4),
+                            "consecutive_count": consecutive_count,
+                            "updated_at": datetime.now().isoformat(),
+                        }
+                        if old_pref != "local":
+                            changes.append(f"{step}: {old_pref} → local "
+                                         f"(成本比{cost_ratio:.1f}×, 连续{consecutive_count}次)")
 
         if changes:
             rules = _load_evolution_rules()
@@ -518,8 +750,200 @@ def check_decision_time_growth() -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════
-# 6. 运营仪表盘数据
+# 5b. 进化机制: 评审推荐师 — 报告结构优化 (v2.05.02 新增)
 # ═══════════════════════════════════════════════════════════════
+
+def evolve_report_structure() -> dict:
+    """
+    分析人工决策耗时和报告阅读行为, 优化评审报告结构
+
+    触发条件:
+      - 决策耗时 > 30分钟 (DECISION_TIME_LONG_THRESHOLD)
+      - 某报告章节平均阅读时间异常长 → 信息呈现效率低
+      - 魔鬼代言人质量评分 < 60 → 提示词需优化
+
+    进化动作:
+      1. 关键对比指标前置 (效率/温升/转矩 放到报告最前)
+      2. 增加可视化图表标记 (提示前端渲染图表)
+      3. 减少冗长文字 (限制段落字数)
+      4. 优化魔鬼代言人提示词 (要求更具体的风险分析)
+    """
+    conn = _get_conn()
+    try:
+        rules = _load_report_structure_rules()
+        changes = []
+
+        # 1. 检查决策耗时
+        long_decisions = conn.execute(
+            "SELECT project_id, decision_time_s FROM project_summary "
+            "WHERE decision_time_s > ? ORDER BY created_at DESC LIMIT 10",
+            (DECISION_TIME_LONG_THRESHOLD,)
+        ).fetchall()
+
+        if len(long_decisions) >= 2:
+            avg_time = sum(t for _, t in long_decisions) / len(long_decisions)
+            rules["key_metrics_first"] = {
+                "enabled": True,
+                "reason": f"平均决策耗时{avg_time/60:.0f}分钟, 关键指标应前置",
+                "priority_order": ["efficiency", "max_temp", "torque", "stator_od", "poles"],
+                "updated_at": datetime.now().isoformat(),
+            }
+            rules["add_visualization"] = {
+                "enabled": True,
+                "reason": "增加可视化图表以加速决策",
+                "chart_types": ["radar_chart", "bar_comparison", "efficiency_scatter"],
+                "updated_at": datetime.now().isoformat(),
+            }
+            rules["reduce_text"] = {
+                "enabled": True,
+                "reason": "限制段落字数, 突出数据对比",
+                "max_paragraph_chars": 200,
+                "updated_at": datetime.now().isoformat(),
+            }
+            changes.append(f"关键指标前置+可视化+精简文字 (决策耗时{avg_time/60:.0f}分钟)")
+
+        # 2. 检查报告章节阅读时间
+        section_stats = conn.execute(
+            "SELECT section_name, AVG(view_time_s) as avg_time, "
+            "AVG(scroll_count) as avg_scroll, COUNT(*) as cnt "
+            "FROM report_metrics GROUP BY section_name"
+        ).fetchall()
+
+        for section, avg_time, avg_scroll, cnt in section_stats:
+            if cnt >= 2 and avg_time and avg_time > 120:  # 单章节平均>2分钟
+                rules.setdefault("section_overrides", {})[section] = {
+                    "issue": "阅读时间过长",
+                    "avg_view_time_s": round(avg_time, 1),
+                    "avg_scroll_count": round(avg_scroll or 0, 1),
+                    "action": "精简内容或拆分为子章节",
+                    "updated_at": datetime.now().isoformat(),
+                }
+                changes.append(f"章节'{section}'平均阅读{avg_time:.0f}s → 建议精简")
+
+        # 3. 检查魔鬼代言人质量
+        devils_quality = conn.execute(
+            "SELECT AVG(quality_score) as avg_q, COUNT(*) as cnt "
+            "FROM operation_metrics WHERE agent LIKE '%Devil%' OR agent LIKE '%魔鬼%'"
+        ).fetchone()
+
+        if devils_quality and devils_quality[1] >= 2:
+            avg_q = devils_quality[0] or 100
+            if avg_q < DEVILS_LOW_QUALITY_THRESHOLD:
+                rules["devils_advocate_prompt_boost"] = {
+                    "enabled": True,
+                    "reason": f"魔鬼代言人平均质量{avg_q:.0f}<{DEVILS_LOW_QUALITY_THRESHOLD}, 需优化提示词",
+                    "prompt_addition": (
+                        "请针对每个方案给出具体的风险点, 包括: "
+                        "1) 量化风险(如'温升裕度仅5K, 夏季可能超限'); "
+                        "2) 失效模式(如'轴承寿命在重载下可能不足'); "
+                        "3) 量产风险(如'该槽配合在冲压工艺中废品率偏高'). "
+                        "避免笼统的'可能存在问题'式表述。"
+                    ),
+                    "updated_at": datetime.now().isoformat(),
+                }
+                changes.append(f"魔鬼代言人提示词优化 (质量{avg_q:.0f}<{DEVILS_LOW_QUALITY_THRESHOLD})")
+
+        if changes:
+            rules["last_updated"] = datetime.now().isoformat()
+            _save_report_structure_rules(rules)
+            _log_evolution("ReviewAgent", "report_structure",
+                           f"报告结构优化{len(changes)}项",
+                           json.dumps(changes, ensure_ascii=False))
+
+        return {"evolved": len(changes) > 0, "changes": changes,
+                "rules_summary": {k: v.get("enabled", True) if isinstance(v, dict) else v
+                                  for k, v in rules.items() if k != "last_updated"}}
+    finally:
+        conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════
+# 5c. 进化机制: 决策界面 — 信息优先级 (v2.05.02 新增)
+# ═══════════════════════════════════════════════════════════════
+
+def evolve_decision_ui() -> dict:
+    """
+    分析用户在决策界面的参数交互模式, 优化信息展示优先级
+
+    触发条件:
+      - 某参数被修改次数 ≥ UI_MODIFY_FREQ_THRESHOLD(3) → 提升到界面顶部
+      - 某参数被直接通过次数 ≥ UI_PASS_FREQ_THRESHOLD(5) → 自动折叠+默认值
+
+    进化动作:
+      1. 生成参数优先级规则 (promote/collapse)
+      2. 注入前端界面配置
+    """
+    conn = _get_conn()
+    try:
+        # 统计各参数的修改/通过次数
+        param_stats = conn.execute(
+            "SELECT param_name, action, COUNT(*) as cnt "
+            "FROM ui_interactions GROUP BY param_name, action"
+        ).fetchall()
+
+        if not param_stats:
+            return {"evolved": False, "reason": "无UI交互数据"}
+
+        # 按参数汇总
+        param_actions = defaultdict(lambda: {"modify": 0, "pass": 0})
+        for param, action, cnt in param_stats:
+            param_actions[param][action] = cnt
+
+        rules = _load_ui_priority_rules()
+        changes = []
+
+        promote_list = []
+        collapse_list = []
+
+        for param, actions in param_actions.items():
+            modify_count = actions["modify"]
+            pass_count = actions["pass"]
+            total = modify_count + pass_count
+
+            # 高频修改 → 提升到顶部
+            if modify_count >= UI_MODIFY_FREQ_THRESHOLD:
+                promote_list.append({
+                    "param": param,
+                    "modify_count": modify_count,
+                    "reason": f"被修改{modify_count}次, 提升展示优先级",
+                })
+
+            # 常通过 → 自动折叠
+            if pass_count >= UI_PASS_FREQ_THRESHOLD and modify_count == 0:
+                collapse_list.append({
+                    "param": param,
+                    "pass_count": pass_count,
+                    "reason": f"连续{pass_count}次直接通过, 自动折叠+默认值",
+                })
+
+        if promote_list:
+            rules["promote_params"] = {
+                "params": [p["param"] for p in promote_list],
+                "details": promote_list,
+                "updated_at": datetime.now().isoformat(),
+            }
+            changes.extend([f"提升参数'{p['param']}'到顶部" for p in promote_list])
+
+        if collapse_list:
+            rules["collapse_params"] = {
+                "params": [c["param"] for c in collapse_list],
+                "details": collapse_list,
+                "updated_at": datetime.now().isoformat(),
+            }
+            changes.extend([f"折叠参数'{c['param']}'" for c in collapse_list])
+
+        if changes:
+            rules["last_updated"] = datetime.now().isoformat()
+            _save_ui_priority_rules(rules)
+            _log_evolution("UI", "decision_ui_priority",
+                           f"界面优先级调整{len(changes)}项",
+                           json.dumps(changes, ensure_ascii=False))
+
+        return {"evolved": len(changes) > 0, "changes": changes,
+                "promote_params": [p["param"] for p in promote_list],
+                "collapse_params": [c["param"] for c in collapse_list]}
+    finally:
+        conn.close()
 
 def get_operation_dashboard() -> dict:
     """获取运营仪表盘数据 (供前端展示)"""
@@ -557,6 +981,21 @@ def get_operation_dashboard() -> dict:
         rules = _load_evolution_rules()
         forced_q = _load_forced_questions()
         param_d = _load_param_domain()
+        report_rules = _load_report_structure_rules()
+        ui_rules = _load_ui_priority_rules()
+
+        # v2.05.02: 进化日志 (最近10条)
+        recent_evolutions = conn.execute(
+            "SELECT timestamp, agent, trigger_type, action_taken "
+            "FROM evolution_log ORDER BY id DESC LIMIT 10"
+        ).fetchall()
+
+        # v2.05.02: UI交互统计
+        ui_stats = conn.execute(
+            "SELECT param_name, action, COUNT(*) as cnt "
+            "FROM ui_interactions GROUP BY param_name, action "
+            "ORDER BY cnt DESC LIMIT 20"
+        ).fetchall()
 
         return {
             "efficiency": [
@@ -578,7 +1017,19 @@ def get_operation_dashboard() -> dict:
                 "routing": rules.get("routing", {}),
                 "forced_questions": forced_q.get("rules", []),
                 "param_domain": param_d.get("ranges", {}),
+                "param_exclusion_zones": param_d.get("exclusion_zones", {}),
+                "design_count_adjustments": param_d.get("design_count", {}),
+                "report_structure": report_rules,
+                "ui_priority": ui_rules,
             },
+            "recent_evolutions": [
+                {"timestamp": r[0], "agent": r[1], "trigger": r[2], "action": r[3]}
+                for r in recent_evolutions
+            ],
+            "ui_interactions": [
+                {"param": r[0], "action": r[1], "count": r[2]}
+                for r in ui_stats
+            ],
         }
     finally:
         conn.close()
@@ -590,6 +1041,8 @@ def run_all_evolution() -> dict:
     results["question_strategy"] = evolve_question_strategy()
     results["parameter_domain"] = evolve_parameter_domain()
     results["ai_routing"] = evolve_ai_routing()
+    results["report_structure"] = evolve_report_structure()
+    results["decision_ui"] = evolve_decision_ui()
     results["quality_check"] = check_quality_threshold()
     results["efficiency_check"] = check_efficiency_threshold()
     results["decision_time_check"] = check_decision_time_growth()
@@ -637,6 +1090,22 @@ def _save_param_domain(data: dict):
     _save_json(PARAM_DOMAIN_PATH, data)
 
 
+def _load_report_structure_rules() -> dict:
+    return _load_json(REPORT_STRUCTURE_PATH, {"last_updated": ""})
+
+
+def _save_report_structure_rules(data: dict):
+    _save_json(REPORT_STRUCTURE_PATH, data)
+
+
+def _load_ui_priority_rules() -> dict:
+    return _load_json(UI_PRIORITY_PATH, {"last_updated": ""})
+
+
+def _save_ui_priority_rules(data: dict):
+    _save_json(UI_PRIORITY_PATH, data)
+
+
 def _log_evolution(agent: str, trigger_type: str, action: str, detail: str):
     """记录进化日志"""
     conn = _get_conn()
@@ -657,7 +1126,7 @@ def _log_evolution(agent: str, trigger_type: str, action: str, detail: str):
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("运营数据飞轮自测")
+    print("运营数据飞轮自测 v2.05.02")
     print("=" * 60)
 
     # 1. 记录测试数据
@@ -671,9 +1140,23 @@ if __name__ == "__main__":
             cost_cents=0,
             cost_mode="local",
             quality_score=65 + i * 2,  # 低质量递增
-            quality_issues='["torque_nm缺失", "duty_cycle未指定"]',
+            quality_issues='["torque_nm缺失", "duty_cycle未指定", "starting_torque_ratio缺失"]',
         )
         print(f"  项目{i}: {r}")
+
+    # 1b. 记录UI交互数据 (v2.05.02)
+    print("\n--- 记录UI交互 ---")
+    for i in range(5):
+        record_ui_interaction(f"UI_TEST_{i:04d}", "efficiency_target", "modify", "92", f"{90+i}")
+        record_ui_interaction(f"UI_TEST_{i:04d}", "insulation_class", "pass", "", "")
+    print("  UI交互记录完成 (efficiency_target×5 modify, insulation_class×5 pass)")
+
+    # 1c. 记录报告阅读数据 (v2.05.02)
+    print("\n--- 记录报告阅读 ---")
+    for i in range(3):
+        record_report_metric(f"RPT_TEST_{i:04d}", "物理核验表", 150.0, 5)
+        record_report_metric(f"RPT_TEST_{i:04d}", "方案对比", 45.0, 2)
+    print("  报告阅读记录完成 (物理核验表×3 @150s, 方案对比×3 @45s)")
 
     # 2. 追问策略进化
     print("\n--- 追问策略进化 ---")
@@ -690,6 +1173,8 @@ if __name__ == "__main__":
     print(f"  质量统计: {len(dash['quality'])} 个智能体")
     for q in dash["quality"]:
         print(f"    {q['agent']}: 平均{q['avg_score']}, 最低{q['min_score']}, 次数{q['count']}")
+    print(f"  UI交互统计: {len(dash.get('ui_interactions', []))} 个参数")
+    print(f"  进化日志: {len(dash.get('recent_evolutions', []))} 条")
 
     # 4. 阈值检查
     print("\n--- 质量阈值检查 ---")
@@ -698,7 +1183,21 @@ if __name__ == "__main__":
     for a in qc["alerts"]:
         print(f"    {a['agent']}: 连续{a['consecutive_count']}次, 平均{a['avg_quality']}")
 
-    # 5. 全量进化
+    # 5. 报告结构进化 (v2.05.02)
+    print("\n--- 报告结构进化 ---")
+    rs = evolve_report_structure()
+    print(f"  evolved: {rs.get('evolved')}")
+    for c in rs.get("changes", []):
+        print(f"  变更: {c}")
+
+    # 6. 决策界面进化 (v2.05.02)
+    print("\n--- 决策界面进化 ---")
+    ui = evolve_decision_ui()
+    print(f"  evolved: {ui.get('evolved')}")
+    print(f"  提升参数: {ui.get('promote_params', [])}")
+    print(f"  折叠参数: {ui.get('collapse_params', [])}")
+
+    # 7. 全量进化
     print("\n--- 全量进化 ---")
     all_results = run_all_evolution()
     for k, v in all_results.items():

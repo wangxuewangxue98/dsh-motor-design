@@ -435,17 +435,19 @@ def _get_motorcad_instance():
 
 def generate_param_matrix(specs: dict, count: int = 30) -> list:
     """
-    根据需求规格生成参数扫描矩阵 (v2.04 物理内核版)
+    根据需求规格生成参数扫描矩阵 (v2.05.02 飞轮增强版)
     ==============================================
     改造: 放弃暴力网格扫描, 改为基于 D²L 物理内核的聚焦扫描
+    v2.05.02: 接入运营飞轮的高效参数域 + 排除区间 + 超时降量
 
     工作流:
       1. 场景识别 (型谱模式 / 类比模式)
-      2. 型谱查表 或 D²L 类比推算 → 获得基准尺寸
-      3. 在基准尺寸 ±10~15% 范围内聚焦扫描
-      4. 每组方案附带物理核验信息 (_physics 字段)
-
-    效果: 方案数从 30-50 组降低到 5-15 组, 且物理意义明确
+      2. v2.05.02: 从飞轮加载高效参数域, 调整扫描范围
+      3. v2.05.02: 从飞轮加载排除区间, 过滤低效参数
+      4. v2.05.02: 从飞轮加载超时降量规则, 调整方案数量
+      5. 型谱查表 或 D²L 类比推算 → 获得基准尺寸
+      6. 在基准尺寸 ±10~15% 范围内聚焦扫描
+      7. 每组方案附带物理核验信息 (_physics 字段)
 
     返回参数字典列表，包含结构参数和电气参数 (兼容旧格式):
       - stator_od, stator_id, rotor_od, core_length, air_gap
@@ -454,19 +456,98 @@ def generate_param_matrix(specs: dict, count: int = 30) -> list:
       - slots_stator, slots_rotor, turns_per_coil, parallel_circuits
       - _physics: {d_squared_l, lambda, lambda_valid, estimated_torque, ref_model, scenario}
     """
+    # v2.05.02: 从飞轮加载进化规则
+    flywheel_count = _get_flywheel_design_count(specs)
+    if flywheel_count and flywheel_count < count:
+        print(f"[motor_tools] 飞轮超时降量: {count}→{flywheel_count}")
+        count = flywheel_count
+
     try:
         from physics_kernel import focused_scan, determine_scenario
         # 使用物理内核聚焦扫描
         scenario_info = determine_scenario(specs)
         designs = focused_scan(specs, count=count, scenario_info=scenario_info)
         if designs:
-            return designs
+            # v2.05.02: 应用飞轮排除区间过滤
+            designs = _filter_by_flywheel_exclusions(designs)
+            if designs:
+                return designs
         # 物理内核失败则回退到旧逻辑
         print("[motor_tools] 物理内核聚焦扫描未生成方案, 回退到暴力扫描")
     except Exception as e:
         print(f"[motor_tools] 物理内核异常, 回退到暴力扫描: {e}")
 
     return _generate_param_matrix_legacy(specs, count)
+
+
+def _get_flywheel_design_count(specs: dict) -> int:
+    """v2.05.02: 从飞轮获取调整后的方案数量"""
+    try:
+        import json
+        domain_path = r"D:\MotorDesign\Knowledge\efficient_param_domain.json"
+        if os.path.exists(domain_path):
+            with open(domain_path, "r", encoding="utf-8") as f:
+                domain = json.load(f)
+            design_counts = domain.get("design_count", {})
+            # 根据项目类型获取调整后的数量
+            app = (specs.get("application") or "").lower()
+            if "叉车" in app:
+                return design_counts.get("叉车电机")
+            elif "汽车" in app or "ev" in app:
+                return design_counts.get("电动汽车电机")
+            elif "泵" in app:
+                return design_counts.get("工业泵电机")
+            else:
+                return design_counts.get("通用电机")
+    except Exception:
+        pass
+    return 0
+
+
+def _filter_by_flywheel_exclusions(designs: list) -> list:
+    """v2.05.02: 根据飞轮排除区间过滤方案"""
+    try:
+        import json
+        domain_path = r"D:\MotorDesign\Knowledge\efficient_param_domain.json"
+        if not os.path.exists(domain_path):
+            return designs
+        with open(domain_path, "r", encoding="utf-8") as f:
+            domain = json.load(f)
+        exclusion_zones = domain.get("exclusion_zones", {})
+        if not exclusion_zones:
+            return designs
+
+        filtered = []
+        excluded_count = 0
+        for d in designs:
+            excluded = False
+            # 检查外径排除区间
+            od_zones = exclusion_zones.get("exclude_stator_od", [])
+            od_val = d.get("stator_od")
+            if od_val and isinstance(od_val, (int, float)):
+                for zone in od_zones:
+                    if zone.get("count", 0) >= 2 and abs(zone["value"] - od_val) < od_val * 0.05:
+                        excluded = True
+                        excluded_count += 1
+                        break
+            # 检查铁心长度排除区间
+            if not excluded:
+                cl_zones = exclusion_zones.get("exclude_core_length", [])
+                cl_val = d.get("core_length")
+                if cl_val and isinstance(cl_val, (int, float)):
+                    for zone in cl_zones:
+                        if zone.get("count", 0) >= 2 and abs(zone["value"] - cl_val) < cl_val * 0.05:
+                            excluded = True
+                            excluded_count += 1
+                            break
+            if not excluded:
+                filtered.append(d)
+
+        if excluded_count > 0:
+            print(f"[motor_tools] 飞轮排除区间过滤: 剔除{excluded_count}个低效方案")
+        return filtered if filtered else designs  # 确保不返回空列表
+    except Exception:
+        return designs
 
 
 def _generate_param_matrix_legacy(specs: dict, count: int = 30) -> list:

@@ -30,6 +30,21 @@ from physics_kernel import (
     build_selection_narrative, shift_frame,
 )
 
+# v2.05.02: 加载飞轮报告结构优化规则
+_REPORT_RULES_PATH = r"D:\MotorDesign\Knowledge\report_structure_rules.json"
+
+
+def _load_report_structure_rules() -> dict:
+    """加载飞轮生成的报告结构优化规则"""
+    try:
+        import json
+        if os.path.exists(_REPORT_RULES_PATH):
+            with open(_REPORT_RULES_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
 
 class ReviewAgent(BaseAgent):
     """评审推荐师 - 物理逻辑解释 + 分层对比 + 专家推荐"""
@@ -117,7 +132,32 @@ class ReviewAgent(BaseAgent):
     def _build_physics_analysis(self, specs: dict, scenario_info: dict,
                                 top: list) -> str:
         """构建物理分析报告 (选型路径 + 核验 + 分层对比)"""
+        # v2.05.02: 加载飞轮报告结构规则
+        report_rules = _load_report_structure_rules()
+        key_first = report_rules.get("key_metrics_first", {}).get("enabled", False)
+        reduce_text = report_rules.get("reduce_text", {}).get("enabled", False)
+        max_chars = report_rules.get("reduce_text", {}).get("max_paragraph_chars", 999)
+
         parts = []
+
+        # v2.05.02: 如果启用了关键指标前置, 先输出关键参数对比
+        if key_first and top:
+            priority_order = report_rules.get("key_metrics_first", {}).get(
+                "priority_order", ["efficiency", "max_temp", "torque"])
+            parts.append("## 关键指标速览 (飞轮优化: 前置)\n")
+            header = "| 方案 | " + " | ".join(priority_order) + " |\n"
+            sep = "|------|" + "|".join(["------" for _ in priority_order]) + "|\n"
+            parts.append(header + sep)
+            for i, d in enumerate(top):
+                vals = []
+                for key in priority_order:
+                    v = d.get(key, "?")
+                    if isinstance(v, float):
+                        vals.append(f"{v:.1f}")
+                    else:
+                        vals.append(str(v))
+                parts.append(f"| {i+1} | " + " | ".join(vals) + " |\n")
+            parts.append("\n")
 
         # ── 1. 选型路径叙述 ──
         best = top[0] if top else None

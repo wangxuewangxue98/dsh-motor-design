@@ -1,0 +1,29 @@
+{
+  "last_updated": "2026-07-29T03:50:19.231879",
+  "promote_params": {
+    "params": [
+      "efficiency_target"
+    ],
+    "details": [
+      {
+        "param": "efficiency_target",
+        "modify_count": 10,
+        "reason": "被修改10次, 提升展示优先级"
+      }
+    ],
+    "updated_at": "2026-07-29T03:50:19.231862"
+  },
+  "collapse_params": {
+    "params": [
+      "insulation_class"
+    ],
+    "details": [
+      {
+        "param": "insulation_class",
+        "pass_count": 10,
+        "reason": "连续10次直接通过, 自动折叠+默认值"
+      }
+    ],
+    "updated_at": "2026-07-29T03:50:19.231876"
+  }
+}

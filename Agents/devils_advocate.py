@@ -9,11 +9,29 @@
       让 AI 假装这个方案已经死了, 用"事后诸葛亮"的口吻逼你看清盲点。
 """
 import os
+import json
 from dotenv import load_dotenv
 
 load_dotenv(r"D:\MotorDesign\.env", override=True)
 
 from base_agent import BaseAgent
+
+# v2.05.02: 加载飞轮报告结构优化规则 (魔鬼代言人提示词增强)
+_DEVILS_RULES_PATH = r"D:\MotorDesign\Knowledge\report_structure_rules.json"
+
+
+def _get_devils_prompt_boost() -> str:
+    """从飞轮加载魔鬼代言人提示词增强"""
+    try:
+        if os.path.exists(_DEVILS_RULES_PATH):
+            with open(_DEVILS_RULES_PATH, "r", encoding="utf-8") as f:
+                rules = json.load(f)
+            boost = rules.get("devils_advocate_prompt_boost", {})
+            if boost.get("enabled"):
+                return boost.get("prompt_addition", "")
+    except Exception:
+        pass
+    return ""
 
 try:
     from langchain_ollama import ChatOllama
@@ -94,7 +112,7 @@ class DevilsAdvocate(BaseAgent):
 3. 事后诸葛亮: 如果重来一次, 第一个该改的是什么?
 
 语气: 刻薄、不留情面、像在追悼会上揭短。但每句话都要指向真实的技术风险, 不是空骂。
-用中文, 400 字以内。"""
+用中文, 400 字以内。{_get_devils_prompt_boost()}"""
             try:
                 resp = self.llm.invoke(prompt)
                 report = resp.content

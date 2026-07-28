@@ -5,6 +5,31 @@
 
 ---
 
+## [2.05.02] - 2026-07-29 (DEV)
+
+### Added — 新增进化机制
+- **评审推荐师报告结构优化** (`evolve_report_structure()`): 分析决策耗时>30分钟→关键指标前置+可视化图表标记+段落字数限制; 分析魔鬼代言人质量<60→提示词增强(要求量化风险/失效模式/量产风险)
+- **决策界面信息优先级** (`evolve_decision_ui()`): 参数被修改≥3次→提升到界面顶部; 参数被直接通过≥5次→自动折叠+默认值
+- **UI交互记录** (`record_ui_interaction()`): 记录参数修改/通过行为, 新增`ui_interactions`表
+- **报告阅读记录** (`record_report_metric()`): 记录章节停留时间/滚动次数, 新增`report_metrics`表
+- **5个Flask API端点**: `/api/operation/dashboard`, `/api/operation/evolution-log`, `/api/operation/ui-feedback`, `/api/operation/report-feedback`, `/api/operation/trigger-evolution`
+
+### Changed — 闭环集成 (飞轮规则→智能体)
+- `requirement_agent.py`: 加载`forced_questions.json`, `_apply_forced_questions()`检测用户描述中的关键词并自动标记需追问的参数
+- `motor_tools.py`: 加载`efficient_param_domain.json`, `_get_flywheel_design_count()`根据超时降量规则调整方案数量, `_filter_by_flywheel_exclusions()`过滤低效参数区间
+- `orchestrator.py`: `_apply_routing_rules()`根据飞轮AI路由规则自动切换本地/云端; 收敛四剑客(逆向/现实/沙盘/魔鬼)各agent独立记录运营指标
+- `review_agent.py`: 加载`report_structure_rules.json`, 启用关键指标前置时在报告最前面输出参数速览表
+- `devils_advocate.py`: 加载飞轮提示词增强, `_get_devils_prompt_boost()`注入量化风险分析要求
+
+### Enhanced — 现有进化机制增强
+- `evolve_question_strategy()`: 扩展领域关键词(重载/起动/破碎机/搅拌机/中频等), 新增`_param_alias_match()`中文别名匹配
+- `evolve_parameter_domain()`: 新增低效区间剔除(质量<40的方案参数值标记排除), 新增超时降量(生成耗时>2分钟的项目类型方案数缩减到70%)
+- `evolve_ai_routing()`: 新增连续5次阈值判定(`ROUTING_CONSECUTIVE_TRIGGER`), 避免偶发波动误判
+- `run_all_evolution()`: 从6项进化扩展到8项(新增report_structure + decision_ui)
+- `get_operation_dashboard()`: 新增UI交互统计/进化日志/报告结构规则/UI优先级规则
+
+---
+
 ## [2.05.01] - 2026-07-29 (DEV)
 
 ### D²L物理内核注入 — 分层类比选型法 + 运营数据飞轮

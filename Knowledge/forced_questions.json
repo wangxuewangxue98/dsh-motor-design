@@ -26,6 +26,25 @@
       "message": "请补充duty_cycle信息，这会影响电机选型精度",
       "created_at": "2026-07-29T02:16:30.718481",
       "trigger_count": 6
+    },
+    {
+      "param": "starting_torque_ratio",
+      "frequency": 1.0,
+      "keywords": [
+        "起动转矩",
+        "启动转矩",
+        "堵转",
+        "starting",
+        "重载",
+        "频繁起动",
+        "破碎机",
+        "搅拌机",
+        " crusher",
+        "mixer"
+      ],
+      "message": "请补充starting_torque_ratio信息，这会影响电机选型精度",
+      "created_at": "2026-07-29T03:46:22.684135",
+      "trigger_count": 6
     }
   ]
 }

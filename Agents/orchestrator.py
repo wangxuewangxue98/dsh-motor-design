@@ -51,7 +51,46 @@ import audit_logger
 # motor_tools 直接导入 (用于 generate_designs 节点的进度回调)
 from motor_tools import generate_param_matrix, batch_solve, get_last_summary
 from evolution_engine import find_matching_templates
-from operation_flywheel import record_step_metric, record_project_summary, run_all_evolution
+from operation_flywheel import (
+    record_step_metric, record_project_summary, run_all_evolution,
+    record_ui_interaction, record_report_metric,
+)
+import json as _json
+
+
+# v2.05.02: 加载飞轮AI路由规则
+def _get_flywheel_routing() -> dict:
+    """从飞轮加载AI路由规则, 自动决定本地/云端"""
+    try:
+        rules_path = r"D:\MotorDesign\Knowledge\evolution_rules.json"
+        if os.path.exists(rules_path):
+            with open(rules_path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+                return data.get("routing", {})
+    except Exception:
+        pass
+    return {}
+
+
+def _apply_routing_rules(use_cloud_review: bool, use_cloud_report: bool) -> tuple:
+    """v2.05.02: 根据飞轮路由规则自动调整云端/本地标志"""
+    routing = _get_flywheel_routing()
+    if not routing:
+        return use_cloud_review, use_cloud_report
+
+    # 评审步骤路由
+    review_rule = routing.get("review_solutions", {})
+    if review_rule.get("prefer") == "local" and use_cloud_review:
+        print(f"[orchestrator] 飞轮路由: 评审步骤切换为本地 ({review_rule.get('reason', '')})")
+        use_cloud_review = False
+
+    # 报告步骤路由
+    report_rule = routing.get("generate_report", {})
+    if report_rule.get("prefer") == "local" and use_cloud_report:
+        print(f"[orchestrator] 飞轮路由: 报告步骤切换为本地 ({report_rule.get('reason', '')})")
+        use_cloud_report = False
+
+    return use_cloud_review, use_cloud_report
 
 
 # 节点名 → 状态名映射 (供 run/run_streaming 统一设置)
@@ -333,18 +372,37 @@ class MotorAIOrchestrator:
         self._push_progress("review_solutions",
                             f"输入: {len(state['results'])} 组方案, 正在调用本地 LLM 生成支持报告...")
 
+        _start_ts = time.time()
+        project_id = state.get("project_id", "")
         use_cloud = state.get("use_cloud_review", False)
+
         result = self.review_agent.safe_run(
             results=state["results"], specs=state["specs"], use_cloud=use_cloud)
 
+        _duration_ms = int((time.time() - _start_ts) * 1000)
+
         if "error" in result:
             self._push_progress("review_solutions", f"评审失败: {result['error']}", "error")
+            record_step_metric(project_id, "review_solutions", "ReviewAgent",
+                               duration_ms=_duration_ms, quality_score=0,
+                               quality_issues=result["error"][:200])
             return {"errors": [result["error"]],
                     "review": "评审失败",
                     "top_solutions": state["results"][:5]}
 
+        # v2.05.02: 记录评审步骤运营指标
+        top_count = len(result.get("top_solutions", []))
+        has_physics = bool(result.get("physics_analysis"))
+        _quality = 85 if has_physics else 70
+        record_step_metric(project_id, "review_solutions", "ReviewAgent",
+                           duration_ms=_duration_ms,
+                           cost_cents=50 if use_cloud else 0,
+                           cost_mode="cloud" if use_cloud else "local",
+                           quality_score=_quality,
+                           quality_issues=f"top={top_count}, physics={'Y' if has_physics else 'N'}")
+
         self._push_progress("review_solutions",
-                            f"支持报告已生成 (推荐 {len(result.get('top_solutions', []))} 个方案)",
+                            f"支持报告已生成 (推荐 {top_count} 个方案)",
                             "success")
         return {"review": result["review"],
                 "top_solutions": result["top_solutions"],
@@ -355,43 +413,67 @@ class MotorAIOrchestrator:
         """收敛轨: 4个收敛agent → 反对报告"""
         results = state.get("results", [])
         specs = state.get("specs", {})
+        project_id = state.get("project_id", "")
         findings = {}
+        _conv_start = time.time()
 
         # 1. 逆向评审师
         self._push_progress("convergence_review", "[1/4] 逆向评审师启动: 检查被丢弃方案中的异类价值...")
+        _sub_ts = time.time()
         try:
             rev = self.reverse_reviewer.safe_run(results=results, specs=specs)
             findings["reverse"] = rev.get("con_report", "")
             findings["reverse_highlights"] = rev.get("discarded_highlights", [])
             self._push_progress("convergence_review", "[1/4] 逆向评审师完成")
+            record_step_metric(project_id, "convergence_review", "ReverseReviewer",
+                               duration_ms=int((time.time() - _sub_ts) * 1000),
+                               quality_score=80)
         except Exception as e:
             findings["reverse"] = f"逆向评审失败: {e}"
             self._push_progress("convergence_review", f"[1/4] 逆向评审师失败: {e}", "error")
+            record_step_metric(project_id, "convergence_review", "ReverseReviewer",
+                               duration_ms=int((time.time() - _sub_ts) * 1000),
+                               quality_score=0, quality_issues=str(e)[:200])
 
         # 2. 现实检验师
         self._push_progress("convergence_review", "[2/4] 现实检验师启动: 评估量产可行性 (TRL评级)...")
+        _sub_ts = time.time()
         try:
             real = self.reality_checker.safe_run(results=results, specs=specs)
             findings["reality"] = real.get("con_report", "")
             findings["feasibility"] = real.get("feasibility", [])
             self._push_progress("convergence_review", "[2/4] 现实检验师完成")
+            record_step_metric(project_id, "convergence_review", "RealityChecker",
+                               duration_ms=int((time.time() - _sub_ts) * 1000),
+                               quality_score=80)
         except Exception as e:
             findings["reality"] = f"现实检验失败: {e}"
             self._push_progress("convergence_review", f"[2/4] 现实检验师失败: {e}", "error")
+            record_step_metric(project_id, "convergence_review", "RealityChecker",
+                               duration_ms=int((time.time() - _sub_ts) * 1000),
+                               quality_score=0, quality_issues=str(e)[:200])
 
         # 3. 沙盘推演师
         self._push_progress("convergence_review", "[3/4] 沙盘推演师启动: 蒙特卡洛1000次扰动模拟...")
+        _sub_ts = time.time()
         try:
             sand = self.sandbox_simulator.safe_run(results=results, specs=specs)
             findings["sandbox"] = sand.get("con_report", "")
             findings["simulations"] = sand.get("simulations", [])
             self._push_progress("convergence_review", "[3/4] 沙盘推演师完成")
+            record_step_metric(project_id, "convergence_review", "SandboxSimulator",
+                               duration_ms=int((time.time() - _sub_ts) * 1000),
+                               quality_score=85)
         except Exception as e:
             findings["sandbox"] = f"沙盘推演失败: {e}"
             self._push_progress("convergence_review", f"[3/4] 沙盘推演师失败: {e}", "error")
+            record_step_metric(project_id, "convergence_review", "SandboxSimulator",
+                               duration_ms=int((time.time() - _sub_ts) * 1000),
+                               quality_score=0, quality_issues=str(e)[:200])
 
         # 4. 魔鬼代言人 (引用前三个的发现)
         self._push_progress("convergence_review", "[4/4] 魔鬼代言人启动: 撰写方案遗书 (假设已失败)...")
+        _sub_ts = time.time()
         try:
             dev = self.devils_advocate.safe_run(
                 results=results, specs=specs,
@@ -403,14 +485,25 @@ class MotorAIOrchestrator:
             findings["devils_advocate"] = dev.get("con_report", "")
             findings["postmortems"] = dev.get("postmortems", [])
             self._push_progress("convergence_review", "[4/4] 魔鬼代言人完成")
+            # v2.05.02: 记录魔鬼代言人指标 (用于报告结构进化触发)
+            _devils_quality = 75
+            if dev.get("postmortems"):
+                _devils_quality = 80
+            record_step_metric(project_id, "convergence_review", "DevilsAdvocate",
+                               duration_ms=int((time.time() - _sub_ts) * 1000),
+                               quality_score=_devils_quality)
         except Exception as e:
             findings["devils_advocate"] = f"魔鬼代言人失败: {e}"
             self._push_progress("convergence_review", f"[4/4] 魔鬼代言人失败: {e}", "error")
+            record_step_metric(project_id, "convergence_review", "DevilsAdvocate",
+                               duration_ms=int((time.time() - _sub_ts) * 1000),
+                               quality_score=0, quality_issues=str(e)[:200])
 
         # 汇总反对报告
         self._push_progress("convergence_review", "正在汇总四剑客发现为反对报告...")
         con_report = self._assemble_con_report(findings)
 
+        _conv_duration = int((time.time() - _conv_start) * 1000)
         self._push_progress("convergence_review", "反对报告生成完成", "success")
 
         return {"con_report": con_report,
@@ -524,6 +617,8 @@ class MotorAIOrchestrator:
     def run(self, raw_text: str, solve_count: int = 10,
             use_cloud_review: bool = False,
             use_cloud_report: bool = False) -> dict:
+        # v2.05.02: 应用飞轮路由规则
+        use_cloud_review, use_cloud_report = _apply_routing_rules(use_cloud_review, use_cloud_report)
         initial_state = self._initial_state(raw_text, solve_count, use_cloud_review, use_cloud_report)
         audit_logger.log(agent_name="Orchestrator", action="workflow_start",
                          parameters={"raw_text": raw_text[:100], "solve_count": solve_count},
@@ -577,6 +672,8 @@ class MotorAIOrchestrator:
           2. 循环: drain progress queue → 检查 node_done → yield step_start(下一节点)
           3. 结束时 drain 剩余 progress
         """
+        # v2.05.02: 应用飞轮路由规则
+        use_cloud_review, use_cloud_report = _apply_routing_rules(use_cloud_review, use_cloud_report)
         initial_state = self._initial_state(raw_text, solve_count, use_cloud_review, use_cloud_report)
         thread_id = f"thread_{int(time.time())}"
         config = {"configurable": {"thread_id": thread_id}}

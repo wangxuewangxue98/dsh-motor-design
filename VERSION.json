@@ -1,7 +1,7 @@
 {
     "system_name": "Motor-AI",
-    "version": "2.05.01",
-    "version_date": "2026-07-29 02:22",
+    "version": "2.05.02",
+    "version_date": "2026-07-29 03:51",
     "description": "电机设计AI辅助系统",
     "version_scheme": "主版本.次版本.修订号 (X.YY.ZZ)",
     "version_suffix": {
@@ -10,6 +10,29 @@
     },
     "changelog_file": "CHANGELOG.md",
     "changelog": [
+        {
+            "version": "2.05.02",
+            "date": "2026-07-29 03:51",
+            "tag": "v2.05.02-dev",
+            "env": "dev",
+            "summary": "运营飞轮闭环 — 六大进化机制 + 规则自动注入智能体",
+            "changes": [
+                "Core/operation_flywheel.py: 新增evolve_report_structure() 评审报告结构优化 (决策耗时→关键指标前置+可视化+精简文字+魔鬼代言人提示词增强)",
+                "Core/operation_flywheel.py: 新增evolve_decision_ui() 决策界面信息优先级 (高频修改→提升/常通过→折叠)",
+                "Core/operation_flywheel.py: 新增record_ui_interaction()/record_report_metric() UI交互+报告阅读记录函数",
+                "Core/operation_flywheel.py: 新增DB表 ui_interactions/report_metrics",
+                "Core/operation_flywheel.py: 增强evolve_question_strategy() 领域关键词(重载/起动/破碎机/搅拌机)+中文别名匹配",
+                "Core/operation_flywheel.py: 增强evolve_parameter_domain() 低效区间剔除(效率<40%→排除)+超时降量(30→20)",
+                "Core/operation_flywheel.py: 增强evolve_ai_routing() 连续5次阈值判定(避免偶发波动误判)",
+                "Core/operation_flywheel.py: 更新run_all_evolution()含8项进化, get_operation_dashboard()含UI交互/进化日志/报告规则",
+                "Agents/requirement_agent.py: 加载forced_questions.json, _apply_forced_questions()自动注入追问规则",
+                "Scripts/motor_tools.py: 加载efficient_param_domain.json, _get_flywheel_design_count()超时降量+_filter_by_flywheel_exclusions()低效区间过滤",
+                "Agents/orchestrator.py: _apply_routing_rules()自动切换本地/云端, 收敛四剑客各agent独立指标记录",
+                "Agents/review_agent.py: 加载report_structure_rules.json, 关键指标前置+可视化标记",
+                "Agents/devils_advocate.py: 加载飞轮提示词增强, _get_devils_prompt_boost()注入量化风险要求",
+                "app/app.py: 新增5个API端点 (/api/operation/dashboard|evolution-log|ui-feedback|report-feedback|trigger-evolution)"
+            ]
+        },
         {
             "version": "2.05.01",
             "date": "2026-07-29 02:22",

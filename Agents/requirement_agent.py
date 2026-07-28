@@ -29,6 +29,22 @@ sys.path.insert(0, r"D:\MotorDesign\Core")
 from base_agent import BaseAgent
 from physics_kernel import compute_torque, determine_scenario
 
+# v2.05.02: 加载飞轮追问规则
+_FLYWHEEL_RULES_PATH = r"D:\MotorDesign\Knowledge\forced_questions.json"
+
+
+def _load_forced_questions() -> list:
+    """加载飞轮生成的强制追问规则"""
+    try:
+        import json
+        if os.path.exists(_FLYWHEEL_RULES_PATH):
+            with open(_FLYWHEEL_RULES_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("rules", [])
+    except Exception:
+        pass
+    return []
+
 
 class RequirementAgent(BaseAgent):
     """需求分析师 - 分层提取 + 场景识别"""
@@ -86,6 +102,9 @@ class RequirementAgent(BaseAgent):
         # ── Step 2: 分层归档 + 补全 ──
         notes = []
         layered = self._organize_layers(extracted, notes)
+
+        # ── Step 2b: v2.05.02 飞轮追问规则检查 ──
+        self._apply_forced_questions(raw_text, layered, notes)
 
         # ── Step 3: 物理补全 (转矩/极数) ──
         self._physics_complete(layered, notes)
@@ -189,6 +208,44 @@ JSON:"""
         l3.setdefault("application", "通用")
 
         return {"L1": l1, "L2": l2, "L3": l3}
+
+    def _apply_forced_questions(self, raw_text: str, layered: dict, notes: list):
+        """
+        v2.05.02: 应用飞轮生成的追问规则
+        如果用户描述中包含关键词但参数未提取, 自动标记为需追问
+        """
+        rules = _load_forced_questions()
+        if not rules:
+            return
+
+        text_lower = raw_text.lower()
+        merged = {**layered["L1"], **layered["L2"], **layered["L3"]}
+
+        for rule in rules:
+            param = rule.get("param", "")
+            keywords = rule.get("keywords", [])
+            # 检查用户描述是否包含任何关键词
+            matched_kw = [kw for kw in keywords if kw.lower() in text_lower]
+            if not matched_kw:
+                continue
+
+            # 检查参数是否已被提取
+            current_val = merged.get(param)
+            if current_val is None or current_val == "未知" or current_val == "":
+                msg = rule.get("message", f"请补充{param}信息")
+                notes.append(f"[飞轮追问] 检测到关键词{matched_kw[:3]}, {msg}")
+                # 在对应层中标记为待追问
+                if param in ["torque_nm", "power_kw", "voltage_v", "speed_rpm", "poles", "cooling", "motor_type"]:
+                    layered["L1"].setdefault("_pending_questions", []).append(
+                        {"param": param, "keywords_matched": matched_kw[:3], "message": msg})
+                elif param in ["duty_cycle", "ed_pct", "overload_pct", "altitude_m",
+                               "protection_class", "ambient_temp_c", "frequency_hz",
+                               "starting_torque_ratio"]:
+                    layered["L2"].setdefault("_pending_questions", []).append(
+                        {"param": param, "keywords_matched": matched_kw[:3], "message": msg})
+                else:
+                    layered["L3"].setdefault("_pending_questions", []).append(
+                        {"param": param, "keywords_matched": matched_kw[:3], "message": msg})
 
     def _physics_complete(self, layered: dict, notes: list):
         """物理补全: 转矩/极数推算"""
