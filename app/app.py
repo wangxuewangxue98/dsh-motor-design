@@ -2868,6 +2868,270 @@ def api_trigger_evolution():
 
 
 # ============================================================
+# 文件分发 (管理端→客户端 Motor-CAD/模板/软件)
+# ============================================================
+
+_DISTRIBUTE_DIR = os.path.join(Config.DATA_DIR, "distribute")
+os.makedirs(_DISTRIBUTE_DIR, exist_ok=True)
+
+
+def _init_user_feedback_table():
+    """初始化用户反馈表"""
+    try:
+        conn = _get_db()
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS user_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id TEXT DEFAULT '',
+                category TEXT DEFAULT 'general',
+                content TEXT NOT NULL,
+                contact TEXT DEFAULT '',
+                status TEXT DEFAULT 'pending',
+                reply TEXT DEFAULT '',
+                created_at TEXT DEFAULT (datetime('now','localtime')),
+                replied_at TEXT
+            );
+        """)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning(f"Init user_feedback table failed: {e}")
+
+_init_user_feedback_table()
+
+
+@app.route("/api/user/feedback", methods=["POST"])
+def api_user_feedback():
+    """客户端用户提交反馈/联系管理员"""
+    data = request.get_json() or {}
+    content = (data.get("content") or "").strip()
+    if not content:
+        return jsonify({"error": "反馈内容不能为空"}), 400
+
+    try:
+        conn = _get_db()
+        cursor = conn.execute(
+            """INSERT INTO user_feedback (client_id, category, content, contact)
+               VALUES (?, ?, ?, ?)""",
+            (data.get("client_id", ""), data.get("category", "general"),
+             content, data.get("contact", ""))
+        )
+        conn.commit()
+        fb_id = cursor.lastrowid
+        conn.close()
+        log.info(f"User feedback received: id={fb_id}, category={data.get('category','')}")
+        return jsonify({"success": True, "feedback_id": fb_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/user/feedback/list", methods=["GET"])
+def api_user_feedback_list():
+    """获取用户反馈列表 (管理端)"""
+    try:
+        conn = _get_db()
+        rows = conn.execute(
+            "SELECT * FROM user_feedback ORDER BY created_at DESC LIMIT 200"
+        ).fetchall()
+        conn.close()
+        return jsonify({
+            "success": True,
+            "feedbacks": [dict(r) for r in rows]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/user/feedback/<int:fb_id>/reply", methods=["POST"])
+def api_user_feedback_reply(fb_id):
+    """管理端回复用户反馈"""
+    data = request.get_json() or {}
+    reply = (data.get("reply") or "").strip()
+    if not reply:
+        return jsonify({"error": "回复内容不能为空"}), 400
+
+    try:
+        conn = _get_db()
+        conn.execute(
+            "UPDATE user_feedback SET status='replied', reply=?, replied_at=datetime('now','localtime') WHERE id=?",
+            (reply, fb_id)
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def _init_distribute_table():
+    """初始化文件分发表"""
+    try:
+        conn = _get_db()
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS distribute_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT NOT NULL,
+                original_name TEXT NOT NULL,
+                file_type TEXT DEFAULT 'software',
+                file_size INTEGER DEFAULT 0,
+                sha256 TEXT DEFAULT '',
+                description TEXT DEFAULT '',
+                upload_time TEXT DEFAULT (datetime('now','localtime')),
+                download_count INTEGER DEFAULT 0,
+                target_client TEXT DEFAULT ''
+            );
+        """)
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.warning(f"Init distribute table failed: {e}")
+
+_init_distribute_table()
+
+
+@app.route("/api/distribute/files", methods=["GET"])
+def api_distribute_list():
+    """获取可分发的文件列表"""
+    try:
+        conn = _get_db()
+        rows = conn.execute(
+            "SELECT * FROM distribute_files ORDER BY upload_time DESC"
+        ).fetchall()
+        conn.close()
+        files = []
+        for r in rows:
+            files.append({
+                "id": r["id"],
+                "filename": r["filename"],
+                "original_name": r["original_name"],
+                "file_type": r["file_type"],
+                "file_size": r["file_size"],
+                "description": r["description"],
+                "upload_time": r["upload_time"],
+                "download_count": r["download_count"],
+                "target_client": r["target_client"],
+            })
+        return jsonify({"success": True, "files": files})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/distribute/files", methods=["POST"])
+def api_distribute_upload():
+    """上传文件到分发目录 (管理端使用)"""
+    from werkzeug.utils import secure_filename
+
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+
+    file = request.files["file"]
+    if not file.filename:
+        return jsonify({"error": "Empty filename"}), 400
+
+    original_name = secure_filename(file.filename)
+    file_type = request.form.get("file_type", "software")
+    description = request.form.get("description", "")
+    target_client = request.form.get("target_client", "")
+
+    # 生成安全文件名
+    import uuid as _uuid
+    stored_name = f"{_uuid.uuid4().hex[:8]}_{original_name}"
+    save_path = os.path.join(_DISTRIBUTE_DIR, stored_name)
+
+    file.save(save_path)
+    file_size = os.path.getsize(save_path)
+
+    # 计算 SHA256
+    import hashlib
+    sha256 = ""
+    try:
+        h = hashlib.sha256()
+        with open(save_path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        sha256 = h.hexdigest()
+    except Exception:
+        pass
+
+    try:
+        conn = _get_db()
+        cursor = conn.execute(
+            """INSERT INTO distribute_files
+               (filename, original_name, file_type, file_size, sha256, description, target_client)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (stored_name, original_name, file_type, file_size, sha256, description, target_client)
+        )
+        conn.commit()
+        file_id = cursor.lastrowid
+        conn.close()
+        log.info(f"Distribute file uploaded: {original_name} ({file_size} bytes)")
+        return jsonify({
+            "success": True,
+            "file_id": file_id,
+            "filename": original_name,
+            "size": file_size,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/distribute/files/<int:file_id>", methods=["GET"])
+def api_distribute_download(file_id):
+    """下载分发文件 (客户端使用)"""
+    from flask import send_from_directory
+
+    try:
+        conn = _get_db()
+        row = conn.execute(
+            "SELECT * FROM distribute_files WHERE id=?", (file_id,)
+        ).fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "File not found"}), 404
+
+        # 增加下载计数
+        conn.execute(
+            "UPDATE distribute_files SET download_count = download_count + 1 WHERE id=?",
+            (file_id,)
+        )
+        conn.commit()
+        conn.close()
+
+        return send_from_directory(
+            _DISTRIBUTE_DIR, row["filename"],
+            as_attachment=True, download_name=row["original_name"]
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/distribute/files/<int:file_id>", methods=["DELETE"])
+def api_distribute_delete(file_id):
+    """删除分发文件 (管理端使用)"""
+    try:
+        conn = _get_db()
+        row = conn.execute(
+            "SELECT * FROM distribute_files WHERE id=?", (file_id,)
+        ).fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "File not found"}), 404
+
+        # 删除物理文件
+        file_path = os.path.join(_DISTRIBUTE_DIR, row["filename"])
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+        conn.execute("DELETE FROM distribute_files WHERE id=?", (file_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
+# ============================================================
 # 启动
 # ============================================================
 if __name__ == "__main__":
