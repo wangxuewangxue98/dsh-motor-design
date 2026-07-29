@@ -148,7 +148,7 @@ class WorkflowState(TypedDict):
     # 决策门
     pro_report: str                # 放大轨最终报告
     ready_for_confirm: bool        # 双报告齐备, 可交付用户确认
-    checkpoint_id: str             # v2.05.03: 人工检查点ID
+    hc_checkpoint_id: str          # v2.05.03: 人工检查点ID (避免LangGraph保留名)
     human_decision: str            # v2.05.03: 人工决策结果
     human_comment: str             # v2.05.03: 人工批注
     # 报告
@@ -629,12 +629,12 @@ class MotorAIOrchestrator:
 
         return {"pro_report": pro,
                 "ready_for_confirm": ready,
-                "checkpoint_id": checkpoint_id}
+                "hc_checkpoint_id": checkpoint_id}
 
     # ==================== 人工确认 ====================
     def _node_human_approval(self, state: WorkflowState) -> dict:
         """v2.05.03: 人工确认节点 - 阻塞等待用户决策或超时默认"""
-        checkpoint_id = state.get("checkpoint_id", "")
+        checkpoint_id = state.get("hc_checkpoint_id", "")
         project_id = state.get("project_id", "")
         if not checkpoint_id:
             return {"human_decision": "auto_skip", "human_comment": "无检查点"}
@@ -813,7 +813,7 @@ class MotorAIOrchestrator:
                          "message": "报告撰写员开始生成报告..."}]
         elif node_name == "decision_gate":
             # v2.05.03: 双报告齐备时进入人工确认, 否则直达报告
-            if state_update.get("ready_for_confirm") and state_update.get("checkpoint_id"):
+            if state_update.get("ready_for_confirm") and state_update.get("hc_checkpoint_id"):
                 return [{"step": "human_approval",
                          "message": "等待人工确认: 请审阅双报告并做出决策..."}]
             return [{"step": "generate_report",
@@ -942,7 +942,7 @@ class MotorAIOrchestrator:
                     }
                     # v2.05.03: 人工确认节点额外推送 human_input_required 事件
                     if ns["step"] == "human_approval":
-                        checkpoint_id = state_update.get("checkpoint_id", "")
+                        checkpoint_id = state_update.get("hc_checkpoint_id", "")
                         cp_info = hc.get_decision_context(checkpoint_id) if checkpoint_id else {}
                         yield {
                             "type": "human_input_required",
