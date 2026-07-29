@@ -2868,10 +2868,18 @@ def api_trigger_evolution():
 
 
 # ============================================================
-# 文件分发 (管理端→客户端 Motor-CAD/模板/软件)
+# 文件分发 (管理端->客户端 Motor-CAD/模板/软件)
 # ============================================================
 
-_DISTRIBUTE_DIR = os.path.join(Config.DATA_DIR, "distribute")
+import sqlite3 as _sql_db
+
+def _get_db():
+    """Get a SQLite connection with Row factory for the current env."""
+    conn = _sql_db.connect(Config.DB_PATH)
+    conn.row_factory = _sql_db.Row
+    return conn
+
+_DISTRIBUTE_DIR = os.path.join(BASE_DIR, "data", "distribute")
 os.makedirs(_DISTRIBUTE_DIR, exist_ok=True)
 
 
@@ -2895,7 +2903,7 @@ def _init_user_feedback_table():
         conn.commit()
         conn.close()
     except Exception as e:
-        log.warning(f"Init user_feedback table failed: {e}")
+        print(f"[WARNING] Init user_feedback table failed: {e}")
 
 _init_user_feedback_table()
 
@@ -2906,7 +2914,7 @@ def api_user_feedback():
     data = request.get_json() or {}
     content = (data.get("content") or "").strip()
     if not content:
-        return jsonify({"error": "反馈内容不能为空"}), 400
+        return jsonify({"error": "feedback content required"}), 400
 
     try:
         conn = _get_db()
@@ -2919,7 +2927,7 @@ def api_user_feedback():
         conn.commit()
         fb_id = cursor.lastrowid
         conn.close()
-        log.info(f"User feedback received: id={fb_id}, category={data.get('category','')}")
+        print(f"[INFO] User feedback received: id={fb_id}, category={data.get('category','')}")
         return jsonify({"success": True, "feedback_id": fb_id})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -2948,7 +2956,7 @@ def api_user_feedback_reply(fb_id):
     data = request.get_json() or {}
     reply = (data.get("reply") or "").strip()
     if not reply:
-        return jsonify({"error": "回复内容不能为空"}), 400
+        return jsonify({"error": "reply content required"}), 400
 
     try:
         conn = _get_db()
@@ -2984,7 +2992,7 @@ def _init_distribute_table():
         conn.commit()
         conn.close()
     except Exception as e:
-        log.warning(f"Init distribute table failed: {e}")
+        print(f"[WARNING] Init distribute table failed: {e}")
 
 _init_distribute_table()
 
@@ -3064,7 +3072,7 @@ def api_distribute_upload():
         conn.commit()
         file_id = cursor.lastrowid
         conn.close()
-        log.info(f"Distribute file uploaded: {original_name} ({file_size} bytes)")
+        print(f"[INFO] Distribute file uploaded: {original_name} ({file_size} bytes)")
         return jsonify({
             "success": True,
             "file_id": file_id,

@@ -1,12 +1,12 @@
 {
-  "last_updated": "2026-07-29T03:50:19.178162",
+  "last_updated": "2026-07-29T17:42:53.243935",
   "section_overrides": {
     "物理核验表": {
       "issue": "阅读时间过长",
       "avg_view_time_s": 150.0,
       "avg_scroll_count": 5.0,
       "action": "精简内容或拆分为子章节",
-      "updated_at": "2026-07-29T03:50:19.178087"
+      "updated_at": "2026-07-29T17:42:53.240348"
     }
   }
 }
