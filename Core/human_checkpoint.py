@@ -100,8 +100,11 @@ def create_checkpoint(project_id: str, checkpoint_type: str,
 
     with _lock:
         _pending[checkpoint_id] = {
+            "id": checkpoint_id,
             "project_id": project_id,
             "checkpoint_type": checkpoint_type,
+            "title": title,
+            "description": description,
             "status": "pending",
             "created_at": created_at,
             "timeout_seconds": timeout,
@@ -156,13 +159,13 @@ def submit_decision(checkpoint_id: str, decision: str,
 
     conn = _get_conn()
     try:
-        conn.execute(
+        cursor = conn.execute(
             """UPDATE human_checkpoints
                SET status = ?, decision = ?, comment = ?, decided_at = ?, cost_event_id = ?
                WHERE id = ? AND status = 'pending'""",
             (decision, decision, comment, datetime.now().isoformat(), cost_event_id, checkpoint_id)
         )
-        updated = conn.rowcount > 0
+        updated = cursor.rowcount > 0
         conn.commit()
         return updated
     finally:
@@ -251,8 +254,8 @@ def get_decision_context(checkpoint_id: str) -> dict:
     if not cp:
         return {}
     return {
-        "checkpoint_id": cp["id"],
-        "project_id": cp["project_id"],
+        "checkpoint_id": cp.get("id", checkpoint_id),
+        "project_id": cp.get("project_id", ""),
         "title": cp.get("title", ""),
         "description": cp.get("description", ""),
         "options": ["approve", "reject", "override"],
