@@ -1,0 +1,1 @@
+import sys;sys.path.insert(0,r"C:/Users/15389/WorkBuddy/Worktrees/MotorDesign/main-b6c70f11/Core");import dsh_registry as R;print(R.get_plugin("motor-ai-l0").get("version"))

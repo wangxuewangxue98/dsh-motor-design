@@ -1,0 +1,23 @@
+{
+  "plugin_id": "motor-ai-l0",
+  "name": "Motor-AI DSH 插件",
+  "version": "0.1.0",
+  "skill_version": "0.1.0",
+  "description": "Motor-AI DSH 插件 · 电机设计专家 L0 快速预筛层（纯 JS 经验公式，零求解器依赖）",
+  "channel": "l0",
+  "tier": "free",
+  "author": "Motor-AI",
+  "skills": [
+    {
+      "name": "motor-l0-estimate",
+      "path": "skills/motor-l0-estimate/SKILL.md",
+      "version": "0.1.0",
+      "description": "电机设计 L0 快速预筛专家技能（毫秒级参数矩阵估算）"
+    }
+  ],
+  "tools": [
+    "motor_l0_estimate"
+  ],
+  "created_at": "2026-09-20T21:34:43.780Z",
+  "published_at": null
+}

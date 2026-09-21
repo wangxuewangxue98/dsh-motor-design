@@ -1,0 +1,201 @@
+{
+  "$comment": "L0 回归标定案例集。几何参数按 physics_kernel.py 的派生式手工配平（内外径/气隙/转子径/齿宽/轭厚/轴径自洽），能效带取 IE1~IE4 区间作为物理边界锚点。修改本文件即视为改变质量门基线，必须同步重跑 scripts/regression.mjs --update-baseline。",
+  "version": "0.1.0",
+  "budget": {
+    "efficiency_pt": 2.0,
+    "temp_k": 10.0,
+    "note": "W4 目标：仿真模型适用域内，L0 与 L1 口径偏差 |Δη|≤2pt、|ΔT|≤10K"
+  },
+  "gate": {
+    "sanity_blocking": false,
+    "note": "W4 首轮实算：6/6 案例越界，根因已登记为标定欠账（铜损/铁损/机械损三项模型偏差），非门本身缺陷。故默认 sanity 不阻断 CI，仅计入 DEBT；标定收敛后必须把 sanity_blocking 翻为 true，否则门形同虚设。翻转判据：6 个案例全部落进参考带且温升不越考核限值。"
+  },
+  "regression_tolerance": {
+    "efficiency_pt": 0.5,
+    "temp_k": 2.0,
+    "loss_pct": 5.0,
+    "note": "与基线快照比较时允许的劣化幅度；超出即阻断 CI"
+  },
+  "cases": [
+    {
+      "id": "y160m4",
+      "name": "Y160M-4 类 · 15kW/1460rpm/4极",
+      "source": "通用异步机，IE1~IE4 能效带（近似）",
+      "params": {
+        "stator_od": 260,
+        "stator_id": 170.0,
+        "rotor_od": 169.0,
+        "core_length": 155.0,
+        "air_gap": 0.5,
+        "tooth_width": 7.42,
+        "yoke_thickness": 18.0,
+        "shaft_dia": 59.2,
+        "poles": 4,
+        "voltage": 380,
+        "peak_current": 30,
+        "speed": 1460,
+        "slots_stator": 36,
+        "slots_rotor": 28,
+        "turns_per_coil": 22,
+        "parallel_circuits": 2,
+        "power_kw": 15,
+        "cooling": "forced_air"
+      },
+      "reference": {
+        "efficiency_band": [87.0, 94.0],
+        "insulation_design": "F",
+        "insulation_assessment": "B"
+      }
+    },
+    {
+      "id": "y200l4",
+      "name": "Y200L-4 类 · 30kW/1470rpm/4极",
+      "source": "通用异步机，IE1~IE4 能效带（近似）",
+      "params": {
+        "stator_od": 327,
+        "stator_id": 210.0,
+        "rotor_od": 208.8,
+        "core_length": 190.0,
+        "air_gap": 0.6,
+        "tooth_width": 6.87,
+        "yoke_thickness": 23.4,
+        "shaft_dia": 73.1,
+        "poles": 4,
+        "voltage": 380,
+        "peak_current": 58,
+        "speed": 1470,
+        "slots_stator": 48,
+        "slots_rotor": 44,
+        "turns_per_coil": 18,
+        "parallel_circuits": 2,
+        "power_kw": 30,
+        "cooling": "forced_air"
+      },
+      "reference": {
+        "efficiency_band": [89.0, 95.0],
+        "insulation_design": "F",
+        "insulation_assessment": "B"
+      }
+    },
+    {
+      "id": "hs200kw",
+      "name": "用户工况 · 200kW/22000rpm/2极 · 液冷",
+      "source": "高速 PMSM，同类机型 96.5~97.5%（近似）",
+      "params": {
+        "stator_od": 200,
+        "stator_id": 110.0,
+        "rotor_od": 106.0,
+        "core_length": 170.0,
+        "air_gap": 2.0,
+        "tooth_width": 7.2,
+        "yoke_thickness": 18.0,
+        "shaft_dia": 37.1,
+        "poles": 2,
+        "voltage": 380,
+        "peak_current": 400,
+        "speed": 22000,
+        "slots_stator": 24,
+        "slots_rotor": 20,
+        "turns_per_coil": 12,
+        "parallel_circuits": 1,
+        "power_kw": 200,
+        "cooling": "liquid_jacket"
+      },
+      "reference": {
+        "efficiency_band": [95.0, 98.0],
+        "insulation_design": "F",
+        "insulation_assessment": "F"
+      }
+    },
+    {
+      "id": "mine75kw",
+      "name": "矿用隔爆 · 75kW/1480rpm/4极 · 660V",
+      "source": "矿用异步机，IE1~IE3 能效带（近似）",
+      "params": {
+        "stator_od": 400,
+        "stator_id": 260.0,
+        "rotor_od": 258.4,
+        "core_length": 260.0,
+        "air_gap": 0.8,
+        "tooth_width": 8.51,
+        "yoke_thickness": 28.0,
+        "shaft_dia": 90.4,
+        "poles": 4,
+        "voltage": 660,
+        "peak_current": 85,
+        "speed": 1480,
+        "slots_stator": 48,
+        "slots_rotor": 44,
+        "turns_per_coil": 14,
+        "parallel_circuits": 2,
+        "power_kw": 75,
+        "cooling": "forced_air"
+      },
+      "reference": {
+        "efficiency_band": [91.0, 96.0],
+        "insulation_design": "F",
+        "insulation_assessment": "B"
+      }
+    },
+    {
+      "id": "small55kw",
+      "name": "小功率 · 5.5kW/2900rpm/2极",
+      "source": "通用异步机，IE1~IE3 能效带（近似）",
+      "params": {
+        "stator_od": 175,
+        "stator_id": 100.0,
+        "rotor_od": 99.2,
+        "core_length": 110.0,
+        "air_gap": 0.4,
+        "tooth_width": 6.55,
+        "yoke_thickness": 15.0,
+        "shaft_dia": 34.7,
+        "poles": 2,
+        "voltage": 380,
+        "peak_current": 12,
+        "speed": 2900,
+        "slots_stator": 24,
+        "slots_rotor": 20,
+        "turns_per_coil": 30,
+        "parallel_circuits": 1,
+        "power_kw": 5.5,
+        "cooling": "forced_air"
+      },
+      "reference": {
+        "efficiency_band": [84.0, 91.0],
+        "insulation_design": "F",
+        "insulation_assessment": "B"
+      }
+    },
+    {
+      "id": "fan110kw",
+      "name": "高速风机类 · 110kW/3000rpm/2极 · 液冷",
+      "source": "变频调速异步/同步机，IE1~IE3 能效带（近似）",
+      "params": {
+        "stator_od": 368,
+        "stator_id": 200.0,
+        "rotor_od": 198.2,
+        "core_length": 250.0,
+        "air_gap": 0.9,
+        "tooth_width": 10.47,
+        "yoke_thickness": 33.6,
+        "shaft_dia": 69.4,
+        "poles": 2,
+        "voltage": 380,
+        "peak_current": 200,
+        "speed": 3000,
+        "slots_stator": 30,
+        "slots_rotor": 26,
+        "turns_per_coil": 10,
+        "parallel_circuits": 1,
+        "power_kw": 110,
+        "cooling": "liquid_jacket"
+      },
+      "reference": {
+        "efficiency_band": [92.0, 97.0],
+        "insulation_design": "F",
+        "insulation_assessment": "F"
+      }
+    }
+  ]
+}

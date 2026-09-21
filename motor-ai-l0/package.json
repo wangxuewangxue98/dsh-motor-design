@@ -1,0 +1,48 @@
+{
+  "name": "motor-ai-l0",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./index.mjs",
+  "description": "Motor-AI DSH 插件 · 电机设计专家 L0 快速预筛层（纯 JS 经验公式，零求解器依赖）",
+  "files": [
+    "index.mjs",
+    "cordis.patch.yml",
+    "lib/",
+    "tools/",
+    "benchmarks/",
+    "skills/",
+    "models/",
+    "scripts/",
+    "CHANGELOG.md",
+    "README.md"
+  ],
+  "exports": {
+    ".": "./index.mjs",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "verify": "node scripts/verify.mjs",
+    "regression": "node scripts/regression.mjs",
+    "update-baseline": "node scripts/regression.mjs --update-baseline"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "compatibility": {
+      "dsh": ">=0.1.2 <0.2.0",
+      "node": ">=22.0.0"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.1.2 <0.2.0"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "motor-design",
+    "electric-motor",
+    "pmsm"
+  ],
+  "license": "MIT"
+}

@@ -1,0 +1,117 @@
+{
+  "schema": "l0-constants-manifest/1",
+  "fingerprint": "a9bc480c083dc6e3",
+  "generated_at": null,
+  "source_files": {
+    "physics_kernel.py": "C:\\Users\\15389\\WorkBuddy\\Worktrees\\MotorDesign\\main-b6c70f11\\Scripts\\physics_kernel.py",
+    "motor_tools.py": "C:\\Users\\15389\\WorkBuddy\\Worktrees\\MotorDesign\\main-b6c70f11\\Scripts\\motor_tools.py"
+  },
+  "items": [
+    {
+      "py_symbol": "LAMBDA_RANGE",
+      "js_symbol": "LAMBDA_RANGE",
+      "py_file": "physics_kernel.py",
+      "py_lineno": 27,
+      "py_found": true,
+      "py_error": null,
+      "py_value": {
+        "2": [
+          0.6,
+          1.3
+        ],
+        "4": [
+          0.7,
+          1.4
+        ],
+        "6": [
+          0.6,
+          1.2
+        ],
+        "8": [
+          0.5,
+          1.1
+        ]
+      },
+      "note": "长径比 λ 区间（按极数分档），V04 与矩阵生成共用",
+      "js_found": true,
+      "js_error": null,
+      "js_value": {
+        "2": [
+          0.6,
+          1.3
+        ],
+        "4": [
+          0.7,
+          1.4
+        ],
+        "6": [
+          0.6,
+          1.2
+        ],
+        "8": [
+          0.5,
+          1.1
+        ]
+      },
+      "status": "in_sync"
+    },
+    {
+      "py_symbol": "AIR_GAP_MIN",
+      "js_symbol": "AIR_GAP_MIN",
+      "py_file": "physics_kernel.py",
+      "py_lineno": 42,
+      "py_found": true,
+      "py_error": null,
+      "py_value": 0.3,
+      "note": "气隙下限 mm，V02 硬规则",
+      "js_found": true,
+      "js_error": null,
+      "js_value": 0.3,
+      "status": "in_sync"
+    },
+    {
+      "py_symbol": "AIR_GAP_MAX",
+      "js_symbol": "AIR_GAP_MAX",
+      "py_file": "physics_kernel.py",
+      "py_lineno": 43,
+      "py_found": true,
+      "py_error": null,
+      "py_value": 1.5,
+      "note": "气隙上限 mm（常规档），V02 硬规则",
+      "js_found": true,
+      "js_error": null,
+      "js_value": 1.5,
+      "status": "in_sync"
+    },
+    {
+      "py_symbol": "FRAME_SHIFT_THRESHOLDS",
+      "js_symbol": null,
+      "py_file": "physics_kernel.py",
+      "py_lineno": 35,
+      "py_found": true,
+      "py_error": null,
+      "py_value": {
+        "micro": 0.05,
+        "fine": 0.2,
+        "coarse": null
+      },
+      "note": "机座号迁移阈值 —— L0 当前不消费，仅登记观察",
+      "status": "observed"
+    }
+  ],
+  "l0_private": [
+    "SLOT_MAP",
+    "COOLING_COEFFICIENT",
+    "POLE_EFFICIENCY_FACTOR",
+    "EFFICIENCY_BASELINE",
+    "STEINMETZ",
+    "CURRENT_DENSITY_REF",
+    "FLUX_TARGET",
+    "STACKING_FACTOR",
+    "HIGH_SPEED_RPM",
+    "AIR_GAP_MAX_HIGHSPEED",
+    "SLOT_ASPECT_RANGE"
+  ],
+  "drift_count": 0,
+  "missing": []
+}

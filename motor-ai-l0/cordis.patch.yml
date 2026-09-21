@@ -1,0 +1,34 @@
+# motor-ai-l0 Cordis 配置补丁
+# v3 定案：level 总闸 = 'l0'；L1/L2 分闸注释预留（W1 阶段不可越级激活）
+- insert:
+    - id: motor-ai-l0
+      name: 'motor-ai-l0'
+      config:
+        # ---- 层级总闸 ----
+        level: 'l0'                        # 'l0' | 'l1' | 'l2'；非 l0 触发 assertLevelImplemented 快速失败
+        # ---- L0 运行参数 ----
+        l0Mode: 'auto'                     # formula | surrogate | auto
+        surrogatePath: 'models/l0_surrogate.json'
+        surrogateConfidenceThreshold: 0.7
+        maxMatrixSize: 2000
+        topNPreview: 20
+        # ---- W2 新增：常量真源（P1 定案，由 knowledge-sync 构建期生成，勿手改）----
+        constantsSource: 'lib/motor-constants.mjs'   # 生成产物；真源 = knowledge-sync/constants.json
+        # ---- 效率口径对齐（v1 取证#4，与 _run_simulated L752 同口径）----
+        efficiencyCap: 96
+        tempRiseRange: [45, 130]
+        # ---- W4 新增：物理校验参数（motor_design_validate）----
+        airGapFluxT: 0.8                  # 气隙磁密基准 T，齿/轭磁密反算输入
+        insulationClass: 'F'              # B=80K / F=105K / H=125K 温升限值
+        highSpeedRpm: 8000                # 超过此转速气隙上限放宽到 4mm（高速档）
+        # --- L1 预留（取消注释即激活，需同时实现 tools/l1/ 代码并扩展允许列表）---
+        # l1Enabled: false
+        # l1Config:
+        #   rmxprtPath: ''
+        #   maxBatchSize: 100
+        # --- L2 预留 ---
+        # l2Enabled: false
+        # l2Config:
+        #   motorcadUrl: ''
+        #   licenseServer: ''
+        #   maxParallelSims: 4
