@@ -17,6 +17,12 @@ import {
   normalizeSpec, assertMatrixShape, buildHandoff, L0_NATIVE_FIELDS, L1_MIRROR_FIELDS,
 } from '../../lib/param-schema.mjs'
 import { quickL0Estimate } from '../../lib/formula-engine.mjs'
+import {
+  loadSurrogateModel,
+  predictBatch,
+  buildSurrogateResult,
+  DEFAULT_CONFIDENCE_THRESHOLD,
+} from '../../lib/surrogate-engine.mjs'
 
 /** 工具入参声明 */
 export const TOOL_PARAMS = {
@@ -40,7 +46,7 @@ const ASCENDING_FIELDS = new Set(['temp_rise', 'total_loss'])
 /**
  * L0 批量估算（纯函数，零依赖，可单测）
  * @param {object} rawArgs
- * @param {object} [config] 插件配置：{ efficiencyCap, tempRiseRange, topNPreview, l0Mode }
+ * @param {object} [config] 插件配置：{ efficiencyCap, tempRiseRange, topNPreview, l0Mode, surrogatePath, surrogateConfidenceThreshold }
  */
 export function runL0Estimate(rawArgs, config = {}) {
   const { spec: args } = normalizeSpec(rawArgs)
@@ -50,11 +56,90 @@ export function runL0Estimate(rawArgs, config = {}) {
 
   const efficiencyCap = config.efficiencyCap ?? 96
   const maxTempClamp = config.tempRiseRange ?? [45, 130]
+  
+  // 灰度模式：默认公式通道，仅显式启用 surrogate 时才使用代理模型
+  const l0Mode = config.l0Mode ?? 'formula'
+  const surrogateThreshold = config.surrogateConfidenceThreshold ?? DEFAULT_CONFIDENCE_THRESHOLD
 
   const started = Date.now()
   const failures = []
   const results = []
+  let surrogateFallbacks = 0
 
+  // ---- 代理模型通道（需显式启用 l0Mode='surrogate'）----
+  if (l0Mode === 'surrogate') {
+    try {
+      const modelPath = config.surrogatePath ?? 'models/l0_surrogate.json'
+      const model = loadSurrogateModel(modelPath)
+
+      const { results: predictions, fallbacks } = predictBatch(
+        paramsList,
+        model,
+        surrogateThreshold
+      )
+      surrogateFallbacks = fallbacks
+
+      for (let i = 0; i < paramsList.length; i++) {
+        const row = paramsList[i]
+        const shape = assertMatrixShape(row ?? {})
+        if (!shape.ok) {
+          failures.push({
+            index: i,
+            missing: shape.missing,
+            typeErrors: shape.typeErrors,
+          })
+          continue
+        }
+
+        const pred = predictions[i]
+        if (pred.fallback_to_formula || pred.error) {
+          // 置信度不足或预测失败，降级公式通道
+          results.push(quickL0Estimate(row, { efficiencyCap, maxTempClamp }))
+        } else {
+          // 代理模型预测成功
+          results.push(buildSurrogateResult(row, pred))
+        }
+      }
+
+      if (results.length === paramsList.length) {
+        const elapsed = Date.now() - started
+        const ascending = ASCENDING_FIELDS.has(sortBy)
+        results.sort((a, b) => (ascending ? a[sortBy] - b[sortBy] : b[sortBy] - a[sortBy]))
+
+        const effectiveTopN = topN ?? results.length
+        const topRows = results.slice(0, effectiveTopN)
+
+        const handoff = buildHandoff(topRows, {
+          fromLevel: 'l0',
+          toLevel: 'l1',
+          ranking: ['efficiency', 'torque_density'],
+        })
+
+        return {
+          results: topRows,
+          handoff,
+          total: paramsList.length,
+          success: results.length,
+          failed: failures.length,
+          failures: failures.length ? failures : undefined,
+          returned: topRows.length,
+          sorted_by: sortBy,
+          sort_order: ascending ? 'asc' : 'desc',
+          l0_mode: 'surrogate',
+          surrogate_fallbacks: surrogateFallbacks,
+          surrogate_model_version: model.version,
+          fields: { native: L0_NATIVE_FIELDS, mirror: L1_MIRROR_FIELDS },
+          elapsed_ms: elapsed,
+          avg_ms_per_case: paramsList.length ? Math.round((elapsed / paramsList.length) * 100) / 100 : 0,
+        }
+      }
+    } catch (err) {
+      // 代理模型加载/预测失败，降级公式通道
+      console.warn('[L0] surrogate 通道异常，降级公式:', err.message)
+    }
+  }
+  
+  // ---- 公式通道（默认/降级）----
   for (let i = 0; i < paramsList.length; i += 1) {
     const row = paramsList[i]
     const shape = assertMatrixShape(row ?? {})

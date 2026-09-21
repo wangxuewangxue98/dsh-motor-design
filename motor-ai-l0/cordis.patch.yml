@@ -1,8 +1,8 @@
-# motor-ai-l0 Cordis 配置补丁
+# dsh-motor-ai-l0 Cordis 配置补丁
 # v3 定案：level 总闸 = 'l0'；L1/L2 分闸注释预留（W1 阶段不可越级激活）
 - insert:
-    - id: motor-ai-l0
-      name: 'motor-ai-l0'
+    - id: dsh-motor-ai-l0
+      name: 'dsh-motor-ai-l0'
       config:
         # ---- 层级总闸 ----
         level: 'l0'                        # 'l0' | 'l1' | 'l2'；非 l0 触发 assertLevelImplemented 快速失败

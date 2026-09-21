@@ -80,7 +80,7 @@ check('cordis.patch.yml 结构有效', () => {
   must(existsSync(p), '文件不存在')
   const txt = readFileSync(p, 'utf8')
   must(txt.includes('- insert:'), '缺少 insert 段')
-  must(/id:\s*motor-ai-l0/.test(txt), '缺少插件 id')
+  must(/id:\s*dsh-motor-ai-l0/.test(txt), '缺少插件 id')
   must(/level:\s*'l0'/.test(txt), "level 默认必须为 'l0'")
   must(!/^\s*l1Enabled:\s*true/m.test(txt), 'L1 分闸不得默认开启')
   return 'insert/id/level 齐备'

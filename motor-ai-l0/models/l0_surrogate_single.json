@@ -1,0 +1,53 @@
+{
+  "schema": "l0_surrogate_single",
+  "version": "1.0.0",
+  "model_type": "ridge_residual_correction_and_direct",
+  "note": "离线验证工件；当前未被运行时加载 (phase-1 仅验证质量)",
+  "gate": [50.0, 99.0],
+  "lambda": 1.0,
+  "targets": {
+    "efficiency": {
+      "primary": {
+        "tag": "eff_direct",
+        "target": "l1_eff",
+        "framing": "direct",
+        "base": "l0_eff",
+        "feature_names": ["stator_od", "stator_id", "core_length", "l0_eff"],
+        "feature_mean": [1255.97, 759.05, 1417.71, 95.71],
+        "feature_std": [347.03, 211.85, 1059.63, 2.41],
+        "coef": [86.84, -19.34, 16.23, 2.14, 7.72],
+        "train_n": 2073,
+        "train_l1_mean": 86.88
+      },
+      "residual": {
+        "tag": "eff_resid",
+        "target": "l1_eff",
+        "framing": "residual",
+        "base": "l0_eff",
+        "feature_names": ["stator_od", "stator_id", "core_length"],
+        "feature_mean": [1255.97, 759.05, 1417.71],
+        "feature_std": [347.03, 211.85, 1059.63],
+        "coef": [-8.82, -4.93, 1.73, 4.44],
+        "train_n": 2073,
+        "train_delta_mean": -8.83
+      }
+    },
+    "temp_rise": {
+      "residual": {
+        "tag": "temp_resid",
+        "target": "l1_temp",
+        "framing": "residual",
+        "base": "l0_temp",
+        "feature_names": ["stator_od", "stator_id", "core_length"],
+        "feature_mean": [1255.97, 759.05, 1417.71],
+        "feature_std": [347.03, 211.85, 1059.63],
+        "coef": [18.09, 22.69, -2.77, 25.25],
+        "train_n": 2073,
+        "train_delta_mean": 18.10
+      },
+      "usable": false,
+      "reason": "5折CV R²<0, 几何特征对温升无信号; 需热特征(损耗分布/冷却/风速)方可建模"
+    }
+  },
+  "generated_at": "2026-09-20T22:24:01.415897"
+}

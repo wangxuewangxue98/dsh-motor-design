@@ -1,0 +1,96 @@
+{
+  "schema": "l0_surrogate_family",
+  "version": "1.0.0",
+  "note": "D 路线分族模型工件；异步小/中/大机 + PMSM 小/中/大机",
+  "gate": [50.0, 99.0],
+  "lambda": 1.0,
+  "generated_at": "2026-09-21T05:39:24.892706",
+  "induction_segments": {
+    "small": {
+      "od_range": [684.7, 903.8],
+      "primary": {
+        "tag": "small_direct",
+        "framing": "direct",
+        "feature_names": ["stator_od", "stator_id", "core_length", "l0_eff"],
+        "feature_mean": [803.54, 497.65, 572.51, 95.64],
+        "feature_std": [48.02, 11.52, 85.84, 1.68],
+        "coef": [89.80, -2.61, 0.58, -6.03, 0.42],
+        "train_n": 749,
+        "cv_r2": 0.545,
+        "cv_mae_pp": 3.56
+      }
+    },
+    "medium": {
+      "od_range": [907.4, 1355.7],
+      "primary": {
+        "tag": "medium_direct",
+        "framing": "direct",
+        "feature_names": ["stator_od", "stator_id", "core_length", "l0_eff"],
+        "feature_mean": [1148.88, 693.55, 1659.34, 95.76],
+        "feature_std": [137.75, 90.04, 1078.77, 3.21],
+        "coef": [90.31, -0.54, 1.38, 0.51, 6.86],
+        "train_n": 836,
+        "cv_r2": 0.702,
+        "cv_mae_pp": 2.58
+      }
+    },
+    "large": {
+      "od_range": [1358.8, 2651.6],
+      "primary": {
+        "tag": "large_direct",
+        "framing": "direct",
+        "feature_names": ["stator_od", "stator_id", "core_length", "l0_eff"],
+        "feature_mean": [1600.28, 970.60, 1620.14, 95.99],
+        "feature_std": [252.84, 146.99, 1100.91, 1.32],
+        "coef": [83.40, -13.67, 13.13, 2.59, 6.87],
+        "train_n": 798,
+        "cv_r2": 0.726,
+        "cv_mae_pp": 4.10
+      }
+    }
+  },
+  "pmsm_segments": {
+    "small": {
+      "od_range": [612.4, 657.9],
+      "primary": {
+        "tag": "small_direct",
+        "framing": "direct",
+        "feature_names": ["stator_od", "stator_id", "core_length", "l0_eff"],
+        "feature_mean": [636.62, 485.49, 574.95, 96.17],
+        "feature_std": [17.99, 12.34, 4.36, 1.55],
+        "coef": [91.23, -0.43, 1.21, 0.68, 0.09],
+        "train_n": 143,
+        "cv_r2": -0.058,
+        "cv_mae_pp": 1.94
+      }
+    },
+    "medium": {
+      "od_range": [677.6, 864.2],
+      "primary": {
+        "tag": "medium_direct",
+        "framing": "direct",
+        "feature_names": ["stator_od", "stator_id", "core_length", "l0_eff"],
+        "feature_mean": [801.14, 605.69, 460.76, 97.24],
+        "feature_std": [82.29, 70.15, 73.50, 1.14],
+        "coef": [92.18, 4.63, -4.16, -0.06, -0.76],
+        "train_n": 164,
+        "cv_r2": 0.048,
+        "cv_mae_pp": 1.81
+      }
+    },
+    "large": {
+      "od_range": [868.1, 1178.8],
+      "primary": {
+        "tag": "large_direct",
+        "framing": "direct",
+        "feature_names": ["stator_od", "stator_id", "core_length", "l0_eff"],
+        "feature_mean": [988.42, 745.32, 1623.78, 97.64],
+        "feature_std": [107.58, 87.09, 1284.75, 1.20],
+        "coef": [93.40, 2.22, -2.50, 0.74, -0.34],
+        "train_n": 173,
+        "cv_r2": 0.154,
+        "cv_mae_pp": 1.58
+      }
+    }
+  }
+}

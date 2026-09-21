@@ -1,4 +1,4 @@
-# motor-ai-l0
+# dsh-motor-ai-l0
 
 Motor-AI DSH「电机设计专家」插件 —— **L0 快速预筛层**。
 
@@ -188,7 +188,7 @@ Python 走 `Knowledge/y_series_physics.json` 查表；L0 要求零外部依赖�
 node scripts/verify.mjs
 
 # 本地安装测试
-dsh plugin --profile web add /path/to/motor-ai-l0
+dsh plugin --profile web add dsh-motor-ai-l0
 
 # 查看配置层
 dsh --profile web --dump-config

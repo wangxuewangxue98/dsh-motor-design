@@ -27,7 +27,7 @@ import { createWriteStream, writeFileSync } from 'node:fs'
 import { createGzip } from 'node:zlib'
 
 const ROOT = resolve(fileURLToPath(import.meta.url), '..', '..')
-const PLUGIN_ID = 'motor-ai-l0'
+const PLUGIN_ID = 'dsh-motor-ai-l0'
 const REGISTRY_PY = resolve(ROOT, '..', 'Core', 'dsh_registry.py')
 const RELEASE_MJS = resolve(ROOT, 'scripts', 'release.mjs')
 // Windows 下 fork 失败，用 bsdtar（Windows 原生 tar）绝对路径绕过 Git Bash

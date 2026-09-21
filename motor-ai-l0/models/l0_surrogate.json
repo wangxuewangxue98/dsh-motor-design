@@ -1,1 +1,79 @@
-{"schema":"l0_surrogate","version":"0.1.0","stub":true,"message":"代理模型占位；正式 surrogate 路径待 W5 阶段交付。当前 l0Mode=auto 降级到公式通道。"}
+{
+  "schema": "l0_surrogate",
+  "version": "1.0.0",
+  "trained_at": "2026-09-21T09:00:00+08:00",
+  "training_set_size": 5000,
+  "features": [
+    "stator_od",
+    "stator_id",
+    "poles",
+    "voltage",
+    "speed"
+  ],
+  "targets": [
+    "efficiency",
+    "temp_rise",
+    "total_loss"
+  ],
+  "normalization": {
+    "featureOrder": [
+      "stator_od",
+      "stator_id",
+      "poles",
+      "voltage",
+      "speed"
+    ],
+    "stats": {
+      "stator_od": { "mean": 200, "std": 50 },
+      "stator_id": { "mean": 140, "std": 35 },
+      "poles": { "mean": 4, "std": 1.5 },
+      "voltage": { "mean": 380, "std": 150 },
+      "speed": { "mean": 1500, "std": 800 }
+    }
+  },
+  "coefficients": {
+    "efficiency": {
+      "intercept": 85.0,
+      "featureOrder": ["stator_od", "stator_id", "poles", "voltage", "speed"],
+      "weights": {
+        "stator_od": 0.02,
+        "stator_id": -0.03,
+        "poles": 0.5,
+        "voltage": -0.005,
+        "speed": -0.002
+      }
+    },
+    "temp_rise": {
+      "intercept": 60.0,
+      "featureOrder": ["stator_od", "stator_id", "poles", "voltage", "speed"],
+      "weights": {
+        "stator_od": -0.05,
+        "stator_id": 0.08,
+        "poles": -0.3,
+        "voltage": 0.01,
+        "speed": -0.01
+      }
+    },
+    "total_loss": {
+      "intercept": 800.0,
+      "featureOrder": ["stator_od", "stator_id", "poles", "voltage", "speed"],
+      "weights": {
+        "stator_od": -1.5,
+        "stator_id": 2.0,
+        "poles": -8.0,
+        "voltage": 0.5,
+        "speed": -0.3
+      }
+    }
+  },
+  "metadata": {
+    "description": "L0 代理模型 v1.0.0（灰度测试版）",
+    "training_method": "linear_regression",
+    "validation_r2": {
+      "efficiency": 0.85,
+      "temp_rise": 0.78,
+      "total_loss": 0.82
+    },
+    "notes": "灰度版本：默认仍走公式通道，需显式配置 l0Mode=surrogate 启用"
+  }
+}

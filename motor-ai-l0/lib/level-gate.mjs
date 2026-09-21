@@ -53,7 +53,7 @@ export function assertLevelImplemented(targetLevel) {
   const level = normalizeLevel(targetLevel)
   if (!IMPLEMENTED_LEVELS.includes(level)) {
     throw new Error(
-      `[motor-ai-l0] ${level || '(空)'} 尚未实现。请将 level 设为 '${IMPLEMENTED_LEVELS[0]}'。`
+      `[dsh-motor-ai-l0] ${level || '(空)'} 尚未实现。请将 level 设为 '${IMPLEMENTED_LEVELS[0]}'。`
     )
   }
   return level

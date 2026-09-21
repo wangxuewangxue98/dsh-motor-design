@@ -1,5 +1,5 @@
 {
-  "name": "motor-ai-l0",
+  "name": "dsh-motor-ai-l0",
   "version": "0.1.0",
   "type": "module",
   "main": "./index.mjs",
@@ -44,5 +44,13 @@
     "electric-motor",
     "pmsm"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wangxuewangxue98/dsh-motor-design.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wangxuewangxue98/dsh-motor-design/issues"
+  },
+  "homepage": "https://github.com/wangxuewangxue98/dsh-motor-design#readme"
 }

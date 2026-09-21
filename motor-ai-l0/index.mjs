@@ -1,5 +1,5 @@
 /**
- * motor-ai-l0 —— Motor-AI DSH「电机设计专家」插件 · L0 快速预筛层
+ * dsh-motor-ai-l0 —— Motor-AI DSH「电机设计专家」插件 · L0 快速预筛层
  * ============================================================
  * W1 阶段交付范围（轨道 A 插件骨架）：
  *   - Config Schema（层级总闸 + L0 运行参数 + 效率口径对齐）
@@ -26,7 +26,7 @@
 import Schema from '@deepseek-ai/schemastery'
 import { assertLevelImplemented, isLevelEnabled, tierOf } from './lib/level-gate.mjs'
 
-export const name = 'motor-ai-l0'
+export const name = 'dsh-motor-ai-l0'
 
 /** 注入依赖：tools（工具注册能力） */
 export const inject = ['tools']
@@ -80,10 +80,10 @@ export async function apply(ctx, config) {
 
   // 2. L1/L2 预留告警（配置里被误打开时提示而非静默生效）
   if (config.l1Enabled) {
-    ctx.logger?.warn?.('[motor-ai-l0] L1 尚未实现，l1Enabled 已忽略')
+    ctx.logger?.warn?.('[dsh-motor-ai-l0] L1 尚未实现，l1Enabled 已忽略')
   }
   if (config.l2Enabled) {
-    ctx.logger?.warn?.('[motor-ai-l0] L2 尚未实现，l2Enabled 已忽略')
+    ctx.logger?.warn?.('[dsh-motor-ai-l0] L2 尚未实现，l2Enabled 已忽略')
   }
 
   // 3. 注册 L0 工具集（W3 两个 + W4 校验器，共 3 个）
@@ -92,7 +92,7 @@ export async function apply(ctx, config) {
   const tools = await registerL0Tools(ctx, config)
 
   ctx.logger?.info?.(
-    `[motor-ai-l0] L0 已加载，模式: ${config.l0Mode}` +
+    `[dsh-motor-ai-l0] L0 已加载，模式: ${config.l0Mode}` +
     ` | 效率封顶 ${config.efficiencyCap}%` +
     ` | 温升区间 ${config.tempRiseRange?.[0]}~${config.tempRiseRange?.[1]}K` +
     ` | 绝缘 ${config.insulationClass} 级` +
