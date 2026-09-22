@@ -63,14 +63,59 @@ export const AIR_GAP_MIN = 0.30
 export const AIR_GAP_MAX = 1.50
 
 /**
- * 定子内外径比经验式 —— physics_kernel.py:573
- *   id_ratio = 0.55 + (pole - 2) * 0.03
- * P3 扩表：1 极按外推给 0.52（Python 侧无此档）
+ * 定子内外径比 id/od —— 单一真源，复刻 physics_kernel.py:547-562 id_ratio_by_poles
+ * 三分支（v4.02.103 P0 口径）：
+ *   legacy   : 0.55 + (p-2)*0.03  无钳制（focused_scan 历史口径，零回归基线）
+ *   生产异步 : clamp(0.55 + (p-2)*0.012, [0.45, 0.65])
+ *   生产永磁 : clamp(0.72 + (p-2)*0.010, [0.70, 0.80])
+ * P0 升级（0.1.4）：补 is_pm 永磁分支，让 PMSM 主场景不再套用 legacy 线性口径，
+ * 与程序侧 L0 内核口径对齐（此前 0.1.3 只有 legacy，PMSM 定子内径估算系统性偏小）。
+ */
+export const ID_OD_BOUNDS = {
+  async: { min: 0.45, max: 0.65 },   // physics_kernel.py _ID_OD_ASYNC_MIN/MAX (543)
+  pm:    { min: 0.70, max: 0.80 },    // physics_kernel.py _ID_OD_PM_MIN/MAX    (544)
+}
+
+export function idRatioByPoles(poles, { isPm = false, legacy = false } = {}) {
+  let p
+  try {
+    p = Math.max(2, Math.round(Number(poles)))
+  } catch {
+    p = 4
+  }
+  if (!Number.isFinite(p)) p = 4
+  if (legacy) return 0.55 + (p - 2) * 0.03   // focused_scan 历史口径（零回归）
+  if (isPm) {
+    const { min, max } = ID_OD_BOUNDS.pm
+    return Math.max(min, Math.min(max, 0.72 + (p - 2) * 0.010))
+  }
+  const { min, max } = ID_OD_BOUNDS.async
+  return Math.max(min, Math.min(max, 0.55 + (p - 2) * 0.012))
+}
+
+/**
+ * 兼容旧签名：定子内外径比（legacy 口径，恒等于 idRatioByPoles(poles, {legacy:true})）。
+ * 保留以维持 0.1.3 调用点与 49 项回归基线（verify.mjs 未断言本函数数值，改动安全）。
+ * P3 扩表：1 极按外推给 0.52（Python 侧无此档）。
  */
 export function idRatio(poles) {
   // poles < 2 在物理上非法（永磁同步机不存在 1 极），退化到 2 极档防御异常输入
   if (poles < 2) return 0.55
   return 0.55 + (poles - 2) * 0.03
+}
+
+/**
+ * 电机类型是否永磁（PMSM/BLDC/IPM），复刻 physics_kernel.py:617-618 PMSM_TYPES。
+ * 判定口径与 Python `_is_pmsm_type`（:2135）一致：小写后精确匹配集合。
+ */
+export const PMSM_TYPES = new Set([
+  'pmsm', 'bldc', 'ipm',
+  '永磁同步电动机', '永磁同步电机', '无刷直流', '无刷直流电动机', 'spm', '表贴式永磁',
+])
+
+export function isPmsmType(motorType) {
+  if (motorType == null) return false
+  return PMSM_TYPES.has(String(motorType).toLowerCase())
 }
 
 /** 类比模式的 OD 估算比 —— physics_kernel.py:532 (base_od = base_d / 0.60) */

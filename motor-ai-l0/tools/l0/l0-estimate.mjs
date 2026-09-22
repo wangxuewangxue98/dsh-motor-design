@@ -23,6 +23,7 @@ import {
   buildSurrogateResult,
   DEFAULT_CONFIDENCE_THRESHOLD,
 } from '../../lib/surrogate-engine.mjs'
+import { getUsageSink, logUsage } from '../../lib/usage-log.mjs'
 
 /** 工具入参声明 */
 export const TOOL_PARAMS = {
@@ -30,9 +31,9 @@ export const TOOL_PARAMS = {
     type: 'array', required: true,
     description: '参数组合列表，每项须含 stator_od/poles/voltage/speed 四个 L1 严格必填字段',
   },
-  top_n: { type: 'number', required: false, description: '返回前 N 个结果，默认全部' },
+  top_n: { type: 'number', description: '返回前 N 个结果，默认全部' },
   sort_by: {
-    type: 'string', required: false,
+    type: 'string',
     description: '排序字段：efficiency / torque_density / temp_rise，默认 efficiency',
   },
 }
@@ -201,7 +202,11 @@ export async function registerL0Estimate(ctx, config = {}) {
   ctx.tools.register(defineTool({
     name: 'motor_l0_estimate',
     description:
-      '基于经验公式对参数矩阵做毫秒级性能估算与排序。\n' +
+      '基于经验公式对参数矩阵做毫秒级性能估算与排序——流水线最后一步。\n' +
+      '输入契约：params_list 必须由 motor_param_matrix 生成（每项含 16 个 L1 顶层字段），\n' +
+      '不接受 power_kw / speed_rpm 等散装命名规格——请先调 motor_param_matrix。\n' +
+      '建议先经 motor_design_validate 批量校验并剔除 failed 项后再传入，\n' +
+      '避免「看起来效率高」的假方案污染 TopN。\n' +
       '输出每项的效率、转矩、温升、总损耗、转矩密度，以及可直接被 L1 消费的镜像字段。\n' +
       '结果附 TopN 交接载荷（l1_handoff），用于把候选集交给 RMxprt 精算。\n' +
       '纯本地计算，不调用任何外部求解器。',
@@ -211,10 +216,21 @@ export async function registerL0Estimate(ctx, config = {}) {
       render: (_args, value) => [{ type: 'text', text: value }],
     },
     async execute(args) {
+      const t0 = Date.now()
       try {
         const result = runL0Estimate(args, config)
+        logUsage(getUsageSink(config), {
+          tool: 'motor_l0_estimate', ok: true, elapsed_ms: Date.now() - t0,
+          n: result?.total ?? args?.params_list?.length ?? 0,
+          success: result?.success, failed: result?.failed,
+          sort_by: args?.sort_by, top_n: args?.top_n,
+        })
         return JSON.stringify(result, null, 2)
       } catch (err) {
+        logUsage(getUsageSink(config), {
+          tool: 'motor_l0_estimate', ok: false, elapsed_ms: Date.now() - t0,
+          error: String(err?.message ?? err),
+        })
         return JSON.stringify({ error: true, message: String(err?.message ?? err) }, null, 2)
       }
     },

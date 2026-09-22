@@ -1,0 +1,9 @@
+node_modules/
+.DS_Store
+__pycache__/
+*.pyc
+
+# 本地构建 / 发布产物（不应入库）
+dist/
+metadata/
+*.tgz

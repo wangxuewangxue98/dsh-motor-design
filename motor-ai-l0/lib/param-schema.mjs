@@ -118,6 +118,7 @@ export const PARAM_SCHEMA = {
   power_kw:          { type: 'number',  unit: 'kW',  required: true,  source: 'L0' },
   torque_nm:         { type: 'number',  unit: 'Nm',  required: true,  source: 'L0' },
   cooling:           { type: 'string',  unit: '',    required: false, source: 'L0' },
+  motor_type:        { type: 'string',  unit: '',    required: false, source: 'L0' },
 
   // ---- L1 输出侧镜像 ----
   efficiency:        { type: 'number',  unit: '%',   required: false, source: 'L1-output' },

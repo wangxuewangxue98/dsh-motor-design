@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import os
 import hashlib
 import json
 import re
@@ -42,8 +43,13 @@ for _stream in (sys.stdout, sys.stderr):
 
 HERE = Path(__file__).resolve().parent
 PLUGIN_ROOT = HERE.parent                      # motor-ai-l0/
-# knowledge-sync/ → motor-ai-l0/ → worktree root
-REPO_ROOT = PLUGIN_ROOT.parents[0]
+# 真源解析：L0 物理内核真源在独立程序仓 D:\MotorDesign（不是插件仓自身，也不是早期 worktree 副本）。
+#   0.1.4 修正：原先用 `PLUGIN_ROOT.parents[0]` 相对推导 —— 当插件作为独立仓
+#   （D:\dsh-motor-ai-l0）时该表达式解析成盘符根 D:\，其下无 Scripts/，导致
+#   --check 把所有符号判成 source_missing（假阴性）。现改为显式指真源仓，
+#   并用环境变量 MOTOR_AI_REPO_ROOT 支持其它机器的真源位置。
+DEFAULT_REPO_ROOT = Path(r"D:\MotorDesign")
+REPO_ROOT = Path(os.environ.get("MOTOR_AI_REPO_ROOT", DEFAULT_REPO_ROOT))
 
 PHYSICS_KERNEL = REPO_ROOT / "Scripts" / "physics_kernel.py"
 MOTOR_TOOLS = REPO_ROOT / "Scripts" / "motor_tools.py"

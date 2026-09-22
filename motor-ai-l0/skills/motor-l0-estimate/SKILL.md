@@ -6,11 +6,23 @@ description: >
   millisecond-level L0 performance estimation (efficiency, torque, temperature
   rise, loss breakdown), validate physical consistency, and rank TopN
   candidates for downstream RMxprt / Motor-CAD verification.
-  This is the L0 fast pre-screening layer — it does NOT call RMxprt or
-  Motor-CAD, needs no Python, no license, no external solver.
+  Triggers include: motor design / estimation / sizing / selection requests,
+  电机设计、电机估算、电机选型、参数矩阵、方案初筛、效率与温升估算,
+  spec-to-candidate screening for 200kW-class high-speed PMSM or Y-series
+  induction machines. This is the L0 fast pre-screening layer — it does NOT
+  call RMxprt or Motor-CAD, needs no Python, no license, no external solver.
+whenToUse: >
+  Load when the user asks to design, estimate, size, or pre-screen an electric
+  motor from a spec (power / speed / voltage), or asks for a candidate
+  parameter matrix, L0 efficiency/temperature-rise estimation, physical
+  consistency validation, or a ranked TopN shortlist before RMxprt / Motor-CAD
+  verification. Covers both PMSM (incl. high-speed 22000rpm class) and
+  induction machines. Do NOT load for finite-element post-processing or
+  final design sign-off — those belong to L1/L2.
+user-invocable: true
 metadata:
   author: Motor-AI
-  version: 0.1.0
+  version: 0.1.4
   level: l0
   tier: free
 ---

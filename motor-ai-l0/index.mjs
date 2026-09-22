@@ -1,10 +1,10 @@
 /**
- * dsh-motor-ai-l0 —— Motor-AI DSH「电机设计专家」插件 · L0 快速预筛层
+ * dsh-motor-ai-l0 —— 电机AI辅助设计软件插件 · L0 层（毫秒级广筛）
  * ============================================================
- * W1 阶段交付范围（轨道 A 插件骨架）：
- *   - Config Schema（层级总闸 + L0 运行参数 + 效率口径对齐）
- *   - apply() 生命周期：assertLevelImplemented 快速失败 → 注册工具 → 预留 L1/L2 告警
- *   - 本阶段不注册任何 tool（tools/l0/* 由 W2-W3 交付），避免 index.mjs 导入不存在的模块
+ * 当前交付范围（W1-W5）：
+ *   - Config Schema（层级总闸 + L0 运行参数 + 效率口径对齐 + W4 校验参数）
+ *   - apply() 生命周期：assertLevelImplemented 快速失败 → 注册 3 个 L0 工具 → 预留 L1/L2 告警
+ *   - 注册工具：motor_param_matrix / motor_l0_estimate / motor_design_validate
  *
  * 硬性依赖（由 DSH Runtime 提供，不在 package.json 声明运行时依赖）：
  *   - @deepseek-ai/cordis       上下文与插件体系
@@ -18,9 +18,10 @@
  * @property {number} maxMatrixSize          参数矩阵最大组合数
  * @property {number} topNPreview            L0 结果预览 TopN
  * @property {number} efficiencyCap          效率封顶（对齐 _run_simulated L752）
- * @property {[number, number]} tempRiseRange 温升上下限（对齐参考 TODO v1 §3.3）
+ * @property {[number, number]} tempRiseRange temp 钳位区间 (°C)，对齐 L1 max_temp；命名待议（拟改 maxTempClamp）
  * @property {boolean} [l1Enabled]           预留
  * @property {boolean} [l2Enabled]           预留
+ * @property {boolean} [usageLog=true]       本地用量日志(JSONL)开关
  */
 
 import Schema from '@deepseek-ai/schemastery'
@@ -52,7 +53,7 @@ export const Config = Schema.object({
   efficiencyCap: Schema.number().default(96)
     .description('效率封顶值，对齐 Python 侧 _run_simulated (motor_tools.py:752)'),
   tempRiseRange: Schema.tuple([Schema.number(), Schema.number()]).default([45, 130])
-    .description('温升合理区间 [min,max]，对齐 _run_simulated 经验模型'),
+    .description('max_temp 钳位区间 [min,max] (°C)，对齐 L1 max_temp 口径（注意：非 L0 温升 K）；命名待议'),
 
   // ---- W4 物理校验参数 ----
   airGapFluxT: Schema.number().default(0.8)
@@ -61,6 +62,10 @@ export const Config = Schema.object({
     .description('绝缘等级，决定温升限值（B=80K / F=105K / H=125K）'),
   highSpeedRpm: Schema.number().default(8000)
     .description('高速工况阈值 (rpm)：超过后气隙上限放宽到 4mm，经验气隙比对让位'),
+
+  // ---- 用量遥测（本地 JSONL，零依赖，不注入任何 DSH 服务）----
+  usageLog: Schema.boolean().default(true)
+    .description('本地用量日志开关：每次工具调用追加一行元数据到 ~/.dsh/storages/dsh-motor-ai-l0/usage.jsonl（只记次数/耗时/规模/成败，不记设计参数与结果内容）'),
 
   // ---- L1/L2 预留（实现后需同步扩展 IMPLEMENTED_LEVELS 允许列表）----
   l1Enabled: Schema.boolean().default(false)
@@ -97,14 +102,9 @@ export async function apply(ctx, config) {
     ` | 温升区间 ${config.tempRiseRange?.[0]}~${config.tempRiseRange?.[1]}K` +
     ` | 绝缘 ${config.insulationClass} 级` +
     ` | 工具 ${tools.join(',')}` +
-    ` | 付费等级 ${tierOf(config.level)}`
+    ` | 付费等级 ${tierOf(config.level)}` +
+    ` | 用量日志 ${config.usageLog === false ? 'off' : 'on'}`
   )
-
-  return {
-    // 供外部/自检查询当前层级可用性
-    isLevelEnabled: (target) => isLevelEnabled(config, target),
-    tier: tierOf(config.level),
-  }
 }
 
 export default { name, inject, Config, apply }

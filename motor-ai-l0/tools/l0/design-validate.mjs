@@ -20,19 +20,20 @@
 import { validateDesign, validateDesignBatch, RULE_CATALOG, ESCALATABLE_RULES }
   from '../../lib/design-rules.mjs'
 import { normalizeSpec } from '../../lib/param-schema.mjs'
+import { getUsageSink, logUsage } from '../../lib/usage-log.mjs'
 
 /** 工具入参声明 */
 export const TOOL_PARAMS = {
-  params: { type: 'object', required: false, description: '单个设计参数对象（与 params_list 二选一）' },
-  params_list: { type: 'array', required: false, description: '参数组合列表（与 params 二选一）' },
+  params: { type: 'object', additionalProperties: true, description: '单个设计参数对象（与 params_list 二选一）' },
+  params_list: { type: 'array', description: '参数组合列表（与 params 二选一）' },
   escalate: {
-    type: 'array', required: false,
+    type: 'array',
     description: `提升为 failed 的规则 id，可选: ${ESCALATABLE_RULES.join('/')}`,
   },
-  insulation_class: { type: 'string', required: false, description: '绝缘等级 B/F/H，默认 F' },
-  air_gap_flux: { type: 'number', required: false, description: '气隙磁密基准 T，默认 0.80' },
-  include_thermal: { type: 'boolean', required: false, description: '是否执行温升校验，默认 true' },
-  include_reports: { type: 'boolean', required: false, description: '批量模式是否回传逐条报告，默认 false' },
+  insulation_class: { type: 'string', description: '绝缘等级 B/F/H，默认 F' },
+  air_gap_flux: { type: 'number', description: '气隙磁密基准 T，默认 0.80' },
+  include_thermal: { type: 'boolean', description: '是否执行温升校验，默认 true' },
+  include_reports: { type: 'boolean', description: '批量模式是否回传逐条报告，默认 false' },
 }
 
 /**
@@ -116,18 +117,31 @@ export async function registerDesignValidate(ctx, config = {}) {
     name: 'motor_design_validate',
     description:
       '校验电机设计参数的物理一致性，返回 passed / warning / failed 三级结论。\n' +
+      '输入 params_list 应来自 motor_param_matrix 的产出（每项含 16 个 L1 顶层字段）。\n' +
       '覆盖几何链、气隙、内外径比、长径比、极槽配合、并联支路、齿轭磁密、槽形、\n' +
       '电频率、转子轭厚、温升限值共 12 组规则。\n' +
-      '典型用法：先对参数矩阵批量校验，把 failed 项剔除后再交给 motor_l0_estimate 估算排序。',
+      '典型用法：流水线第二步——先对参数矩阵批量校验，把 failed 项剔除后\n' +
+      '再交给 motor_l0_estimate 估算排序。',
     parameters: TOOL_PARAMS,
     output: {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: value }],
     },
     async execute(args) {
+      const t0 = Date.now()
       try {
-        return JSON.stringify(runDesignValidate(args, config), null, 2)
+        const result = runDesignValidate(args, config)
+        logUsage(getUsageSink(config), {
+          tool: 'motor_design_validate', ok: true, elapsed_ms: Date.now() - t0,
+          n: args?.params_list?.length ?? (args?.params ? 1 : 0),
+          failed: result?.summary?.failed, warning: result?.summary?.warning,
+        })
+        return JSON.stringify(result, null, 2)
       } catch (err) {
+        logUsage(getUsageSink(config), {
+          tool: 'motor_design_validate', ok: false, elapsed_ms: Date.now() - t0,
+          error: String(err?.message ?? err),
+        })
         return JSON.stringify({ error: true, message: String(err?.message ?? err) }, null, 2)
       }
     },

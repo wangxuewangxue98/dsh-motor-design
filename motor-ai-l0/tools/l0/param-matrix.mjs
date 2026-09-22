@@ -25,7 +25,7 @@
  */
 
 import {
-  idRatio, SLOT_MAP, baseTurns, empiricalBaseSize, rotorOd, toothWidth,
+  idRatio, idRatioByPoles, isPmsmType, SLOT_MAP, baseTurns, empiricalBaseSize, rotorOd, toothWidth,
   yokeThickness, shaftDia, empiricalAirGap, fitLambdaWithinRange,
   round1, round2, clamp,
 } from '../../lib/motor-constants.mjs'
@@ -33,22 +33,30 @@ import {
   normalizeSpec, assertMatrixShape, COOLING_ALLOWED, buildHandoff,
 } from '../../lib/param-schema.mjs'
 import { computeTorque, computeD2L, computeLambda, validateLambda } from '../../lib/formula-engine.mjs'
+import { getUsageSink, logUsage } from '../../lib/usage-log.mjs'
 
 /** 工具入参声明（与 defineTool.parameters 保持一对一，避免两边漂移） */
 export const TOOL_PARAMS = {
   power_kw: { type: 'number', required: true, description: '额定功率 (kW)' },
   speed_rpm: { type: 'number', required: true, description: '额定转速 (rpm)' },
-  voltage_v: { type: 'number', required: false, description: '电压 (V)，默认 380' },
-  poles: { type: 'number', required: false, description: '极数，缺省由转速推荐' },
-  torque_nm: { type: 'number', required: false, description: '额定转矩 (Nm)，缺省由 9550·P/n 推算' },
+  voltage_v: { type: 'number', description: '电压 (V)，默认 380' },
+  poles: { type: 'number', description: '极数，缺省由转速推荐' },
+  motor_type: {
+    type: 'string',
+    description:
+      '电机类型（opt-in）。传 PMSM/BLDC/IPM 或中文别名时，内径比按永磁生产口径 ' +
+      '0.72+0.010(p−2) 钳[0.70,0.80] 生成，更贴合 PMSM 真实几何；不传则维持 legacy 口径 ' +
+      '0.55+0.03(p−2)（与程序 focused_scan 一致，零回归）。',
+  },
+  torque_nm: { type: 'number', description: '额定转矩 (Nm)，缺省由 9550·P/n 推算' },
   cooling: {
-    type: 'string', required: false,
+    type: 'string',
     description: `冷却方式，默认 forced_air。合法值: ${COOLING_ALLOWED.join('/')}`,
   },
-  stator_od_limit: { type: 'number', required: false, description: '定子外径上限 (mm)，默认 450' },
-  base_diameter: { type: 'number', required: false, description: '基准内径中心 (mm)，覆盖经验估算' },
-  base_length: { type: 'number', required: false, description: '基准铁心长度中心 (mm)' },
-  count: { type: 'number', required: false, description: '目标方案数，默认 20' },
+  stator_od_limit: { type: 'number', description: '定子外径上限 (mm)，默认 450' },
+  base_diameter: { type: 'number', description: '基准内径中心 (mm)，覆盖经验估算' },
+  base_length: { type: 'number', description: '基准铁心长度中心 (mm)' },
+  count: { type: 'number', description: '目标方案数，默认 20' },
 }
 
 /** 转速 → 推荐极数（ determinate 场景识别的简化版，对齐 determine_scenario 的选型直觉） */
@@ -104,6 +112,13 @@ export function buildParamMatrix(rawSpec, config = {}) {
   const odLimit = spec.stator_od_limit ?? 450
   const count = Math.min(maxMatrixSize, Math.max(1, Math.floor(spec.count ?? 20)))
 
+  // ---- PMSM 口径开关（P0，0.1.4）----
+  // 缺省 → legacy 口径 idRatio(pole)=0.55+0.03(p−2)，与 0.1.3 / 程序 focused_scan 逐字节一致（零回归）；
+  // 显式传 PMSM/BLDC/IPM（含中文别名）→ is_pm 生产口径 0.72+0.010(p−2) 钳[0.70,0.80]，更贴合 PMSM 真实几何。
+  const motorType = spec.motor_type ?? spec.motorType
+  const usePm = isPmsmType(motorType)
+  const ratioOf = (pole) => (usePm ? idRatioByPoles(pole, { isPm: true }) : idRatio(pole))
+
   // ---- 基准尺寸中心（类比模式）----
   const fallback = empiricalBaseSize(torqueNm)
   const baseD = round1(spec.base_diameter ?? fallback.d)
@@ -133,12 +148,12 @@ export function buildParamMatrix(rawSpec, config = {}) {
         // 外径超限：不丢弃候选，而是把外径夹到上限并反算内径 ——
         // 用户既然给了外径限制，就必须在限制内给出可行方案；
         // 直接 continue 会在「D²L 基准尺寸偏大 + 限制偏紧」时产出空矩阵。
-        let od = Math.round(d / idRatio(pole))
+        let od = Math.round(d / ratioOf(pole))
         let dEff = d
         let odClamped = false
         if (od > odLimit) {
           od = Math.round(odLimit)
-          dEff = round1(od * idRatio(pole))
+          dEff = round1(od * ratioOf(pole))
           odClamped = true
         }
 
@@ -179,6 +194,9 @@ export function buildParamMatrix(rawSpec, config = {}) {
           power_kw: powerKw,
           torque_nm: torqueNm,
           cooling,
+          // PMSM 场景显式传入时标记；缺省（motorType=undefined）不产生该键
+          // → 默认路径的行对象与 0.1.3 逐字节零回归（否则内存对象会多挂 undefined 键）
+          ...(motorType !== undefined ? { motor_type: motorType } : {}),
           // ---- 物理核验 ----
           _physics: {
             d_squared_l: d2l,
@@ -227,7 +245,11 @@ export function buildParamMatrix(rawSpec, config = {}) {
     total: matrix.length,
     returned: returned.length,
     truncated,
-    spec: { power_kw: powerKw, speed_rpm: speedRpm, voltage_v: voltage, poles, torque_nm: torqueNm, cooling, count },
+    spec: {
+      power_kw: powerKw, speed_rpm: speedRpm, voltage_v: voltage, poles,
+      ...(motorType !== undefined ? { motor_type: motorType } : {}),
+      torque_nm: torqueNm, cooling, count,
+    },
     applied,
   }
 }
@@ -245,9 +267,11 @@ export async function registerParamMatrix(ctx, config = {}) {
   ctx.tools.register(defineTool({
     name: 'motor_param_matrix',
     description:
-      '根据设计需求规格生成电机参数扫描矩阵（聚焦扫描）。\n' +
+      '根据设计需求规格生成电机参数扫描矩阵（聚焦扫描）——电机设计流水线的第一步。\n' +
       '输入额定功率、转速、电压等规格，输出可直接喂给 L1 求解器的参数组合列表。\n' +
       '每个组合严格包含 L1 所需的 16 个顶层字段与 _physics 物理核验字段。\n' +
+      '产出可直接作为 params_list 传给 motor_design_validate（先校验剔除 failed）\n' +
+      '和 motor_l0_estimate（再估算排序），三者构成标准流水线。\n' +
       '本工具为纯本地计算，毫秒级返回，不调用任何外部求解器。',
     parameters: TOOL_PARAMS,
     output: {
@@ -255,10 +279,19 @@ export async function registerParamMatrix(ctx, config = {}) {
       render: (_args, value) => [{ type: 'text', text: value }],
     },
     async execute(args) {
+      const t0 = Date.now()
       try {
         const result = buildParamMatrix(args, config)
+        logUsage(getUsageSink(config), {
+          tool: 'motor_param_matrix', ok: true, elapsed_ms: Date.now() - t0,
+          n: result?.total ?? result?.matrix?.length ?? 0,
+        })
         return JSON.stringify(result, null, 2)
       } catch (err) {
+        logUsage(getUsageSink(config), {
+          tool: 'motor_param_matrix', ok: false, elapsed_ms: Date.now() - t0,
+          error: String(err?.message ?? err),
+        })
         return JSON.stringify({ error: true, message: String(err?.message ?? err) }, null, 2)
       }
     },

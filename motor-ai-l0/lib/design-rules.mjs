@@ -17,7 +17,7 @@
  */
 
 import {
-  SLOT_MAP, idRatio, empiricalAirGap, AIR_GAP_MIN, AIR_GAP_MAX, airGapMax, HIGH_SPEED_RPM,
+  SLOT_MAP, idRatio, idRatioByPoles, isPmsmType, empiricalAirGap, AIR_GAP_MIN, AIR_GAP_MAX, airGapMax, HIGH_SPEED_RPM,
   FLUX_TARGET, STACKING_FACTOR, AIR_GAP_FLUX_DEFAULT,
   INSULATION_LIMITS, DEFAULT_INSULATION_CLASS, MIN_ROTOR_YOKE_MM,
   FREQ_LIMITS, FLUX_TOLERANCE, SLOT_ASPECT_RANGE, ID_RATIO_TOLERANCE,
@@ -191,8 +191,11 @@ export function validateDesign(row, opts = {}) {
   // ---- V03 定子内外径比 ----
   if (statorOd !== null && statorId !== null && poles !== null) {
     const ratio = round2(statorId / statorOd)
-    const expected = idRatio(poles)
-    metrics.id_ratio = { actual: ratio, expected }
+    // P0（0.1.4）：PMSM 场景按 is_pm 生产口径给期望比（0.72+0.010(p−2) 钳[0.70,0.80]），
+    // 与 param-matrix 生成端同口径；缺省/异步仍走 legacy（0.55+0.03(p−2)），零回归。
+    const usePm = isPmsmType(row?.motor_type)
+    const expected = usePm ? idRatioByPoles(poles, { isPm: true }) : idRatio(poles)
+    metrics.id_ratio = { actual: ratio, expected, is_pm: usePm }
     const dev = Math.abs(ratio - expected)
     if (dev > ID_RATIO_TOLERANCE.fail) {
       warn('V03', `内外径比 ${ratio} 严重偏离经验值 ${expected}（差 ${round2(dev)}），槽满率与轭部空间不可信`)

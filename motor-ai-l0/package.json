@@ -1,9 +1,9 @@
 {
   "name": "dsh-motor-ai-l0",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "type": "module",
   "main": "./index.mjs",
-  "description": "Motor-AI DSH 插件 · 电机设计专家 L0 快速预筛层（纯 JS 经验公式，零求解器依赖）",
+  "description": "电机AI辅助设计软件插件 · 覆盖电机设计全流程（需求解析 → 候选矩阵 → L0/L1/L2 解算 → Top10 校验）；L0 毫秒级广筛，纯 JS 零求解器依赖",
   "files": [
     "index.mjs",
     "cordis.patch.yml",
@@ -13,8 +13,10 @@
     "skills/",
     "models/",
     "scripts/",
+    "docs/",
     "CHANGELOG.md",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "exports": {
     ".": "./index.mjs",
@@ -40,17 +42,22 @@
   },
   "keywords": [
     "dsh-plugin",
+    "dsh",
     "motor-design",
     "electric-motor",
-    "pmsm"
+    "motor-ai",
+    "pmsm",
+    "l0-estimate",
+    "rmxprt",
+    "motor-cad"
   ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/wangxuewangxue98/dsh-motor-design.git"
+    "url": "git+https://github.com/wangxuewangxue98/dsh-motor-ai-l0.git"
   },
   "bugs": {
-    "url": "https://github.com/wangxuewangxue98/dsh-motor-design/issues"
+    "url": "https://github.com/wangxuewangxue98/dsh-motor-ai-l0/issues"
   },
-  "homepage": "https://github.com/wangxuewangxue98/dsh-motor-design#readme"
+  "homepage": "https://github.com/wangxuewangxue98/dsh-motor-ai-l0#readme"
 }
