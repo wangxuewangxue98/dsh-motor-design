@@ -116,6 +116,9 @@ export function runL0Estimate(rawArgs, config = {}) {
           ranking: ['efficiency', 'torque_density'],
         })
 
+        const feasibleCount = results.filter((r) => r.feasible === true).length
+        const recommended = topRows.find((r) => r.feasible === true) ?? null
+
         return {
           results: topRows,
           handoff,
@@ -124,6 +127,10 @@ export function runL0Estimate(rawArgs, config = {}) {
           failed: failures.length,
           failures: failures.length ? failures : undefined,
           returned: topRows.length,
+          feasible_count: feasibleCount,
+          recommended: recommended
+            ? { stator_od: recommended.params?.stator_od, poles: recommended.params?.poles, efficiency: recommended.efficiency, verdict: recommended.verdict }
+            : null,
           sorted_by: sortBy,
           sort_order: ascending ? 'asc' : 'desc',
           l0_mode: 'surrogate',
@@ -174,6 +181,9 @@ export function runL0Estimate(rawArgs, config = {}) {
 
   const elapsed = Date.now() - started
 
+  const feasibleCount = results.filter((r) => r.feasible === true).length
+  const recommended = topRows.find((r) => r.feasible === true) ?? null
+
   return {
     results: topRows,
     handoff,
@@ -182,6 +192,10 @@ export function runL0Estimate(rawArgs, config = {}) {
     failed: failures.length,
     failures: failures.length ? failures : undefined,
     returned: topRows.length,
+    feasible_count: feasibleCount,
+    recommended: recommended
+      ? { stator_od: recommended.params?.stator_od, poles: recommended.params?.poles, efficiency: recommended.efficiency, verdict: recommended.verdict }
+      : null,
     sorted_by: sortBy,
     sort_order: ascending ? 'asc' : 'desc',
     l0_mode: config.l0Mode ?? 'formula',

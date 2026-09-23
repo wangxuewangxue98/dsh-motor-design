@@ -18,7 +18,10 @@ import {
   TORQUE_CONST, AIR_GAP_MIN, AIR_GAP_MAX, SIM_EFF, SIM_TEMP, LOSS_SPLIT,
   STEINMETZ, COOLING_COEFFICIENT, DEFAULT_COOLING, POLE_EFFICIENCY_FACTOR,
   CURRENT_DENSITY_REF, FLUX_TARGET, STACKING_FACTOR, AMBIENT_TEMP_C,
-  lambdaRange, clamp, round1, round2, yokeThickness,
+  J_DESIGN, WINDING_FACTOR, POWER_FACTOR_REF, ETA_REF_FOR_CURRENT,
+  DEFAULT_CONNECTION, BACKEMF_TOL, SLOT_FILL_WARN, SLOT_FILL_MAX,
+  AIR_GAP_FLUX_DEFAULT, INSULATION_LIMITS, DEFAULT_INSULATION_CLASS,
+  lambdaRange, clamp, round1, round2, round3, round4, round5, yokeThickness,
 } from './motor-constants.mjs'
 import { buildL0Result } from './param-schema.mjs'
 
@@ -117,28 +120,135 @@ export function estimateIronLoss({
 }
 
 /**
- * 铜损 P_cu —— 电密法：ρ(T)·J²·V_cu
- * 槽内可用面积按平均直径处的齿距减齿宽估算，乘以端部系数。
+ * 槽几何派生（与设计规则一致口径）
+ * 返回槽面积 mm² 与平均半匝长度 m（供铜损与槽满率共用）。
  */
-export function estimateCopperLoss({ statorOd, statorId, coreLength, slotsStator, toothWidthMm, poles }) {
+export function slotGeometryDerived({ statorOd, statorId, coreLength, slotsStator, poles }) {
   const half = (statorOd - statorId) / 2
-  const slotDepth = round1(half * 0.60)          // 同 physics_kernel.py:601
-  if (slotDepth <= 0) return 0
+  const slotDepth = round1(half * 0.60)
   const meanDia = statorId + slotDepth
   const toothPitch = (Math.PI * meanDia) / slotsStator
-  const slotWidth = Math.max(0, toothPitch - toothWidthMm)
+  const toothWidth = (Math.PI * statorId) / (2 * slotsStator)
+  const slotWidth = Math.max(0, toothPitch - toothWidth)
   const slotAreaMm2 = slotWidth * slotDepth
-
-  // 平均半匝长度 = 铁心段 + 两端端部
-  // 端部按 1.8·τ_p 计（τ_p = 极距 = π·D/poles），随极数变小而显著变长
   const polePitchMm = (Math.PI * statorId) / (poles || 4)
-  const meanTurnLength = coreLength + 2 * END_EXT_COEF * polePitchMm
+  const meanTurnLength = (coreLength + 2 * END_EXT_COEF * polePitchMm) / 1000  // m
+  return { slotDepth, slotWidth, slotAreaMm2, meanTurnLength }
+}
 
-  const volumeM3 =
-    slotsStator * slotAreaMm2 * SLOT_FILL_FACTOR * meanTurnLength * 1e-9
+/**
+ * 铜损 P_cu —— 真实电流闭环（v0.1.6 修复 P0「电流装饰字段」）
+ * ---------------------------------------------------------------
+ * 旧版用固定电密常量 CURRENT_DENSITY_REF 近似，矩阵里的 peak_current 被完全忽略，
+ * 导致「50A 峰值」与「200kW/380V 实需 ~496A」差 10 倍却无人发现。
+ * 新版：给定 peak_current（矩阵已闭环反推），按设计电密 J_DESIGN 定线规，
+ * 反算相电阻与铜损，并一并返回槽满率（几何可行性判据）。
+ *
+ * @returns {{
+ *   copper_loss:number, slot_fill_ratio:number, slot_area_mm2:number,
+ *   conductor_area_mm2:number, current_density:number,
+ *   phase_resistance_ohm:number, line_current_rms:number, feasible:boolean
+ * }}
+ */
+export function estimateCopperLoss({
+  statorOd, statorId, coreLength, slotsStator, poles,
+  peakCurrent, turnsPerCoil, parallelCircuits = 1, airGap = 0.6,
+  currentDensityRef = J_DESIGN, windingFactor = WINDING_FACTOR,
+}) {
+  const a = Math.max(1, parallelCircuits)
+  const geo = slotGeometryDerived({ statorOd, statorId, coreLength, slotsStator, poles })
+  if (geo.slotAreaMm2 <= 0) {
+    return {
+      copper_loss: 0, slot_fill_ratio: 0, slot_area_mm2: 0, conductor_area_mm2: 0,
+      current_density: 0, phase_resistance_ohm: 0, line_current_rms: 0, feasible: false,
+    }
+  }
+  const iRms = (peakCurrent ?? 0) / Math.SQRT2            // 峰值→有效值
+  // 每支路导体电流 = I_rms / a；按设计电密定单根导线截面积
+  const aWire = (iRms / a) / currentDensityRef            // mm²
+  // 每相串联匝数 N = (Qs/3)·turns_per_coil / a
+  const nPhase = ((slotsStator / 3) * (turnsPerCoil ?? 0)) / a
+  // 槽满率（推导）：每槽导体铜面积 / 槽面积
+  //   = 2·turns_per_coil·aWire / slotArea
+  //   等价形式 turns_per_coil·I_rms / (a²·J·slotArea)
+  const conductorArea = 2 * (turnsPerCoil ?? 0) * aWire   // 每槽铜面积 mm²
+  const slotFill = geo.slotAreaMm2 > 0 ? conductorArea / geo.slotAreaMm2 : 0
+  // 相电阻 R = ρ·N·l_mean / aWire
   const rho = copperResistivity()
-  const J = CURRENT_DENSITY_REF * 1e6            // A/mm² → A/m²
-  return Math.round(rho * J * J * volumeM3)
+  const rPhase = nPhase > 0 && aWire > 0
+    ? (rho * nPhase * geo.meanTurnLength) / (aWire * 1e-6)   // aWire mm²→m²
+    : 0
+  const pCu = 3 * iRms * iRms * rPhase
+  return {
+    copper_loss: Math.round(pCu),
+    slot_fill_ratio: round3(Math.max(0, slotFill)),
+    slot_area_mm2: geo.slotAreaMm2,
+    conductor_area_mm2: round1(conductorArea),
+    current_density: round2(currentDensityRef),
+    phase_resistance_ohm: round4(rPhase),
+    line_current_rms: round1(iRms),
+    feasible: slotFill <= SLOT_FILL_MAX,
+  }
+}
+
+/**
+ * 电气闭环反推（v0.1.6 核心修复）
+ * ---------------------------------------------------------------
+ * 给定电压/转速/极数/几何，反推自洽的：
+ *   - 电频率 f = n·p/120
+ *   - 每相串联匝数 N（使反电势 E ≈ 相电压 Uph）
+ *   - 每线圈匝数 turns_per_coil = round(N·a·3/Qs)
+ *   - 峰值电流 I_peak（由功率 P = √3·U·I·pf·η 反推）
+ *   - 反电势 E 与 |E−Uph| 偏差（门禁用）
+ *   - 设计电密 J、功率因数 pf
+ *
+ * 反电势：E ≈ 4.44·f·N·Φ·kdp，Φ = 2·Bg·Dsi·L/p（poleFlux 口径，含 2/π 平均因子）
+ * 相电压：星接 Uph = U/√3（DEFAULT_CONNECTION=star）
+ *
+ * @returns {object} 见下；任何几何缺项返回 null（供调用方 skipped）
+ */
+export function deriveElectricalClosure({
+  voltage, speed, poles, statorId, coreLength, airGap = 0.6,
+  slotsStator, parallelCircuits = 1, airGapFlux = AIR_GAP_FLUX_DEFAULT,
+  connection = DEFAULT_CONNECTION, windingFactor = WINDING_FACTOR,
+  powerKw = null, pf = POWER_FACTOR_REF, eta = ETA_REF_FOR_CURRENT,
+}) {
+  if (![voltage, speed, poles, statorId, coreLength, slotsStator].every((v) => Number.isFinite(v) && v > 0)) {
+    return null
+  }
+  const a = Math.max(1, parallelCircuits)
+  const f = (speed * poles) / 120
+  const uph = connection === 'delta' ? voltage : voltage / Math.SQRT2 / Math.sqrt(1.5) // 星接 Uph=U/√3
+  const phi = (2 * airGapFlux * (statorId / 1000) * (coreLength / 1000)) / poles  // Wb/极
+  if (f <= 0 || phi <= 0) return null
+  const nPhase = uph / (4.44 * f * phi * windingFactor)
+  const turnsPerCoil = Math.max(1, Math.round((nPhase * a * 3) / slotsStator))
+  const backEmf = 4.44 * f * nPhase * phi * windingFactor
+  const backEmfOk = Math.abs(backEmf - uph) / uph <= BACKEMF_TOL
+
+  // 电流由功率反推（缺功率则用 design 电密估算，仅作回退）
+  let peakCurrent = null
+  if (Number.isFinite(powerKw) && powerKw > 0) {
+    const iRms = powerKw * 1000 / (Math.sqrt(3) * voltage * pf * eta)
+    peakCurrent = round1(iRms * Math.SQRT2)
+  }
+
+  return {
+    freq_hz: round1(f),
+    connection,
+    phase_voltage: round1(uph),
+    flux_per_pole_wb: round5(phi),
+    turns_per_phase: round2(nPhase),
+    turns_per_coil: turnsPerCoil,
+    parallel_circuits: a,
+    back_emf_v: round1(backEmf),
+    back_emf_ok: backEmfOk,
+    back_emf_dev: round3(Math.abs(backEmf - uph) / uph),
+    peak_current: peakCurrent,
+    line_current_rms: peakCurrent !== null ? round1(peakCurrent / Math.SQRT2) : null,
+    power_factor: pf,
+    current_density: J_DESIGN,
+  }
 }
 
 /** 机械损耗 —— 风磨+轴承经验标定 */
@@ -229,6 +339,7 @@ export function quickL0Estimate(params, opts = {}) {
   const efficiencyCap = opts.efficiencyCap ?? SIM_EFF.clampMax
   const maxTempClamp = opts.maxTempClamp ?? [SIM_TEMP.clampMin, SIM_TEMP.clampMax]
   const cooling = params.cooling ?? DEFAULT_COOLING
+  const insulationClass = opts.insulationClass ?? DEFAULT_INSULATION_CLASS
 
   const powerKw = params.power_kw ?? computePowerKw(params.torque_nm ?? 0, params.speed)
   const poles = params.poles
@@ -238,6 +349,21 @@ export function quickL0Estimate(params, opts = {}) {
   const slotsStator = params.slots_stator ?? 36
   const toothWidthMm = params.tooth_width ?? round2((Math.PI * statorId) / (2 * slotsStator))
   const rotorOdMm = params.rotor_od ?? round1(statorId - 2 * (params.air_gap ?? 0.6))
+  const airGap = params.air_gap ?? 0.6
+  const parallelCircuits = params.parallel_circuits ?? 1
+  const turnsPerCoil = params.turns_per_coil ?? 6
+  const peakCurrent = params.peak_current
+
+  // ---- 电气闭环（v0.1.6）----
+  const closure = deriveElectricalClosure({
+    voltage: params.voltage ?? 380,
+    speed: params.speed, poles, statorId, coreLength, airGap,
+    slotsStator, parallelCircuits,
+    airGapFlux: opts.airGapFlux ?? AIR_GAP_FLUX_DEFAULT,
+    powerKw,
+  })
+  const effTurns = closure?.turns_per_coil ?? turnsPerCoil
+  const effCurrent = closure?.peak_current ?? peakCurrent
 
   // ---- 损耗三项 ----
   const coreMassKg = estimateCoreMassKg(statorOd, statorId, coreLength)
@@ -245,9 +371,11 @@ export function quickL0Estimate(params, opts = {}) {
     speedRpm: params.speed, poles, coreMassKg,
     fluxDensity: opts.fluxDensity ?? STEINMETZ.fluxDensity,
   })
-  const pCopper = estimateCopperLoss({
-    statorOd, statorId, coreLength, slotsStator, toothWidthMm, poles,
+  const cu = estimateCopperLoss({
+    statorOd, statorId, coreLength, slotsStator, poles,
+    peakCurrent: effCurrent, turnsPerCoil: effTurns, parallelCircuits, airGap,
   })
+  const pCopper = cu.copper_loss
   const pMech = estimateMechanicalLoss({ speedRpm: params.speed, rotorOdMm })
   const totalLossW = pIron + pCopper + pMech
 
@@ -256,8 +384,20 @@ export function quickL0Estimate(params, opts = {}) {
   const rawEff = efficiencyFromLosses(powerKw, totalLossW) * poleFactor
   const efficiency = round2(Math.min(efficiencyCap, Math.max(SIM_EFF.clampMin, rawEff)))
 
-  // ---- 温升（物理通道）----
+  // ---- 温升（物理通道，含液冷标定修正）----
   const tempRise = estimateTempRise({ statorOd, coreLength, cooling }, totalLossW)
+  const tempLimit = INSULATION_LIMITS[insulationClass] ?? INSULATION_LIMITS[DEFAULT_INSULATION_CLASS]
+  const thermalOk = tempRise <= tempLimit
+
+  // ---- 磁密（齿/轭）可追溯输出 ----
+  const airGapFlux = opts.airGapFlux ?? AIR_GAP_FLUX_DEFAULT
+  const toothB = round2((2 * airGapFlux * statorId) / (slotsStator * toothWidthMm * STACKING_FACTOR))
+  const yokeB = round2((airGapFlux * statorId) / (poles * (params.yoke_thickness ?? yokeThickness(statorOd, statorId)) * STACKING_FACTOR))
+
+  // ---- 可行性判定（P0 门禁聚合）----
+  const backEmfOk = closure?.back_emf_ok ?? true
+  const slotFillOk = cu.slot_fill_ratio <= SLOT_FILL_MAX
+  const feasible = backEmfOk && slotFillOk && thermalOk
 
   // ---- 转矩密度 ----
   const torque = params.torque_nm ?? computeTorque(powerKw, params.speed)
@@ -271,10 +411,27 @@ export function quickL0Estimate(params, opts = {}) {
     total_loss: totalLossW,
     torque_density: torqueDensity,
     prediction_source: 'formula',
+    // ---- v0.1.6 可追溯诊断字段（让报告「每值给公式」）----
+    electrical_frequency_hz: closure?.freq_hz ?? round1((params.speed * poles) / 120),
+    air_gap_flux_density: airGapFlux,
+    tooth_flux_density: toothB,
+    yoke_flux_density: yokeB,
+    current_density: cu.current_density,
+    power_factor: closure?.power_factor ?? POWER_FACTOR_REF,
+    slot_fill_ratio: cu.slot_fill_ratio,
+    back_emf_v: closure?.back_emf_v ?? null,
+    back_emf_ok: backEmfOk,
+    thermal_rise_k: tempRise,
+    thermal_limit_k: tempLimit,
+    insulation_class: insulationClass,
+    peak_current: effCurrent,
+    turns_per_coil: effTurns,
+    parallel_circuits: parallelCircuits,
+    feasible,
+    verdict: feasible ? 'feasible' : (thermalOk ? 'infeasible_geometry' : 'infeasible_thermal'),
   }
 
   // ---- L1 镜像字段（可消费）：全部取自 L0 物理通道，保证同一行结果内部自洽 ----
-  // 不照抄 SIM_EFF/SIM_TEMP 的理由见 param-schema 中 L1_MIRROR_FIELDS 的注释。
   const proxyEff = Math.min(efficiencyCap, l1EfficiencyProxy({ statorOd, poles }))
   const mirrorPowerKw = computePowerKw(native.torque, params.speed)
 
@@ -286,7 +443,6 @@ export function quickL0Estimate(params, opts = {}) {
     // ---- 诊断列（不可被下游消费，仅供 W4 回归判定偏差）----
     l1_efficiency_proxy: proxyEff,
     l1_temp_proxy: l1MaxTempProxy({ statorOd, speed: params.speed }, maxTempClamp),
-    // l1_handoff 由上层汇总 TopN 时统一挂载，单行结果不重复携带
   }
 
   return buildL0Result({ params, native, mirror, confidence: 1.0 })
@@ -297,4 +453,5 @@ export default {
   electricalFrequency, estimateCoreMassKg, estimateIronLoss, estimateCopperLoss,
   estimateMechanicalLoss, efficiencyFromLosses, splitLosses, estimateTempRise,
   l1EfficiencyProxy, l1MaxTempProxy, quickL0Estimate, copperResistivity,
+  slotGeometryDerived, deriveElectricalClosure,
 }

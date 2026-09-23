@@ -134,14 +134,32 @@ export const PARAM_SCHEMA = {
 // 3. L0 结果字段（v3 决策②：双字段策略）
 // ═════════════════════════════════════════════════════════════
 
-/** L0 原生 6 字段 —— 物理损耗通道的独立产出 */
+/** L0 原生字段 —— 物理损耗通道的独立产出 + v0.1.6 可追溯诊断字段 */
 export const L0_NATIVE_FIELDS = [
   'efficiency',       // %   物理损耗模型推算
   'torque',           // Nm  9550·P/n
   'temp_rise',        // K   热负荷法温升（注意：与 max_temp 的 °C 口径不同）
   'total_loss',       // W   铜损+铁损+机械损
   'torque_density',   // Nm/m³
-  'prediction_source' // 'formula' | 'surrogate'
+  'prediction_source',// 'formula' | 'surrogate'
+  // ---- v0.1.6 可追溯诊断（让报告「每值给公式、可判定」）----
+  'electrical_frequency_hz', // Hz   n·p/120
+  'air_gap_flux_density',   // T   气隙磁密基准（缺省 0.80）
+  'tooth_flux_density',     // T   齿磁密 2·Bg·Dsi/(Qs·bt·k_stack)
+  'yoke_flux_density',      // T   轭磁密 Bg·Dsi/(p·yoke·k_stack)
+  'current_density',        // A/mm²  设计电密 J_DESIGN
+  'power_factor',           // -    功率因数基准
+  'slot_fill_ratio',        // -    槽满率（几何可行性）
+  'back_emf_v',             // V    反电势闭环值
+  'back_emf_ok',            // bool 反电势自洽
+  'thermal_rise_k',         // K    温升
+  'thermal_limit_k',        // K    绝缘等级温升限值
+  'insulation_class',       // -    B/F/H
+  'peak_current',           // A    峰值电流（闭环反推）
+  'turns_per_coil',         // -    每线圈匝数（闭环反推）
+  'parallel_circuits',      // -    并联支路
+  'feasible',               // bool 电气+几何+热三关全过
+  'verdict',                // str  feasible / infeasible_geometry / infeasible_thermal
 ]
 
 /** L0 元信息 */

@@ -39,6 +39,9 @@ import {
   toothFluxDensity, yokeFluxDensity,
 } from '../lib/design-rules.mjs'
 import { evaluateSuite, makeBaseline, compareBaseline } from '../lib/regression-gate.mjs'
+import {
+  TELEM_FIELDS, sanitizeTelemetry, aggregateUsage,
+} from '../lib/telemetry.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const results = []
@@ -441,14 +444,16 @@ check('index: tools/l0 可在无 DSH Runtime 下加载', () => {
 })
 
 // ---------- 26~35. W4：物理一致性校验 ----------
-check('validate: 规则目录编号唯一且 12 条齐备', () => {
+check('validate: 规则目录编号唯一且无缺号（V01~V15 齐备，V13 附于 V06）', () => {
   const ids = RULE_CATALOG.map((r) => r.id)
   must(new Set(ids).size === ids.length, '存在重复规则编号')
-  must(ids.length === 12, `应有 12 条规则，实际 ${ids.length}`)
+  // 目录随版本增长：当前为 14 条（V01~V12 + V14 反电势闭环 + V15 槽满率）。
+  // 用动态长度断言，避免新增规则后人工同步计数再次假红。
+  must(ids.length >= 12, `规则数 ${ids.length} 不应少于基线 12 条`)
   for (const r of RULE_CATALOG) {
     must(r.name && r.severity, `${r.id} 缺 name/severity`)
   }
-  return `V01~V12 齐备`
+  return `共 ${ids.length} 条（V01~V15，V13 附于 V06）`
 })
 
 check('validate: 磁密公式含正弦平均因子 2/π（初版遗漏已修）', () => {
@@ -521,7 +526,7 @@ check('validate: escalate 能把温升规则升级为 failed', () => {
     stator_od: 400, stator_id: 260, rotor_od: 258.4, shaft_dia: 90.4,
     core_length: 260, air_gap: 0.8, tooth_width: 8.51, yoke_thickness: 28,
     poles: 4, voltage: 660, speed: 1480, slots_stator: 48, slots_rotor: 44,
-    turns_per_coil: 14, parallel_circuits: 2, power_kw: 75, cooling: 'forced_air',
+    turns_per_coil: 14, parallel_circuits: 2, power_kw: 75, cooling: 'natural',
   }
   const soft = validateDesign(row, {})
   must(!soft.issues.some((i) => i.rule === 'V12' && i.level === 'failed'),
@@ -618,6 +623,100 @@ check('gate: 基线快照已生成且案例齐全', () => {
     must(base.metrics?.[c.id], `基线缺案例 ${c.id}`)
   }
   return `${Object.keys(base.metrics).length} 个案例已快照`
+})
+
+// ---------- 50~52. 脱敏聚合指标回传（v3 option-2/3）----------
+check('telemetry: 白名单字段集合固定且不含设计/隐私键', () => {
+  const forbidden = [
+    'stator_od', 'poles', 'efficiency', 'temp_rise', 'total_loss',
+    'params', 'prompt', 'cwd', 'workdir', 'apiKey', 'token', 'client_id',
+  ]
+  const leaked = forbidden.filter((k) => TELEM_FIELDS.includes(k))
+  must(leaked.length === 0, `白名单混入设计/隐私键: ${leaked.join(',')}`)
+  must(TELEM_FIELDS.includes('tool') && TELEM_FIELDS.includes('ok'), '缺核心统计键')
+  return `白名单 ${TELEM_FIELDS.length} 键，零设计/隐私泄漏`
+})
+
+check('telemetry: sanitize 丢弃非白名单键，error 归一为类别（不回原文）', () => {
+  const rec = {
+    ts: '2026-09-22T00:00:00Z', tool: 'motor_l0_estimate', ok: false,
+    elapsed_ms: 3, n: 20,
+    stator_od: 180, poles: 8, efficiency: 95, apiKey: 'sk-SECRET',
+    error: 'power_kw must be positive at C:\\secret\\sk-abc line2 line3 very long',
+  }
+  const s = sanitizeTelemetry(rec)
+  must(!('stator_od' in s) && !('poles' in s) && !('efficiency' in s) && !('apiKey' in s),
+    '设计/密钥字段未被丢弃')
+  must(s.error === 'invalid_argument', `error 应归一为类别，实际 ${s.error}`)
+  must(!/sk-abc|C:\\|line2/.test(s.error), 'error 类别泄漏了原文（路径/密钥）')
+  must(s.tool === 'motor_l0_estimate' && s.ok === false && s.elapsed_ms === 3, '白名单字段丢失')
+  return `丢弃 4 个非白名单键，error → "${s.error}"`
+})
+
+check('telemetry: aggregateUsage 只出聚合统计量，无逐条/无密钥', () => {
+  const p = aggregateUsage([
+    { tool: 'motor_l0_estimate', ok: true, elapsed_ms: 3, n: 20, ts: '2026-09-22T00:00:00Z' },
+    { tool: 'motor_l0_estimate', ok: false, elapsed_ms: 7, n: 10, error: 'timeout at C:/x', ts: '2026-09-22T00:00:01Z' },
+    { tool: 'motor_design_validate', ok: true, elapsed_ms: 2, n: 40, ts: '2026-09-22T00:00:02Z' },
+  ], { pluginVersion: '0.1.5' })
+  must(p.calls_total === 3 && p.ok_total === 2 && p.failed_total === 1, '次数统计错误')
+  must(p.by_tool['motor_l0_estimate'].calls === 2, '按工具聚合错误')
+  must(p.plugin_version === '0.1.5', '来源版本缺失')
+  must(!JSON.stringify(p).match(/sk-|C:\\\/x|stator_od/), 'payload 泄漏密钥/路径/设计字段')
+  return `3 调用聚合 | by_tool ${Object.keys(p.by_tool).length} 类 | 零泄漏`
+})
+
+// ---------- v0.1.6 电气闭环回归（审计 P0 修复锁定）----------
+check('闭环: 200kW/22000rpm/380V/PMSM 电流反推≈497A（非 50A 装饰值）', () => {
+  const m = buildParamMatrix({ power_kw: 200, speed_rpm: 22000, voltage_v: 380, motor_type: 'pmsm', cooling: 'liquid_jacket', count: 20 }, {})
+  const iMin = Math.min(...m.matrix.map((r) => r.peak_current))
+  const iMax = Math.max(...m.matrix.map((r) => r.peak_current))
+  // I_rms = P/(√3·U·pf·η) ≈ 351A → 峰值 ≈ 496A；闭环应全部落在 480~520 区间
+  must(iMin >= 480 && iMax <= 520, `峰值电流应≈497A，实际 ${iMin}~${iMax}A`)
+  return `峰值电流 ${iMin}~${iMax}A（反推一致）`
+})
+
+check('闭环: PMSM 矩阵无转子导条槽（slots_rotor 全为 0）', () => {
+  const m = buildParamMatrix({ power_kw: 200, speed_rpm: 22000, voltage_v: 380, motor_type: 'pmsm', count: 20 }, {})
+  must(m.matrix.every((r) => r.slots_rotor === 0), 'PMSM 出现转子槽（异步模板污染）')
+  must(m.matrix.every((r) => r._physics.rotor_type === 'pm_synchronous_no_cage'), 'rotor_type 未标记')
+  return `${m.matrix.length} 行 slots_rotor=0`
+})
+
+check('闭环: 反电势 E≈相电压 Uph（|E-Uph|≤10%），匝数闭环成立', () => {
+  const m = buildParamMatrix({ power_kw: 200, speed_rpm: 22000, voltage_v: 380, motor_type: 'pmsm', count: 20 }, {})
+  const est = runL0Estimate({ params_list: m.matrix, sort_by: 'efficiency' }, { insulationClass: 'F' })
+  must(est.results.every((r) => r.back_emf_ok === true), '存在反电势闭环失配方案')
+  must(est.results.every((r) => Math.abs(r.back_emf_v - 219.4) < 30), '反电势应≈219V（380/√3）')
+  return `全部 back_emf_ok | E≈${est.results[0].back_emf_v}V`
+})
+
+check('闭环: 液冷 200kW 温升≤F级105K 且 feasible_count>0（不再推荐超标方案）', () => {
+  const m = buildParamMatrix({ power_kw: 200, speed_rpm: 22000, voltage_v: 380, motor_type: 'pmsm', cooling: 'liquid_jacket', count: 20 }, {})
+  const est = runL0Estimate({ params_list: m.matrix, sort_by: 'efficiency' }, { insulationClass: 'F' })
+  must(est.feasible_count > 0, '无可行方案（液冷应可行）')
+  must(est.recommended !== null, '未给出推荐方案')
+  must(est.results.filter((r) => r.feasible).every((r) => r.temp_rise <= r.thermal_limit_k), '存在超热限值却被标 feasible')
+  return `feasible=${est.feasible_count} | 推荐 D${est.recommended.stator_od}/p${est.recommended.poles} eff${est.recommended.efficiency}%`
+})
+
+check('门禁: V15 槽满率>0.78 的 hand-fed 矩阵判 failed', () => {
+  const row = buildParamMatrix({ power_kw: 200, speed_rpm: 22000, voltage_v: 380, motor_type: 'pmsm', count: 20 }, {}).matrix[0]
+  // 注入不可能的大电流（10kA）→ 槽满率必然爆表
+  const bad = { ...row, peak_current: 10000, _physics: { ...row._physics } }
+  const rep = validateDesignBatch([bad], { insulationClass: 'F', includeThermal: true })
+  must(rep.summary.failed >= 1, '超大电流未触发槽满率 failed')
+  return `bad 电流→ ${rep.summary.failed} failed（槽满率门禁生效）`
+})
+
+check('门禁: V14 匝数严重失配触发反电势 failed', () => {
+  const m = buildParamMatrix({ power_kw: 200, speed_rpm: 22000, voltage_v: 380, motor_type: 'pmsm', count: 20 }, {})
+  const good = m.matrix[0]
+  const bad = { ...good, turns_per_coil: good.turns_per_coil * 10, _physics: { ...good._physics } }
+  const rep = validateDesignBatch([bad], { insulationClass: 'F', includeThermal: true })
+  const f = rep.reports[0]
+  must(f.issues.some((i) => i.rule === 'V14' && i.level === 'failed'), '匝数×10 未触发 V14 failed')
+  return `匝数×10 → V14 failed（反电势闭环门禁生效）`
 })
 
 // ---------- 输出 ----------

@@ -67,6 +67,18 @@ export const Config = Schema.object({
   usageLog: Schema.boolean().default(true)
     .description('本地用量日志开关：每次工具调用追加一行元数据到 ~/.dsh/storages/dsh-motor-ai-l0/usage.jsonl（只记次数/耗时/规模/成败，不记设计参数与结果内容）'),
 
+  // ---- 脱敏聚合指标回传（显式可选，默认关闭；白名单见 lib/telemetry.mjs）----
+  telemetryEnabled: Schema.boolean().default(false)
+    .description('脱敏聚合指标回传开关（默认 false；且须配合 telemetryEndpoint 才真正生效）。开启后仅上报「按工具聚合的调用次数/成败/耗时分布/规模总和」，绝不包含设计参数、结果明细、提示词、工作目录、密钥'),
+  telemetryEndpoint: Schema.string().default('')
+    .description('回传目标 URL（POST JSON）。为空 = 不启用回传。需与 telemetryEnabled=true 同时满足才会上报；推荐先配到管理端 /api/admin/dsh-plugins/<id>/usage-report 或自建端点'),
+  telemetryBatchSize: Schema.number().default(50)
+    .description('单次回传最多携带的用量记录条数（分批推进 offset，失败不推进、下批重报）'),
+  telemetryIntervalSec: Schema.number().default(300)
+    .description('回传轮询周期（秒）；0 = 关闭周期回传（仅在进程退出时 flush 一次）'),
+  sessionTelemetry: Schema.union(['auto', 'off']).default('auto')
+    .description('是否尝试把聚合指标挂到 DSH Runtime 的 sessionTelemetry 瀑布（运行时探测，不静态 inject；探测不到自动回退 endpoint POST）。off = 只用 endpoint'),
+
   // ---- L1/L2 预留（实现后需同步扩展 IMPLEMENTED_LEVELS 允许列表）----
   l1Enabled: Schema.boolean().default(false)
     .description('预留：L1 RMxprt 磁路法求解，当前阶段不生效'),
@@ -96,6 +108,10 @@ export async function apply(ctx, config) {
   const { registerL0Tools } = await import('./tools/l0/index.mjs')
   const tools = await registerL0Tools(ctx, config)
 
+  // 4. 脱敏聚合指标回传（显式可选，默认关闭；静默降级，绝不影响工具主流程）
+  await setupTelemetry(ctx, config)
+
+  const telemetryOn = config.telemetryEnabled === true && !!String(config.telemetryEndpoint || '').trim()
   ctx.logger?.info?.(
     `[dsh-motor-ai-l0] L0 已加载，模式: ${config.l0Mode}` +
     ` | 效率封顶 ${config.efficiencyCap}%` +
@@ -103,8 +119,52 @@ export async function apply(ctx, config) {
     ` | 绝缘 ${config.insulationClass} 级` +
     ` | 工具 ${tools.join(',')}` +
     ` | 付费等级 ${tierOf(config.level)}` +
-    ` | 用量日志 ${config.usageLog === false ? 'off' : 'on'}`
+    ` | 用量日志 ${config.usageLog === false ? 'off' : 'on'}` +
+    ` | 脱敏回传 ${telemetryOn ? `on → ${String(config.telemetryEndpoint).slice(0, 40)}` : 'off'}`
   )
+}
+
+/**
+ * 启动脱敏回传生命周期：周期 flush（setInterval）+ 进程退出 flush。
+ * 全部包在 try/catch，任何失败都静默降级；未启用（默认）则直接 no-op。
+ * @param {import('@deepseek-ai/cordis').Context} ctx
+ * @param {Config} config
+ */
+async function setupTelemetry(ctx, config) {
+  const enabled = config.telemetryEnabled === true
+  const endpoint = String(config.telemetryEndpoint || '').trim()
+  if (!enabled || !endpoint) return
+
+  const { reportTelemetry, attachSessionTelemetry } = await import('./lib/telemetry.mjs')
+  const version = config.pluginVersion || ''
+
+  /**
+   * 单次回传：endpoint POST（主通道）成功后，把同一份聚合 payload 也挂到
+   * DSH Runtime 的 sessionTelemetry 瀑布（副通道，运行时探测，失败静默）。
+   */
+  async function flushOnce() {
+    try {
+      const res = await reportTelemetry(config, { pluginVersion: version })
+      if (res.reported && res.payload && config.sessionTelemetry !== 'off') {
+        attachSessionTelemetry(ctx, res.payload)
+      }
+    } catch { /* 回传绝不影响工具主流程 */ }
+  }
+
+  // 周期回传（intervalSec>0 时；unref 避免撑住进程）
+  const intervalSec = Math.max(0, Number(config.telemetryIntervalSec) || 0)
+  if (intervalSec > 0) {
+    const timer = setInterval(flushOnce, intervalSec * 1000)
+    if (typeof timer.unref === 'function') timer.unref()
+  }
+
+  // 进程退出前 flush 一次（正常退出 + 信号打断都尽力上报）
+  const flushOnExit = () => { flushOnce() }
+  if (typeof process.once === 'function') {
+    process.once('SIGTERM', flushOnExit)
+    process.once('SIGINT', flushOnExit)
+  }
+  if (typeof process.on === 'function') process.on('beforeExit', flushOnExit)
 }
 
 export default { name, inject, Config, apply }

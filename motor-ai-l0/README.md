@@ -57,7 +57,7 @@ node scripts/verify.mjs
 | `efficiencyCap` | `96` | 效率封顶（与 L1 同口径，避免两层排序跳变） |
 | `insulationClass` | `'F'` | 绝缘等级，决定温升限值（B=80K / F=105K / H=125K） |
 
-其余 8 项（`usageLog` / `surrogatePath` / `surrogateConfidenceThreshold` / `maxMatrixSize` / `topNPreview` / `tempRiseRange` / `airGapFluxT` / `highSpeedRpm`）见 [`docs/ENGINEERING.md`](docs/ENGINEERING.md#八配置全表)。
+其余配置项（本地统计 `usageLog`；L0 运行 `surrogatePath` / `surrogateConfidenceThreshold` / `maxMatrixSize` / `topNPreview` / `tempRiseRange` / `airGapFluxT` / `highSpeedRpm`；脱敏回传 `telemetryEnabled` / `telemetryEndpoint` / `telemetryBatchSize` / `telemetryIntervalSec` / `sessionTelemetry`）见 [`docs/ENGINEERING.md`](docs/ENGINEERING.md#八配置全表) 与本文「脱敏聚合指标回传」节。
 > ⚠️ `tempRiseRange` 命名待议：它对齐 L1 `max_temp` 的钳位区间（°C），不是 L0 温升（K），拟改 `maxTempClamp`。
 
 ## 用量统计（本地，隐私安全）
@@ -73,6 +73,33 @@ node scripts/verify.mjs
 - 数据可自行聚合（周期 / 命中率 / 失败率），也可作为社区统计面板
   （`dsh-usage-statistics-panel`、`dsh-usage-unified` 等 DSH 社区插件）的本地数据源搭配使用
 - 累积的真实工况分布后续直接服务公式系数标定与代理模型训练
+
+## 脱敏聚合指标回传（显式可选，默认关闭）
+
+在本地 `usage.jsonl` 之上，**可选**地把「按工具聚合的统计量」回传到你指定的端点
+（如管理端 `/api/admin/dsh-plugins/<id>/usage-report`）。这是**显式 opt-in**：
+
+| 配置项 | 默认 | 说明 |
+|---|---|---|
+| `telemetryEnabled` | `false` | 回传总开关。**须为 `true` 且 `telemetryEndpoint` 非空才生效** |
+| `telemetryEndpoint` | `''` | 回传目标 URL（POST JSON）；空 = 不外发 |
+| `telemetryBatchSize` | `50` | 单批最多携带的用量记录条数（分批推进，失败不推进、下批重报） |
+| `telemetryIntervalSec` | `300` | 回传周期（秒）；`0` = 仅进程退出时 flush 一次 |
+| `sessionTelemetry` | `'auto'` | 是否顺带挂 DSH Runtime `sessionTelemetry` 瀑布（运行时探测，不静态 inject） |
+
+**合规底线（与 DSH 生态遥测规范一致）：**
+- 默认全关，不配置 = 零外发（本地 `usage.jsonl` 照记，行为与 0.1.4 逐字节一致）
+- 只回传**白名单聚合统计量**（调用次数 / 成败 / 耗时分布 / 规模总和 / 成功速率 / 来源版本 /
+  平台 OS）；**绝不包含**设计参数正文、结果明细（效率/温升/损耗）、提示词、工作目录、密钥
+- 逐条明细只保留在本机；`error` 字段截断到 80 字并去换行/路径，避免夹带参数/密钥
+- 回传是 fire-and-forget：网络/超时/拒绝都静默降级，**绝不影响**工具主流程
+
+启用示例（`cordis.patch.yml`）：
+```yaml
+telemetryEnabled: true
+telemetryEndpoint: 'http://127.0.0.1:5000/api/admin/dsh-plugins/motor-ai-l0/usage-report'
+telemetryIntervalSec: 300
+```
 
 ## 已知精度边界
 

@@ -25,14 +25,15 @@
  */
 
 import {
-  idRatio, idRatioByPoles, isPmsmType, SLOT_MAP, baseTurns, empiricalBaseSize, rotorOd, toothWidth,
+  idRatio, idRatioByPoles, isPmsmType, SLOT_MAP, PMSM_SLOT_MAP, baseTurns, empiricalBaseSize, rotorOd, toothWidth,
   yokeThickness, shaftDia, empiricalAirGap, fitLambdaWithinRange,
+  PMSM_DEFAULT_POLE_ARC, PMSM_DEFAULT_PM_THICK_MM,
   round1, round2, clamp,
 } from '../../lib/motor-constants.mjs'
 import {
   normalizeSpec, assertMatrixShape, COOLING_ALLOWED, buildHandoff,
 } from '../../lib/param-schema.mjs'
-import { computeTorque, computeD2L, computeLambda, validateLambda } from '../../lib/formula-engine.mjs'
+import { computeTorque, computeD2L, computeLambda, validateLambda, deriveElectricalClosure } from '../../lib/formula-engine.mjs'
 import { getUsageSink, logUsage } from '../../lib/usage-log.mjs'
 
 /** 工具入参声明（与 defineTool.parameters 保持一对一，避免两边漂移） */
@@ -161,10 +162,14 @@ export function buildParamMatrix(rawSpec, config = {}) {
         const rOd = rotorOd(dEff, airGap)
 
         // 确定性槽配合轮询：不再 random.choice
-        const slotPairs = SLOT_MAP[pole] ?? SLOT_MAP[8]
-        const slots = slotPairs[comboIndex % slotPairs.length]
-        const turns = baseTurns(voltage, od) + [-2, 0, 2][comboIndex % 3]
-        const currents = [50, 80, 100]
+        // PMSM（v0.1.6 修复）：转子无笼型槽 → slots_rotor=0，定子槽取 PMSM_SLOT_MAP；
+        // 异步/缺省 → 沿用 SLOT_MAP 的 [定子,转子] 二元组（零回归）。
+        const isPm = usePm
+        const statorSlotCandidates = isPm
+          ? (PMSM_SLOT_MAP[pole] ?? PMSM_SLOT_MAP[8])
+          : (SLOT_MAP[pole] ?? SLOT_MAP[8]).map((pair) => pair[0])
+        const slotsStator = statorSlotCandidates[comboIndex % statorSlotCandidates.length]
+        const slotsRotor = isPm ? 0 : (SLOT_MAP[pole] ?? SLOT_MAP[8])[comboIndex % (SLOT_MAP[pole] ?? SLOT_MAP[8]).length][1]
         const parallels = [1, 2]
 
         const coreLength = fitLambdaWithinRange(dEff, l, pole)
@@ -173,22 +178,36 @@ export function buildParamMatrix(rawSpec, config = {}) {
         const baseD2l = computeD2L(baseD, baseL)
         const estTorque = baseD2l > 0 ? round2((torqueNm * d2l) / baseD2l) : torqueNm
 
+        // ---- 电气闭环（v0.1.6 核心修复）----
+        // 由电压/转速/极数/几何反推自洽的 peak_current 与 turns_per_coil，
+        // 彻底取代原 baseTurns(voltage,od) 经验式与 [50,80,100] 固定电流表。
+        // 未传 motor_type 时仍按 legacy 几何，但电流/匝数一律走闭环（零回归安全：
+        // 旧路径本就未对 N/I 做物理约束，新路径只会让它们更可信）。
+        const closure = deriveElectricalClosure({
+          voltage, speed: speedRpm, poles: pole,
+          statorId: round1(dEff), coreLength, airGap,
+          slotsStator, parallelCircuits: parallels[comboIndex % parallels.length],
+          powerKw,
+        })
+        const turnsPerCoil = closure?.turns_per_coil ?? Math.max(6, baseTurns(voltage, od))
+        const peakCurrent = closure?.peak_current ?? 80
+
         matrix.push({
           stator_od: od,
           stator_id: round1(dEff),
           rotor_od: rOd,
           core_length: coreLength,
           air_gap: airGap,
-          tooth_width: toothWidth(dEff, slots[0]),
+          tooth_width: toothWidth(dEff, slotsStator),
           yoke_thickness: yokeThickness(od, dEff),
           shaft_dia: shaftDia(rOd),
           poles: pole,
           voltage,
-          peak_current: currents[comboIndex % currents.length],
+          peak_current: peakCurrent,
           speed: speedRpm,
-          slots_stator: slots[0],
-          slots_rotor: slots[1],
-          turns_per_coil: Math.max(6, turns),
+          slots_stator: slotsStator,
+          slots_rotor: slotsRotor,
+          turns_per_coil: turnsPerCoil,
           parallel_circuits: parallels[comboIndex % parallels.length],
           // ---- L0 私有（不进交接载荷，由 pickL1Payload 过滤）----
           power_kw: powerKw,
@@ -208,6 +227,16 @@ export function buildParamMatrix(rawSpec, config = {}) {
             ref_model: 'L0-类比估算',
             scenario: 'analogy',
             target_torque: torqueNm,
+            // v0.1.6：电气闭环派生量 + PMSM 几何种子（项目基准 极弧0.688 / PM厚12mm）
+            electrical_frequency_hz: closure?.freq_hz ?? round1((speedRpm * pole) / 120),
+            back_emf_v: closure?.back_emf_v ?? null,
+            back_emf_ok: closure?.back_emf_ok ?? null,
+            line_current_rms: closure?.line_current_rms ?? null,
+            ...(isPm ? {
+              rotor_type: 'pm_synchronous_no_cage',
+              pole_arc_ratio: PMSM_DEFAULT_POLE_ARC,
+              pm_thickness_mm: PMSM_DEFAULT_PM_THICK_MM,
+            } : {}),
           },
         })
 

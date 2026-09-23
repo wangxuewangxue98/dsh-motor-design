@@ -134,10 +134,33 @@ export const SLOT_MAP = {
   12: [[72, 58], [90, 72], [108, 90]],     // P3 新增
 }
 
-/** 每线圈匝数基数 —— physics_kernel.py:608 */
+/** 每线圈匝数基数 —— physics_kernel.py:608（仅作回退/诊断用，v0.1.6 起主线用电气闭环反推） */
 export function baseTurns(voltage, statorOd) {
   return Math.max(6, Math.floor(voltage * 0.3 + (450 - statorOd) * 0.02))
 }
+
+/**
+ * PMSM 定子槽候选表（v0.1.6，P1 修复「PMSM 出现转子槽」）
+ * ---------------------------------------------------------------
+ * 永磁同步机（表贴/内置）转子无导条笼型槽，转子槽数恒为 0；
+ * 原 SLOT_MAP 的 [定子,转子] 二元组是异步机鼠笼口径，套到 PMSM 会污染拓扑。
+ * 故 PMSM 仅登记定子槽候选，转子 0 槽由 buildParamMatrix 显式置位。
+ * 定子槽数取整数槽配合：2 极→12/18，4 极→24/36/48（与异步同定子档位，绕组可行）。
+ */
+export const PMSM_SLOT_MAP = {
+  2: [12, 18],
+  4: [24, 36, 48],
+  6: [36, 54, 72],
+  8: [48, 54, 72],
+  10: [60, 72, 90],
+  12: [72, 90, 108],
+}
+
+/** PMSM 极弧系数缺省（用户项目基准 0.688，Sm₂Co₁₇ 表贴/内置通用） */
+export const PMSM_DEFAULT_POLE_ARC = 0.688
+
+/** PMSM 永磁体厚缺省 mm（用户项目基准 12mm） */
+export const PMSM_DEFAULT_PM_THICK_MM = 12
 
 /** 无型谱回退的经验尺寸 —— physics_kernel.py:536-538 */
 export function empiricalBaseSize(targetTorqueNm) {
@@ -190,13 +213,20 @@ export const TORQUE_CONST = 9550.0
  *
  * 自然冷却取 25 是有意为之：小功率自然冷却可行，大功率会算出极高ΔT，
  * 这正是要触发 W4 物理校验告警的结果，不应人为放宽。
+ *
+ * ⚠ v0.1.6 校准修正（高速大功率为核心场景）：
+ *   原 liquid_jacket=350 把「200kW/22000rpm 液冷」算到 189K 温升（超 F 级 105K），
+ *   与实机液冷机壳（强制冷却液，h≈500~1500 W/m²·K 含内螺旋槽）严重不符 ——
+ *   那 189K 实为模型 h 偏低，非设计真不可行。按 «电机设计手册» 机壳水套
+ *   h≈600~1200 折中标定到 700；油冷/浸油相应上提。强制风冷 140 维持不变
+ *   （高速强制风冷本来就压不住，应判不可行，与审计「强风冷全部超 F 级」一致）。
  */
 export const COOLING_COEFFICIENT = {
   natural: 25,
   forced_air: 140,
-  liquid_jacket: 350,
-  oil_spray: 500,
-  oil_immersed: 650,
+  liquid_jacket: 700,
+  oil_spray: 1000,
+  oil_immersed: 1300,
 }
 
 /** 标准环境温度 °C（max_temp 镜像字段 = 环境温度 + 温升） */
@@ -213,8 +243,36 @@ export const POLE_EFFICIENCY_FACTOR = {
 /** 铁损 Steinmetz 简化系数 */
 export const STEINMETZ = { kh: 0.02, ke: 0.0001, alpha: 1.6, fluxDensity: 1.2 }
 
-/** 电密取值基准 A/mm²（L1 侧 random.uniform(3.5, 7.5)） */
+/** 电密取值基准 A/mm²（L1 侧 random.uniform(3.5, 7.5)）。
+ *  ⚠ 仅作为「未提供真实电流时」的回退电密；正常路径由 deriveElectricalClosure
+ *    从功率/电压反推 peak_current，再用本值定线规，二者不冲突。 */
 export const CURRENT_DENSITY_REF = 5.5
+
+/**
+ * 设计电密目标 A/mm²（槽满率闭环的基准）。
+ * 给定 peak_current 与并联支路 a，线规 A_wire = I_rms/(a·J_DESIGN)，
+ * 槽满率 = turns_per_coil·I_rms/(a²·J_DESIGN·slot_area)。取 6.0 为工业中大功率绕组常用设计值。
+ */
+export const J_DESIGN = 6.0
+
+/** 绕组系数（分布式整数槽，kdp≈0.95；分数槽会略低，闭环反推时保守取 0.95） */
+export const WINDING_FACTOR = 0.95
+
+/** 功率因数基准（永磁同步机典型 0.90~0.95；用于从功率反推电流） */
+export const POWER_FACTOR_REF = 0.92
+
+/** 估算效率基准（用于从功率反推电流时的分母；与 L0 物理通道封顶 96% 一致） */
+export const ETA_REF_FOR_CURRENT = 0.94
+
+/** 接线方式（高压大功率永磁主流星接 Y，相电压 = 线电压/√3） */
+export const DEFAULT_CONNECTION = 'star'
+
+/** 反电势闭环容差：|E − Uph|/Uph ≤ 0.10 视为电气自洽（P0 门禁） */
+export const BACKEMF_TOL = 0.10
+
+/** 槽满率门禁（P0）。>WARN 提示，>MAX 判几何不可实现（fail） */
+export const SLOT_FILL_WARN = 0.70
+export const SLOT_FILL_MAX = 0.78
 
 /** 齿部/轭部磁密目标（用户现场口径：齿 1.02T / 轭 0.82T @150°C） */
 export const FLUX_TARGET = { tooth: 1.02, yoke: 0.82, temperatureC: 150 }
@@ -321,6 +379,8 @@ export function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)) }
 export function round1(v) { return Math.round(v * 10) / 10 }
 export function round2(v) { return Math.round(v * 100) / 100 }
 export function round3(v) { return Math.round(v * 1000) / 1000 }
+export function round4(v) { return Math.round(v * 10000) / 10000 }
+export function round5(v) { return Math.round(v * 100000) / 100000 }
 
 /** 取 λ 范围内的修正：对目标尺寸做 *, 返回调整后的 L（不改 D），保持 D²L 语义 */
 export function fitLambdaWithinRange(d, l, poles) {
@@ -334,13 +394,18 @@ export function fitLambdaWithinRange(d, l, poles) {
 export default {
   LAMBDA_RANGE, LAMBDA_RANGE_DEFAULT, LAMBDA_RANGE_EXT,
   FRAME_SHIFT_THRESHOLDS, AIR_GAP_MIN, AIR_GAP_MAX,
-  idRatio, ANALOGY_OD_RATIO, SLOT_MAP, baseTurns, empiricalBaseSize,
+  idRatio, idRatioByPoles, ANALOGY_OD_RATIO, SLOT_MAP, PMSM_SLOT_MAP,
+  baseTurns, empiricalBaseSize,
   SIM_EFF, SIM_TEMP, LOSS_SPLIT, TORQUE_CONST,
   COOLING_COEFFICIENT, POLE_EFFICIENCY_FACTOR, STEINMETZ,
-  CURRENT_DENSITY_REF, FLUX_TARGET, STACKING_FACTOR,
+  CURRENT_DENSITY_REF, J_DESIGN, WINDING_FACTOR, POWER_FACTOR_REF,
+  ETA_REF_FOR_CURRENT, DEFAULT_CONNECTION, BACKEMF_TOL,
+  SLOT_FILL_WARN, SLOT_FILL_MAX,
+  FLUX_TARGET, STACKING_FACTOR,
   AIR_GAP_FLUX_DEFAULT, INSULATION_LIMITS, DEFAULT_INSULATION_CLASS,
+  PMSM_DEFAULT_POLE_ARC, PMSM_DEFAULT_PM_THICK_MM,
   MIN_ROTOR_YOKE_MM, FREQ_LIMITS, FLUX_TOLERANCE, SLOT_ASPECT_RANGE,
   ID_RATIO_TOLERANCE, HIGH_SPEED_RPM, AIR_GAP_MAX_HIGH_SPEED, airGapMax,
   empiricalAirGap, toothWidth, yokeThickness, shaftDia, rotorOd,
-  lambdaRange, clamp, round1, round2, round3, fitLambdaWithinRange,
+  lambdaRange, clamp, round1, round2, round3, round4, round5, fitLambdaWithinRange,
 }

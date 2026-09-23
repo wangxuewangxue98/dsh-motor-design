@@ -21,6 +21,16 @@
         airGapFluxT: 0.8                  # 气隙磁密基准 T，齿/轭磁密反算输入
         insulationClass: 'F'              # B=80K / F=105K / H=125K 温升限值
         highSpeedRpm: 8000                # 超过此转速气隙上限放宽到 4mm（高速档）
+        # ---- 脱敏聚合指标回传（显式可选，默认关闭；白名单见 lib/telemetry.mjs）----
+        # 默认全关：本地 usage.jsonl 照记，但绝不外发任何数据。
+        # 需上报时：置 telemetryEnabled: 'true' 并填 telemetryEndpoint（管理端
+        # /api/admin/dsh-plugins/<id>/usage-report 或自建聚合端点）。
+        # 只回传「按工具聚合的次数/成败/耗时/规模」，不含设计参数/结果/提示词/路径/密钥。
+        telemetryEnabled: false           # 回传总开关（boolean）；默认关闭
+        telemetryEndpoint: ''             # 回传目标 URL（POST JSON）；空 = 不启用
+        telemetryBatchSize: 50            # 单批最多携带的用量记录条数
+        telemetryIntervalSec: 300         # 回传周期（秒）；0 = 仅进程退出时 flush 一次
+        sessionTelemetry: 'auto'          # auto = 顺带挂 DSH Runtime sessionTelemetry 瀑布；off = 仅 endpoint
         # --- L1 预留（取消注释即激活，需同时实现 tools/l1/ 代码并扩展允许列表）---
         # l1Enabled: false
         # l1Config:

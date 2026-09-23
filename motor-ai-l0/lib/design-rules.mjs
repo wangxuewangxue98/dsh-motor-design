@@ -17,13 +17,14 @@
  */
 
 import {
-  SLOT_MAP, idRatio, idRatioByPoles, isPmsmType, empiricalAirGap, AIR_GAP_MIN, AIR_GAP_MAX, airGapMax, HIGH_SPEED_RPM,
+  SLOT_MAP, PMSM_SLOT_MAP, idRatio, idRatioByPoles, isPmsmType, empiricalAirGap, AIR_GAP_MIN, AIR_GAP_MAX, airGapMax, HIGH_SPEED_RPM,
   FLUX_TARGET, STACKING_FACTOR, AIR_GAP_FLUX_DEFAULT,
   INSULATION_LIMITS, DEFAULT_INSULATION_CLASS, MIN_ROTOR_YOKE_MM,
   FREQ_LIMITS, FLUX_TOLERANCE, SLOT_ASPECT_RANGE, ID_RATIO_TOLERANCE,
-  clamp, round1, round2,
+  SLOT_FILL_MAX, BACKEMF_TOL, WINDING_FACTOR,
+  clamp, round1, round2, round3,
 } from './motor-constants.mjs'
-import { validateLambda, quickL0Estimate } from './formula-engine.mjs'
+import { validateLambda, quickL0Estimate, estimateCopperLoss } from './formula-engine.mjs'
 
 /** 规则目录 —— 供文档、UI、测试三方共用，避免"规则存在但没人知道" */
 export const RULE_CATALOG = [
@@ -39,6 +40,8 @@ export const RULE_CATALOG = [
   { id: 'V10', name: '电频率', severity: 'warning', needs: 'speed/poles' },
   { id: 'V11', name: '转子轭厚度', severity: 'failed', needs: 'rotor_od/shaft_dia' },
   { id: 'V12', name: '温升限值', severity: 'warning', needs: 'power_kw 或 torque_nm（+ 冷却方式）' },
+  { id: 'V14', name: '反电势闭环', severity: 'failed', needs: 'voltage/speed/poles/stator_id/core_length/slots_stator/parallel_circuits/turns_per_coil' },
+  { id: 'V15', name: '槽满率可行性', severity: 'failed', needs: 'stator_od/stator_id/slots_stator/poles/peak_current/turns_per_coil/parallel_circuits' },
 ]
 
 /** 可在 config 中把严重度提升为 failed 的规则（默认 warning） */
@@ -145,6 +148,7 @@ export function validateDesign(row, opts = {}) {
   const slotsRotor = num(row?.slots_rotor)
   const parallel = num(row?.parallel_circuits)
   const turns = num(row?.turns_per_coil)
+  const peakCurrent = num(row?.peak_current)
   const airGapFlux = num(opts.airGapFlux) ?? AIR_GAP_FLUX_DEFAULT
 
   // ---- V01 几何链自洽 ----
@@ -217,12 +221,19 @@ export function validateDesign(row, opts = {}) {
 
   // ---- V05 极槽配合 + 每极每相槽数 ----
   if (poles !== null && slotsStator !== null) {
-    const combos = SLOT_MAP[poles]
-    metrics.pole_slot = { poles, slots_stator: slotsStator, slots_rotor: slotsRotor, registered: Boolean(combos) }
-    if (combos) {
-      const hit = slotsRotor !== null && combos.some(([s, r]) => s === slotsStator && r === slotsRotor)
-      if (!hit) warn('V05', `极槽配合 ${poles}极/${slotsStator}槽${slotsRotor !== null ? `/${slotsRotor}转子槽` : ''} 不在登记组合内`)
-    } else {
+    const usePm = isPmsmType(row?.motor_type)
+    // PMSM（v0.1.6）：转子无笼型槽，slots_rotor 恒为 0，只校验定子槽是否在 PMSM_SLOT_MAP；
+    // 异步/缺省：沿用 SLOT_MAP 的 [定子,转子] 二元组配对校验。
+    const statorCandidates = usePm
+      ? (PMSM_SLOT_MAP[poles] ?? [])
+      : (SLOT_MAP[poles] ?? []).map(([s]) => s)
+    metrics.pole_slot = {
+      poles, slots_stator: slotsStator, slots_rotor: slotsRotor,
+      is_pmsm: usePm, registered: statorCandidates.includes(slotsStator),
+    }
+    if (statorCandidates.length && !statorCandidates.includes(slotsStator)) {
+      warn('V05', `定子槽数 ${slotsStator} 不在 ${poles}极登记组合 ${JSON.stringify(statorCandidates)} 内${usePm ? '（PMSM 定子槽表）' : ''}`)
+    } else if (!statorCandidates.length) {
       warn('V05', `极数 ${poles} 无登记槽配合表，无法判定`)
     }
     const q = slotsStator / (poles * 3)
@@ -230,7 +241,8 @@ export function validateDesign(row, opts = {}) {
     if (Math.abs(q - Math.round(q)) > 1e-9) {
       warn('V05', `每极每相槽数 q=${q} 非整数（分数槽绕组），需核查绕组系数与齿槽转矩`)
     }
-    if (slotsRotor !== null && slotsStator !== null) {
+    // 仅异步机核查定转子槽差（PMSM 转子 0 槽，不做此判据）
+    if (!usePm && slotsRotor !== null && slotsStator !== null) {
       const diff = Math.abs(slotsStator - slotsRotor)
       metrics.slot_diff = diff
       if (diff === 0) warn('V05', '定转子槽数相同，易产生同步附加转矩与起动死点')
@@ -351,9 +363,50 @@ export function validateDesign(row, opts = {}) {
     }
   }
 
+  // ---- V14 反电势闭环（P0 门禁）----
+  // 用**行内 turns_per_coil**反算反电势 E，校验 |E − Uph|/Uph ≤ BACKEMF_TOL。
+  // 注意：此处故意不用 deriveElectricalClosure（它会按电压重推匝数，忽略行内匝数），
+  // 而是拿行内匝数算 E，专门抓「手填矩阵匝数与电压/频率不自洽」的违规。
+  // 矩阵正常路径因 turns 由闭环生成，行内 E 必≈Uph，自然通过。
+  if (statorId !== null && coreLength !== null && poles !== null && slotsStator !== null
+      && turns !== null && parallel !== null && num(row?.voltage) !== null && speed !== null) {
+    const f = (speed * poles) / 120
+    const uph = (row?.connection === 'delta' ? num(row.voltage) : num(row.voltage) / Math.SQRT2 / Math.sqrt(1.5))
+    const phi = (2 * airGapFlux * (statorId / 1000) * (coreLength / 1000)) / poles
+    const nPhase = ((slotsStator / 3) * turns) / Math.max(1, parallel)
+    const backEmf = 4.44 * f * nPhase * phi * WINDING_FACTOR
+    const dev = uph > 0 ? Math.abs(backEmf - uph) / uph : 1
+    metrics.back_emf = { e_v: round1(backEmf), uph_v: round1(uph), dev: round3(dev), ok: dev <= BACKEMF_TOL }
+    if (dev > BACKEMF_TOL) {
+      fail('V14', `反电势闭环失配：E=${round1(backEmf)}V 与相电压 ${round1(uph)}V 偏差 ${(dev * 100).toFixed(1)}% > ${(BACKEMF_TOL * 100).toFixed(0)}%（匝数/极数/气隙不自洽）`)
+    }
+  } else {
+    skipped.push('V14')
+  }
+
+  // ---- V15 槽满率可行性（P0 门禁）----
+  // 给定 peak_current 与 turns_per_coil 反算槽满率，> SLOT_FILL_MAX 判几何不可实现。
+  if (statorOd !== null && statorId !== null && slotsStator !== null && poles !== null
+      && peakCurrent !== null && turns !== null && parallel !== null) {
+    const cu = estimateCopperLoss({
+      statorOd, statorId, coreLength: coreLength ?? 80, slotsStator, poles,
+      peakCurrent, turnsPerCoil: turns, parallelCircuits: parallel, airGap: airGap ?? 0.6,
+    })
+    metrics.slot_fill = { ratio: cu.slot_fill_ratio, area_mm2: cu.slot_area_mm2, max: SLOT_FILL_MAX }
+    if (cu.slot_fill_ratio > SLOT_FILL_MAX) {
+      fail('V15', `槽满率 ${cu.slot_fill_ratio} > ${SLOT_FILL_MAX}（槽面积 ${cu.slot_area_mm2}mm² 放不下 ${turns}匝×${peakCurrent}A 导体，需增大机座或降电流）`)
+    } else if (cu.slot_fill_ratio > 0.70) {
+      warn('V15', `槽满率 ${cu.slot_fill_ratio} 偏高（>0.70），下线困难且温升裕度小`)
+    }
+  } else {
+    skipped.push('V15')
+  }
+
   // ---- V13 每线圈匝数下限（附在 V06 组，不单独占号）----
-  if (turns !== null && turns < 6) {
-    warn('V06', `每线圈匝数 ${turns} < 6（baseTurns 下限），绕组不可实现`)
+  // v0.1.6：闭环反推可能给出 turns_per_coil=1（380V/高频低匝数场景，hairpin 扁线绕组可行），
+  // 故下限改为 <1（仅排除真正不可实现的 0/负匝数），不再误报 1 匝方案。
+  if (turns !== null && turns < 1) {
+    fail('V06', `每线圈匝数 ${turns} < 1，绕组不可实现`)
   }
 
   return {
