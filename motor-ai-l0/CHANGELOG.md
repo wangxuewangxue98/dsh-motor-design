@@ -5,6 +5,21 @@
 
 版本三重一致性：`package.json.version` = `SKILL.md` 的 `metadata.version` = `CHANGELOG.md` 最新条目。
 
+## [0.1.7] - 2026-09-23
+
+### 修复（L0 薄轭模型失真 · V08 轭磁密门禁硬化）
+
+审计《重跑结果 #1/#5》发现 L0 薄轭模型 `By` 估算虽公式正确（与齿磁密 `Bt` 同源 `By = B·Dsi/(p·yoke·k)`），但 `V08` 仅作 `warning`，未剔除轭饱和候选，导致 `Bj∈[2.88,5.29]T` 全部超过硅钢饱和极限（≈2.0~2.1T）却仍判 `feasible=true`，下游误收到「超标轭磁密方案」。本版将轭饱和判据硬化为**阻断级门禁**：
+
+- **新增轭饱和物理常量**（`lib/motor-constants.mjs`）：`B_YOKE_WARN_T=1.5`（预警）、`B_YOKE_SAT_T=1.9`（硅钢饱和极限，工程工作上限）
+- **`V08` 规则体硬化**（`lib/design-rules.mjs`）：`By > 1.9T` 直接 `failed`（轭部无法承载磁通，几何不可行）；`1.5T<By≤1.9T` 仍 `warning`；`|By−0.82T|` 偏差按 `FLUX_TOLERANCE` 分层 warning
+- **`quickL0Estimate()` 可行性聚合**（`lib/formula-engine.mjs`）：新增 `yokeSat = yokeB > B_YOKE_SAT_T`，`feasible = backEmfOk && slotFillOk && thermalOk && !yokeSat`；native/result 新增可追溯字段 `yoke_sat`（已纳入 `L0_NATIVE_FIELDS`）
+- **物理结论（重要）**：2 极 200kW/22000rpm 种子几何下 `Dsi/p` 比导致轭磁密**物理下界 ≥2.1T**（`yoke→(OD−ID)/2` 极限仍超 1.9T），即 0.82T 轭磁密目标在该尺寸/极数下**不可达**——须放大定子外径或改用 4 极才能落地 0.82T 目标。V08 硬化后 `feasible_count=0` 是**正确物理结论**，而非求解器失真
+
+### 校验
+- `scripts/verify.mjs`：**59/59 全绿**（新增 V08 轭饱和 `failed` 断言 + 轭饱和阻断闭环断言；修正 `yoke_sat` 字段作用域 bug）
+- 注：原「液冷 200kW feasible_count>0」断言已改为「轭饱和 ⇒ 全部 infeasible 且不推荐超标方案（V08 硬化）」，如实反映物理不可达
+
 ## [0.1.6] - 2026-09-23
 
 ### 修复（P0 · L0 电磁链物理自洽）

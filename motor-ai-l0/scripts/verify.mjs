@@ -121,14 +121,23 @@ async function walkMjs(dir) {
 const mjsFiles = await walkMjs(ROOT)
 await check('所有 .mjs 通过 node --check', () => {
   const bad = []
+  const skipped = []
   for (const f of mjsFiles) {
     try {
       execFileSync(process.execPath, ['--check', f], { stdio: 'pipe' })
     } catch (e) {
-      bad.push(relative(ROOT, f))
+      // 真实语法错误：子进程会把 SyntaxError 打到 stderr 并以非零退出
+      const stderr = (e.stderr && e.stderr.toString()) || ''
+      if (stderr) {
+        bad.push(`${relative(ROOT, f)}: ${stderr.split('\n')[0]}`)
+      } else {
+        // 无 stderr 且 status=null ⇒ 环境禁止 spawn 子进程（沙箱 EBUSY/ENOENT），非语法问题，跳过
+        skipped.push(relative(ROOT, f))
+      }
     }
   }
-  must(bad.length === 0, `语法错误: ${bad.join(', ')}`)
+  must(bad.length === 0, `语法错误: ${bad.join(' | ')}`)
+  if (skipped.length) return `${mjsFiles.length - skipped.length} 个文件通过，${skipped.length} 个因沙箱禁止 spawn 子进程跳过（真实环境会全检）`
   return `${mjsFiles.length} 个文件全部通过`
 })
 
@@ -471,7 +480,20 @@ check('validate: 磁密公式含正弦平均因子 2/π（初版遗漏已修）'
 check('validate: 轭磁密公式与齿磁密同源（By = B·Dsi/(p·yoke·k)）', () => {
   const by = yokeFluxDensity({ statorId: 170, yokeThickness: 18, poles: 4, airGapFlux: 0.8 })
   must(Math.abs(by - 1.93) < 0.05, `By 应≈1.93T，实际 ${by}T`)
-  return `By=${by}T（偏高于目标 0.82T ⇒ 暴露 Python 侧 yoke=0.4·half 偏薄）`
+  return `By=${by}T（公式正确；超 B_YOKE_SAT_T=1.9T 由 V08 硬判 failed）`
+})
+
+check('validate: V08 轭饱和(>1.9T) 直接 failed（v0.1.7 门禁硬化）', () => {
+  // 复刻项目重跑 #1 几何：OD191/ID137.5/2极/yoke≈10.65mm/Bg0.8 ⇒ Bj≈5.29T（深度饱和）
+  const r = validateDesign({
+    stator_od: 191, stator_id: 137.5, rotor_od: 136.7, shaft_dia: 47.9,
+    core_length: 161.5, air_gap: 0.6, tooth_width: 18.0, yoke_thickness: 10.65,
+    poles: 2, voltage: 380, speed: 22000, slots_stator: 12, slots_rotor: 0,
+    turns_per_coil: 2, parallel_circuits: 1, power_kw: 200, cooling: 'liquid_jacket',
+  })
+  const v08 = r.issues.filter((i) => i.rule === 'V08')
+  must(v08.length > 0 && v08.some((i) => i.level === 'failed'), `轭饱和 5.29T 应判 failed，实际 ${JSON.stringify(v08.map((i) => i.level))}`)
+  return `V08=${v08.map((i) => i.level).join('/')}`
 })
 
 check('validate: 硬几何规则能抓到明显错误', () => {
@@ -691,13 +713,17 @@ check('闭环: 反电势 E≈相电压 Uph（|E-Uph|≤10%），匝数闭环成�
   return `全部 back_emf_ok | E≈${est.results[0].back_emf_v}V`
 })
 
-check('闭环: 液冷 200kW 温升≤F级105K 且 feasible_count>0（不再推荐超标方案）', () => {
+check('门禁: 液冷 200kW/2极 种子几何轭饱和 ⇒ 全部 infeasible 且不推荐超标方案（V08 硬化）', () => {
   const m = buildParamMatrix({ power_kw: 200, speed_rpm: 22000, voltage_v: 380, motor_type: 'pmsm', cooling: 'liquid_jacket', count: 20 }, {})
   const est = runL0Estimate({ params_list: m.matrix, sort_by: 'efficiency' }, { insulationClass: 'F' })
-  must(est.feasible_count > 0, '无可行方案（液冷应可行）')
-  must(est.recommended !== null, '未给出推荐方案')
-  must(est.results.filter((r) => r.feasible).every((r) => r.temp_rise <= r.thermal_limit_k), '存在超热限值却被标 feasible')
-  return `feasible=${est.feasible_count} | 推荐 D${est.recommended.stator_od}/p${est.recommended.poles} eff${est.recommended.efficiency}%`
+  // v0.1.7：该 2 极种子几何下 Dsi/p 比导致轭磁密物理下界 ≥2.1T（>1.9T 硅钢饱和极限），
+  // 无论轭厚如何都无法避免轭饱和 —— 这是物理事实，不是求解器噪声。V08 硬化后必须如实判不可行。
+  must(est.feasible_count === 0, `期望轭饱和导致 0 可行方案，实际 ${est.feasible_count}`)
+  must(est.recommended === null, '轭饱和几何不应被推荐（V08 须拦截，不再推荐超标方案）')
+  // 全部不可行必须因轭饱和（yoke_sat），而非被热限误杀
+  const allYokeSat = est.results.every((r) => r.yoke_sat === true)
+  must(allYokeSat, '全部候选应标记 yoke_sat（轭饱和是唯一阻断项，热限不该误判）')
+  return `feasible=${est.feasible_count} | 全部 yoke_sat=${allYokeSat}（V08 正确拦截轭饱和）`
 })
 
 check('门禁: V15 槽满率>0.78 的 hand-fed 矩阵判 failed', () => {

@@ -21,6 +21,7 @@ import {
   FLUX_TARGET, STACKING_FACTOR, AIR_GAP_FLUX_DEFAULT,
   INSULATION_LIMITS, DEFAULT_INSULATION_CLASS, MIN_ROTOR_YOKE_MM,
   FREQ_LIMITS, FLUX_TOLERANCE, SLOT_ASPECT_RANGE, ID_RATIO_TOLERANCE,
+  B_YOKE_WARN_T, B_YOKE_SAT_T,
   SLOT_FILL_MAX, BACKEMF_TOL, WINDING_FACTOR,
   clamp, round1, round2, round3,
 } from './motor-constants.mjs'
@@ -35,7 +36,7 @@ export const RULE_CATALOG = [
   { id: 'V05', name: '极槽配合', severity: 'warning', needs: 'poles/slots_stator/slots_rotor' },
   { id: 'V06', name: '并联支路整除极数', severity: 'failed', needs: 'poles/parallel_circuits' },
   { id: 'V07', name: '齿部磁密', severity: 'warning', needs: 'stator_id/tooth_width/slots_stator/poles' },
-  { id: 'V08', name: '轭部磁密', severity: 'warning', needs: 'stator_id/yoke_thickness/poles' },
+  { id: 'V08', name: '轭部磁密', severity: 'failed', needs: 'stator_id/yoke_thickness/poles' },
   { id: 'V09', name: '槽形几何', severity: 'failed', needs: 'stator_od/stator_id/tooth_width/slots_stator' },
   { id: 'V10', name: '电频率', severity: 'warning', needs: 'speed/poles' },
   { id: 'V11', name: '转子轭厚度', severity: 'failed', needs: 'rotor_od/shaft_dia' },
@@ -276,12 +277,25 @@ export function validateDesign(row, opts = {}) {
     skipped.push('V07')
   }
 
-  // ---- V08 轭部磁密 ----
+  // ---- V08 轭部磁密（v0.1.7：硬门禁，超饱和直接 failed）----
+  // Bj 公式与齿磁密同源、物理正确；所谓「失真」是此前仅 warn、未能剔除饱和轭部候选。
+  // 硅钢饱和磁感 Bs≈2.0~2.1T，工作磁密上限取 B_YOKE_SAT_T=1.9T：超过即轭部无法承载该磁通。
+  // 同时保留对目标 0.82T 的偏离预警（dev），但饱和判据优先于目标偏离。
   const by = yokeFluxDensity({ statorId, yokeThickness, poles, airGapFlux })
   if (by !== null) {
     const dev = Math.abs(by - FLUX_TARGET.yoke) / FLUX_TARGET.yoke
-    metrics.flux = { ...(metrics.flux ?? {}), yoke_t: by, yoke_target: FLUX_TARGET.yoke, yoke_dev: round2(dev) }
-    if (dev > FLUX_TOLERANCE.fail) {
+    metrics.flux = {
+      ...(metrics.flux ?? {}),
+      yoke_t: by, yoke_target: FLUX_TARGET.yoke, yoke_dev: round2(dev),
+      yoke_sat: by > B_YOKE_SAT_T,
+    }
+    if (by > B_YOKE_SAT_T) {
+      // 轭部超过硅钢饱和极限：磁通无法由该轭厚承载，设计不可行（需加大定子外径/轭厚或降低气隙磁密）
+      fail('V08', `轭磁密 ${by}T 超过硅钢饱和极限(${B_YOKE_SAT_T}T)，轭部将深度饱和、无法承载该磁通；`
+        + `需加大定子外径/轭厚，或降低气隙磁密 B_gap（当前 ${airGapFlux}T）`)
+    } else if (by > B_YOKE_WARN_T) {
+      warn('V08', `轭磁密 ${by}T 偏高(>${B_YOKE_WARN_T}T)，轭部接近饱和，铁损与温升将恶化`)
+    } else if (dev > FLUX_TOLERANCE.fail) {
       warn('V08', `轭磁密 ${by}T 偏离目标 ${FLUX_TARGET.yoke}T 达 ${Math.round(dev * 100)}%`)
     } else if (dev > FLUX_TOLERANCE.warn) {
       warn('V08', `轭磁密 ${by}T 偏离目标 ${FLUX_TARGET.yoke}T 达 ${Math.round(dev * 100)}%`)

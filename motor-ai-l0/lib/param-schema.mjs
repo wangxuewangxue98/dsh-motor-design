@@ -147,6 +147,7 @@ export const L0_NATIVE_FIELDS = [
   'air_gap_flux_density',   // T   气隙磁密基准（缺省 0.80）
   'tooth_flux_density',     // T   齿磁密 2·Bg·Dsi/(Qs·bt·k_stack)
   'yoke_flux_density',      // T   轭磁密 Bg·Dsi/(p·yoke·k_stack)
+  'yoke_sat',               // bool 轭部超硅钢饱和极限(~1.9T)，v0.1.7 新增
   'current_density',        // A/mm²  设计电密 J_DESIGN
   'power_factor',           // -    功率因数基准
   'slot_fill_ratio',        // -    槽满率（几何可行性）

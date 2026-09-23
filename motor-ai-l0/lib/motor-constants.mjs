@@ -324,6 +324,17 @@ export const FREQ_LIMITS = { warn: 400, fail: 1200 }
 export const FLUX_TOLERANCE = { warn: 0.25, fail: 0.50 }
 
 /**
+ * 轭部磁密物理门限（v0.1.7 修复「薄轭失真」）：
+ * 硅钢片饱和磁感 Bs≈2.0~2.1T，工程工作磁密上限取 1.9T；超过即轭部无法承载该磁通、
+ * 进入深度饱和（Bj 估算值 >1.9T 意味着模型给出的几何在该磁通下不可用）。
+ * 轭磁密 >B_YOKE_WARN_T 预警（接近饱和，铁损/温升恶化）；>B_YOKE_SAT_T 直接判 failed。
+ * 注意：L0 的 Bj 公式本身正确（与齿磁密 Bt 同源），所谓「失真」是 V08 此前仅 warn、
+ * 未能把饱和轭部候选剔除；本常量把饱和判据硬化为门禁。
+ */
+export const B_YOKE_WARN_T = 1.5
+export const B_YOKE_SAT_T = 1.9
+
+/**
  * 槽宽/槽深比合理区间（过窄难下线，过宽漏抗大）
  * 下界取 0.20：定子梨形/梯形槽常见宽深比 0.2~0.8，深窄槽是高槽满率的常规做法；
  * 初版取下界 0.30 会误判掉绝大多数按 physics_kernel 派生的槽形（实测 26/40 命中），
@@ -405,6 +416,7 @@ export default {
   AIR_GAP_FLUX_DEFAULT, INSULATION_LIMITS, DEFAULT_INSULATION_CLASS,
   PMSM_DEFAULT_POLE_ARC, PMSM_DEFAULT_PM_THICK_MM,
   MIN_ROTOR_YOKE_MM, FREQ_LIMITS, FLUX_TOLERANCE, SLOT_ASPECT_RANGE,
+  B_YOKE_WARN_T, B_YOKE_SAT_T,
   ID_RATIO_TOLERANCE, HIGH_SPEED_RPM, AIR_GAP_MAX_HIGH_SPEED, airGapMax,
   empiricalAirGap, toothWidth, yokeThickness, shaftDia, rotorOd,
   lambdaRange, clamp, round1, round2, round3, round4, round5, fitLambdaWithinRange,

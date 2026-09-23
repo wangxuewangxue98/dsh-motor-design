@@ -18,6 +18,7 @@ import {
   TORQUE_CONST, AIR_GAP_MIN, AIR_GAP_MAX, SIM_EFF, SIM_TEMP, LOSS_SPLIT,
   STEINMETZ, COOLING_COEFFICIENT, DEFAULT_COOLING, POLE_EFFICIENCY_FACTOR,
   CURRENT_DENSITY_REF, FLUX_TARGET, STACKING_FACTOR, AMBIENT_TEMP_C,
+  B_YOKE_SAT_T,
   J_DESIGN, WINDING_FACTOR, POWER_FACTOR_REF, ETA_REF_FOR_CURRENT,
   DEFAULT_CONNECTION, BACKEMF_TOL, SLOT_FILL_WARN, SLOT_FILL_MAX,
   AIR_GAP_FLUX_DEFAULT, INSULATION_LIMITS, DEFAULT_INSULATION_CLASS,
@@ -393,11 +394,13 @@ export function quickL0Estimate(params, opts = {}) {
   const airGapFlux = opts.airGapFlux ?? AIR_GAP_FLUX_DEFAULT
   const toothB = round2((2 * airGapFlux * statorId) / (slotsStator * toothWidthMm * STACKING_FACTOR))
   const yokeB = round2((airGapFlux * statorId) / (poles * (params.yoke_thickness ?? yokeThickness(statorOd, statorId)) * STACKING_FACTOR))
+  // v0.1.7：轭部饱和判据（Bj 超硅钢饱和极限 ~1.9T ⇒ 轭部无法承载磁通，设计不可行）
+  const yokeSat = yokeB > B_YOKE_SAT_T
 
   // ---- 可行性判定（P0 门禁聚合）----
   const backEmfOk = closure?.back_emf_ok ?? true
   const slotFillOk = cu.slot_fill_ratio <= SLOT_FILL_MAX
-  const feasible = backEmfOk && slotFillOk && thermalOk
+  const feasible = backEmfOk && slotFillOk && thermalOk && !yokeSat
 
   // ---- 转矩密度 ----
   const torque = params.torque_nm ?? computeTorque(powerKw, params.speed)
@@ -416,6 +419,7 @@ export function quickL0Estimate(params, opts = {}) {
     air_gap_flux_density: airGapFlux,
     tooth_flux_density: toothB,
     yoke_flux_density: yokeB,
+    yoke_sat: yokeSat,
     current_density: cu.current_density,
     power_factor: closure?.power_factor ?? POWER_FACTOR_REF,
     slot_fill_ratio: cu.slot_fill_ratio,
