@@ -1,6 +1,6 @@
 {
   "name": "dsh-motor-ai-l0",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "main": "./index.mjs",
   "description": "电机AI辅助设计软件插件 · 覆盖电机设计全流程（需求解析 → 候选矩阵 → L0/L1/L2 解算 → Top10 校验）；L0 毫秒级广筛，纯 JS 零求解器依赖",
@@ -14,6 +14,7 @@
     "models/",
     "scripts/",
     "docs/",
+    "examples/",
     "CHANGELOG.md",
     "README.md",
     "LICENSE"
@@ -45,11 +46,22 @@
     "dsh",
     "motor-design",
     "electric-motor",
-    "motor-ai",
+    "electric-machine-design",
+    "induction-motor",
+    "asynchronous-motor",
     "pmsm",
+    "permanent-magnet-synchronous-motor",
+    "motor-sizing",
+    "motor-selection",
+    "electromagnetic-design",
+    "motor-ai",
     "l0-estimate",
     "rmxprt",
-    "motor-cad"
+    "motor-cad",
+    "ansys",
+    "电机设计",
+    "永磁同步电机",
+    "异步电机"
   ],
   "license": "MIT",
   "repository": {

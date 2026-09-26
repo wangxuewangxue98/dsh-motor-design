@@ -69,7 +69,9 @@ export function runL0Estimate(rawArgs, config = {}) {
 
   // ---- 代理模型通道（需显式启用 l0Mode='surrogate'）----
   // 'auto' 与 'surrogate' 都走代理通道；'auto' 下代理失败/降级会自动回退公式通道（函数尾部）
-  if (l0Mode === 'surrogate' || l0Mode === 'auto') {
+  // 代理通道仅输出效率（温升/损耗/磁密/可行判定均由公式通道给出），
+  // 因此只在用户显式指定 surrogate 时启用：auto 默认走字段完整的公式通道。
+  if (l0Mode === 'surrogate') {
     try {
       const modelPath = config.surrogatePath ?? 'models/l0_surrogate_family.json'
       const model = loadSurrogateModel(modelPath)

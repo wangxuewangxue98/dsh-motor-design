@@ -5,6 +5,20 @@
 
 版本三重一致性：`package.json.version` = `SKILL.md` 的 `metadata.version` = `CHANGELOG.md` 最新条目。
 
+## [0.2.3] - 2026-09-27 — 默认通道回归修复 + 对外物料（推广就绪）
+
+### 🔴 P0 回归修复：`auto` 不再进入代理通道
+- **现象**：0.2.2 把 `l0Mode='auto'` 纳入代理分支后，异步机默认输出严重残缺 —— `temp_rise=0`、`tooth_flux_density`/`yoke_flux_density`/`power_factor` 全 `undefined`、`feasible_count=0`（120 个候选无一可行），且 `sort_by='temp_rise'/'total_loss'/'torque_density'` 全部退化为 0，排序失效。
+- **根因**：`buildSurrogateResult()` 只输出 `efficiency` 一项，温升 / 损耗 / 磁密 / 可行判定均为 0 或缺失。代理通道本就只适合"效率排序"，不适合做默认。
+- **修复**：`tools/l0/l0-estimate.mjs:72` 代理分支条件回退为仅 `l0Mode === 'surrogate'`；`auto` 走字段完整的公式通道。代理模型 v2.2.0 与显式 `surrogate` 通道保持可用。
+- **验证**：`verify.mjs` 61/61 通过；异步 15kW/1460rpm `auto` → `feasible_count=80`、Top1 效率 95.17% / 温升 14.6K / 轭磁密 1.39T（字段完整）。
+
+### 📣 对外物料（推广就绪）
+- **README**：删除 0.1.7 时代过时的「surrogate 实验特性 / cv_r2≈0 / 特征泄漏」警告，替换为 v0.2.2 真实指标表（异步三段 OD 覆盖 / 样本数 / CV R² / MAE，PMSM 自动降级）；新增价值主张、示例输出（15kW 实跑 16 ms Top5）、通道分工表、明确不适用工况表；配置表补 `surrogatePath` / `surrogateConfidenceThreshold`。
+- **examples/**（新增，随包发布）：3 个真实算例 —— ① 15kW/1460rpm 异步（80 可行，16 ms）② 75kW/1480rpm/660V 异步（效率封顶并列时的二次排序）③ **200kW/22000rpm 高速 PMSM 反例**（`recommended=null`，公开能力边界）。
+- **keywords**：9 → 20（补 `induction-motor` `motor-sizing` `ansys` `电机设计` `永磁同步电机` `异步电机` 等中英文关键词）。
+- **assets/marketplace-listing.md**：0.1.0 → 0.2.2，重写 listing 文案、实测性能表、截图清单、npm 检查清单（含 npmjs 官方源踩坑提示）。
+
 ## [0.2.2] - 2026-09-26 — 代理通道修复（模型 v2.2.0）
 
 ### 🔴 P0 修复：代理模型 coef 空间错位（0.2.1 升级不可用根因）

@@ -2,6 +2,11 @@
 
 `dsh-motor-ai-l0` · DSH 插件（bundle） · 纯 JS，零求解器依赖
 
+> **不装 RMxprt / Motor-CAD / Python / license，把 120 个候选在十几毫秒内压成 Top5，
+> 只把求解器时间花在最值得的那几个上。**
+
+📁 **[算例集：3 个真实算例（含反例）→ examples/](examples/README.md)** · [能力边界](#已知精度边界)
+
 覆盖电机设计全流程：需求解析 → 参数识别 → 候选矩阵 → L0/L1/L2 解算 → Top10 与校验 → 完整方案。
 L0 用代理模型与经验公式毫秒级广筛候选；L1 RMxprt、L2 Motor-CAD 为**可选**精算工具。
 装完即用 —— 无需预装 RMxprt / Motor-CAD / Python，无需 license。
@@ -25,7 +30,21 @@ node scripts/verify.mjs
 > ⚠️ `motor_l0_estimate` 只接受 `params_list`（每项含 16 个 L1 顶层字段），**不接受** `power_kw` / `speed_rpm` 这类散装命名参数 —— 请先用第 1 步生成矩阵再传入。
 > L0 结果只用于**排序与相对比较**，不用于绝对值交付；输出恒带 `solve_mode='l0'` 标记，最终结论须由 L1/L2 给出。
 >
-> **⚠️ surrogate 通道为实验特性（0.1.7 标注）**：`l0Mode='surrogate'` 当前仅供实验——训练样本 od_range（约 612~2651mm）与真实中小机座（100~500mm）不匹配，段外样本全部降级公式通道；PMSM 段 cv_r2≈0 且特征含公式效率泄漏（`l0_eff`）。启用时工具输出带 `surrogate_experimental: true` 警告字段。**排序决策请使用默认公式通道**，重训前不承诺预测质量。
+> **两条通道的分工（v0.2.2）**
+>
+> | 通道 | 触发 | 输出 | 适用 |
+> |---|---|---|---|
+> | **公式通道**（默认） | `l0Mode: 'auto'` / `'formula'` | 效率 + 温升 + 损耗拆分 + 齿/轭磁密 + 功率因数 + 可行判定 —— 字段完整 | 日常排序与相对比较 |
+> | **代理通道**（可选增强） | `l0Mode: 'surrogate'` | **仅效率**（温升/损耗/磁密不输出） | 异步机效率排序的交叉参考 |
+>
+> 代理模型 v2.2.0 由 4955 条真实 RMxprt 结果训练（`designs.db.l0_residuals`，`fault=0`，效率 ∈ [50,99]），按机座外径分三段：
+>
+> | 机种 | 样本 OD 覆盖 | 样本数 | 5 折 CV R² | MAE |
+> |---|---|---|---|---|
+> | 异步 small / medium / large | 150.6–756.5 / 151.3–1085.4 / 1196–2651 mm | 1291 / 2578 / 1276 | 0.652 / 0.438 / 0.670 | 1.44 / 3.29 / 4.53 pp |
+> | PMSM small / medium / large | 612–1178 mm（均为大机座） | 367 / 745 / 355 | ≤ 0.31 → **自动降级公式通道** | — |
+>
+> 因此 **PMSM 与段外样本始终走公式通道**；`auto` 默认走字段完整的公式通道。启用代理时输出带 `surrogate_experimental: true`，且置信度低于阈值（`surrogateConfidenceThreshold`，默认 0.4）自动降级 —— 不会硬给一个数。
 
 ## 能力边界
 
@@ -48,6 +67,25 @@ node scripts/verify.mjs
 入参别名：`power`→`power_kw`、`rpm`→`speed_rpm`、`volt`→`voltage_v`。
 `sort_by` 白名单：`efficiency` `torque_density` `temp_rise` `total_loss` `power`（`temp_rise`、`total_loss` 升序，越小越好）。
 
+## 示例（15kW / 1460rpm / 380V 异步，实跑 16 ms）
+
+```text
+$ motor_param_matrix       { power_kw: 15, speed_rpm: 1460, voltage_v: 380, motor_type: 'induction', count: 120 }  →  120 候选
+$ motor_design_validate    12 条物理校验  →  120 passed / 0 failed
+$ motor_l0_estimate        sort_by: 'efficiency'  →  Top5，80 个可行候选
+```
+
+| # | OD (mm) | L (mm) | 极数 | 槽数 | 效率 (%) | 温升 (K) | 轭磁密 (T) | 总损耗 (W) |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 310 | 226.4 | 6 | 72 | 95.17 | 14.6 | 1.39 | 604 |
+| 2 | 327 | 216.6 | 6 | 72 | 95.02 | 14.6 | 1.38 | 628 |
+| 3 | 278 | 187.1 | 6 | 72 | 94.94 | 20.5 | 1.38 | 642 |
+| 4 | 343 | 206.7 | 6 | 72 | 94.89 | 14.7 | 1.38 | 650 |
+| 5 | 294 | 177.2 | 6 | 72 | 94.81 | 20.5 | 1.38 | 663 |
+
+→ 这 5 个方案直接作为 L1（RMxprt）的入参，而不是把 120 个全丢给求解器。
+完整算例、复现命令与另外两个工况（75kW 异步、200kW 高速 PMSM **反例**）见 **[`examples/`](examples/README.md)**。
+
 ## 配置
 
 配置位于 `cordis.patch.yml`（查看：`npx -y @deepseek-ai/dsh --profile web --dump-config`）。最常用四项：
@@ -55,7 +93,9 @@ node scripts/verify.mjs
 | 配置项 | 默认 | 说明 |
 |---|---|---|
 | `level` | `'l0'` | 层级总闸。设为 `l1`/`l2` 立即抛错（快速失败，杜绝静默降级） |
-| `l0Mode` | `'auto'` | `formula` 纯公式 / `surrogate` 代理模型 / `auto` 自动降级 |
+| `l0Mode` | `'auto'` | `formula` 纯公式（字段完整）/ `surrogate` 代理模型（**仅输出效率**）/ `auto` = 公式通道，段外与低置信度自动降级 |
+| `surrogatePath` | `'models/l0_surrogate_family.json'` | 代理模型路径（v2.2.0） |
+| `surrogateConfidenceThreshold` | `0.4` | 代理置信度门限，低于此值降级公式 |
 | `efficiencyCap` | `96` | 效率封顶（与 L1 同口径，避免两层排序跳变） |
 | `insulationClass` | `'F'` | 绝缘等级，决定温升限值（B=80K / F=105K / H=125K） |
 
@@ -107,6 +147,15 @@ telemetryIntervalSec: 300
 
 L0 物理通道目前是 **v0.1 未标定版**（回归质量门判定 DEBT）：6 个标定案例效率低于参考带 0.35~2.96pt，温升偏保守。根因是损耗模型尚未用 RMxprt 批量结果标定（铁损未分齿/轭、铜损缺电路约束、机械损未标定、散热筋未计）。
 因此 L0 的正确用法是**排序与相对比较**，不是绝对值采信 —— **排序稳定性优于绝对精度**。完整实算数据与标定计划见 [`docs/QUALITY-GATE.md`](docs/QUALITY-GATE.md)。
+
+**明确不适用的工况**（实测，见 [`examples/03`](examples/03-pmsm-200kw-22000rpm.md)）：
+
+| 工况 | 表现 | 建议 |
+|---|---|---|
+| 高速 PMSM（>10000rpm） | 轭部磁路模型外推失真（轭磁密算得 >5 T，物理不可能）、温升 300 K+；门控会拒绝输出任何可行方案（`recommended = null`） | 直接进 L1 / L2 |
+| 效率绝对值交付 | 本版未标定，6 个标定案例偏差 0.35~2.96 pt | 仅排序，绝对值由 L1 复核 |
+
+> 门控"宁可交白卷，也不给假答案"是刻意设计：`level` 设为 `l1`/`l2` 时插件立即抛错，绝不静默降级成 L0 结果。
 
 ## 文档与许可
 
