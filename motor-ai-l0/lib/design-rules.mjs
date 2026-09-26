@@ -34,7 +34,7 @@ export const RULE_CATALOG = [
   { id: 'V03', name: '定子内外径比', severity: 'warning', needs: 'stator_od/stator_id/poles' },
   { id: 'V04', name: '长径比 λ', severity: 'warning', needs: 'core_length/stator_id/poles' },
   { id: 'V05', name: '极槽配合', severity: 'warning', needs: 'poles/slots_stator/slots_rotor' },
-  { id: 'V06', name: '并联支路整除极数', severity: 'failed', needs: 'poles/parallel_circuits' },
+  { id: 'V06', name: '并联支路整除极数且不超过每极每相槽数', severity: 'failed', needs: 'poles/parallel_circuits/slots_stator' },
   { id: 'V07', name: '齿部磁密', severity: 'warning', needs: 'stator_id/tooth_width/slots_stator/poles' },
   { id: 'V08', name: '轭部磁密', severity: 'failed', needs: 'stator_id/yoke_thickness/poles' },
   { id: 'V09', name: '槽形几何', severity: 'failed', needs: 'stator_od/stator_id/tooth_width/slots_stator' },
@@ -252,12 +252,22 @@ export function validateDesign(row, opts = {}) {
     skipped.push('V05')
   }
 
-  // ---- V06 并联支路数整除极数 ----
+  // ---- V06 并联支路数整除极数 + a ≤ q（每极每相槽数） ----
   if (poles !== null && parallel !== null) {
     metrics.parallel_circuits = parallel
     if (!(parallel > 0)) fail('V06', `并联支路数 ${parallel} 非正`)
     else if (poles % parallel !== 0) {
       fail('V06', `并联支路数 ${parallel} 不能整除极数 ${poles}，绕组无法均分`)
+    } else if (slotsStator !== null) {
+      // 补充判据（0.1.7-P1）：整数槽绕组要求 a ≤ q = Qs/(3p)。
+      // 实证：p=4/Qs=36 ⇒ q=3，a∈{1,2} 合法而 a=3/4 非法（3∤4 或 a>q），
+      // 旧实现只查 a|p 会放行 a=4 这类不可实现设计。
+      // 分数槽（q 非整数）支路分配规则不同，不在本判据范围，交由上层绕组校验处理。
+      const q = slotsStator / (3 * poles)
+      metrics.q_slots_per_pole_per_phase = Math.round(q * 100) / 100
+      if (Number.isInteger(q) && parallel > q) {
+        fail('V06', `并联支路数 ${parallel} > 每极每相槽数 q=${q}（Qs=${slotsStator} / (3×${poles})），支路无法在槽内分配`)
+      }
     }
   } else {
     skipped.push('V06')

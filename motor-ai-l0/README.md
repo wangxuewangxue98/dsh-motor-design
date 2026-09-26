@@ -24,6 +24,8 @@ node scripts/verify.mjs
 
 > ⚠️ `motor_l0_estimate` 只接受 `params_list`（每项含 16 个 L1 顶层字段），**不接受** `power_kw` / `speed_rpm` 这类散装命名参数 —— 请先用第 1 步生成矩阵再传入。
 > L0 结果只用于**排序与相对比较**，不用于绝对值交付；输出恒带 `solve_mode='l0'` 标记，最终结论须由 L1/L2 给出。
+>
+> **⚠️ surrogate 通道为实验特性（0.1.7 标注）**：`l0Mode='surrogate'` 当前仅供实验——训练样本 od_range（约 612~2651mm）与真实中小机座（100~500mm）不匹配，段外样本全部降级公式通道；PMSM 段 cv_r2≈0 且特征含公式效率泄漏（`l0_eff`）。启用时工具输出带 `surrogate_experimental: true` 警告字段。**排序决策请使用默认公式通道**，重训前不承诺预测质量。
 
 ## 能力边界
 

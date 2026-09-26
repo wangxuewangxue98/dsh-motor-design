@@ -42,6 +42,12 @@ function sh(cmd, args, opts = {}) {
 }
 
 function findPython() {
+  // 优先使用 WorkBuddy managed Python，避免系统 Python 版本不一致
+  const managed = 'C:/Users/15389/.workbuddy/binaries/python/versions/3.13.12/python.exe'
+  try {
+    execFileSync(managed, ['--version'])
+    return managed
+  } catch { /* fallback to PATH */ }
   for (const c of ['python3', 'python']) {
     try {
       sh(c, ['--version'])

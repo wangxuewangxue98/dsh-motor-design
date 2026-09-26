@@ -422,6 +422,22 @@ check('estimate: 缺字段的行进 failures 而非整体崩溃', () => {
   return `成功 ${success} / 失败 ${failed}（缺失: ${failures[0].missing.join(',')}）`
 })
 
+check('estimate[代理]: surrogate 通道端到端可用且不被钳底', () => {
+  // 回归 0.2.1：代理 coef 在原始空间训练却被标准化推理，异步机 rawEff≈19 被钳到 50。
+  // 必须显式走代理通道并断言结果落在合理区间且未触底。
+  const m = buildParamMatrix({ power_kw: 75, speed_rpm: 1480, voltage_v: 660, motor_type: 'async' }, { maxMatrixSize: 2000 })
+  const rows = (m.params_list || m.matrix).slice(0, 12)
+  const cfg = { l0Mode: 'surrogate', surrogatePath: 'models/l0_surrogate_family.json', surrogateConfidenceThreshold: 0.4 }
+  const { results, l0_mode, surrogate_model_version } = runL0Estimate({ params_list: rows, top_n: 5 }, cfg)
+  must(l0_mode === 'surrogate', `应走代理通道，实际 ${l0_mode}`)
+  must(surrogate_model_version === '2.2.0', `代理模型版本应为 2.2.0，实际 ${surrogate_model_version}`)
+  for (const r of results) {
+    must(r.efficiency > 50, `代理预测被钳到下限 50（失真），实际 ${r.efficiency}`)
+    must(r.efficiency <= 99, `效率超出上界 ${r.efficiency}`)
+  }
+  return `异步机代理预测 ${results.map((r) => r.efficiency).join('/')}，无钳底`
+})
+
 check('estimate: 交接载荷零翻译（L0 → L1）', () => {
   const { handoff } = runL0Estimate({ params_list: sampleMatrix(), top_n: 10 }, {})
   must(handoff.handoff.from_level === 'l0' && handoff.handoff.to_level === 'l1', '层级标记错误')
@@ -515,6 +531,29 @@ check('validate: 硬几何规则能抓到明显错误', () => {
   must(badParallel.issues.some((i) => i.rule === 'V06' && i.level === 'failed'),
     '并联支路 4 不能整除极数 6，应判 failed')
   return '几何倒置 / 支路不整除 均被抓到'
+})
+
+check('validate: V06 补充 a ≤ q（每极每相槽数）约束（p=4/Qs=36 ⇒ q=3, a∈{1,2}）', () => {
+  const base = {
+    stator_od: 260, stator_id: 170, rotor_od: 169, shaft_dia: 59,
+    core_length: 155, air_gap: 0.5, tooth_width: 7.42, yoke_thickness: 18,
+    poles: 4, voltage: 380, speed: 1500, slots_stator: 36, slots_rotor: 0,
+    turns_per_coil: 20, power_kw: 15,
+  }
+  // a=4：整除 4 ✓，但 a > q=3 —— 旧实现放行，新判据必须拦截
+  const a4 = validateDesign({ ...base, parallel_circuits: 4 })
+  must(a4.issues.some((i) => i.rule === 'V06' && i.level === 'failed'),
+    `a=4 > q=3 应判 failed，实际 ${JSON.stringify(a4.issues.filter((i) => i.rule === 'V06'))}`)
+  must(a4.metrics.q_slots_per_pole_per_phase === 3, '应输出 q=3 指标')
+  // a=2：整除 4 ✓ 且 ≤ 3 ✓ —— 必须放行
+  const a2 = validateDesign({ ...base, parallel_circuits: 2 })
+  must(!a2.issues.some((i) => i.rule === 'V06' && i.level === 'failed'),
+    `a=2 ≤ q=3 应放行，实际 ${JSON.stringify(a2.issues.filter((i) => i.rule === 'V06'))}`)
+  // a=3：不整除 4 —— 旧判据仍应拦截（回归保护）
+  const a3 = validateDesign({ ...base, parallel_circuits: 3 })
+  must(a3.issues.some((i) => i.rule === 'V06' && i.level === 'failed'),
+    'a=3 不整除 p=4 应判 failed')
+  return 'a=4 拦截 / a=2 放行 / a=3 整除判据回归保护 均通过'
 })
 
 check('validate: 缺功率信息时 V12 显式跳过而非静默通过', () => {

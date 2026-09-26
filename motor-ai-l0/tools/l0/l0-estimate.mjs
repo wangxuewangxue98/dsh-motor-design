@@ -68,13 +68,27 @@ export function runL0Estimate(rawArgs, config = {}) {
   let surrogateFallbacks = 0
 
   // ---- 代理模型通道（需显式启用 l0Mode='surrogate'）----
-  if (l0Mode === 'surrogate') {
+  // 'auto' 与 'surrogate' 都走代理通道；'auto' 下代理失败/降级会自动回退公式通道（函数尾部）
+  if (l0Mode === 'surrogate' || l0Mode === 'auto') {
     try {
-      const modelPath = config.surrogatePath ?? 'models/l0_surrogate.json'
+      const modelPath = config.surrogatePath ?? 'models/l0_surrogate_family.json'
       const model = loadSurrogateModel(modelPath)
 
+      // v2.0.0: 推理端注入 l0_eff (公式通道可算的物理基, 非 RMxprt 输出)
+      //   训练特征含 l0_eff 但 params 矩阵不含该字段 -> 用 quickL0Estimate 补算后注入;
+      //   实测 Python/Node 两套公式仅差 ~0.5pp, 口径一致可安全复用。
+      const enriched = paramsList.map((row) => {
+        try {
+          const l0 = quickL0Estimate(row, { efficiencyCap: 99 })
+          if (l0 && typeof l0.efficiency === 'number') {
+            return { ...row, l0_eff: l0.efficiency }
+          }
+        } catch (_) { /* 公式失败则该行在代理通道降级公式 */ }
+        return row
+      })
+
       const { results: predictions, fallbacks } = predictBatch(
-        paramsList,
+        enriched,
         model,
         surrogateThreshold
       )
@@ -134,6 +148,10 @@ export function runL0Estimate(rawArgs, config = {}) {
           sorted_by: sortBy,
           sort_order: ascending ? 'asc' : 'desc',
           l0_mode: 'surrogate',
+          surrogate_experimental: model.experimental === true,
+          surrogate_warning: model.experimental === true
+            ? 'surrogate 通道为实验特性：训练域与真实机座不匹配且 cv_r2 偏低，结果仅供参考，请勿直接用于排序决策'
+            : undefined,
           surrogate_fallbacks: surrogateFallbacks,
           surrogate_model_version: model.version,
           fields: { native: L0_NATIVE_FIELDS, mirror: L1_MIRROR_FIELDS },

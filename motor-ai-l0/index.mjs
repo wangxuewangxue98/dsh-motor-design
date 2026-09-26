@@ -40,9 +40,9 @@ export const Config = Schema.object({
   // ---- L0 运行参数 ----
   l0Mode: Schema.union(['formula', 'surrogate', 'auto']).default('auto')
     .description('L0 估算模式：formula 纯公式 / surrogate 代理模型 / auto 自动降级'),
-  surrogatePath: Schema.string().default('models/l0_surrogate.json')
+  surrogatePath: Schema.string().default('models/l0_surrogate_family.json')
     .description('代理模型权重文件路径'),
-  surrogateConfidenceThreshold: Schema.number().default(0.7)
+  surrogateConfidenceThreshold: Schema.number().default(0.4)
     .description('代理模型置信度阈值，低于此值自动降级到公式模式'),
   maxMatrixSize: Schema.number().default(2000)
     .description('参数矩阵最大组合数'),

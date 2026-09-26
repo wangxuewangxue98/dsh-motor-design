@@ -8,8 +8,8 @@
         level: 'l0'                        # 'l0' | 'l1' | 'l2'；非 l0 触发 assertLevelImplemented 快速失败
         # ---- L0 运行参数 ----
         l0Mode: 'auto'                     # formula | surrogate | auto
-        surrogatePath: 'models/l0_surrogate.json'
-        surrogateConfidenceThreshold: 0.7
+        surrogatePath: 'models/l0_surrogate_family.json'
+        surrogateConfidenceThreshold: 0.4
         maxMatrixSize: 2000
         topNPreview: 20
         # ---- W2 新增：常量真源（P1 定案，由 knowledge-sync 构建期生成，勿手改）----

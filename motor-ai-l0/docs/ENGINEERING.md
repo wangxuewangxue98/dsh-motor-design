@@ -116,7 +116,7 @@ dsh-motor-ai-l0/
 | V03 | 定子内外径比 vs `idRatio(poles)` | warning |
 | V04 | 长径比 λ | warning |
 | V05 | 极槽配合 + 每极每相槽数 q + 定转子槽数差 | warning |
-| V06 | 并联支路数整除极数、匝数下限 | failed |
+| V06 | 并联支路数整除极数、a ≤ q（Qs/(3p)，整数槽）、匝数下限 | failed |
 | V07 | 齿部磁密 vs 目标 1.02T | warning |
 | V08 | 轭部磁密 vs 目标 0.82T | warning |
 | V09 | 槽形几何（槽宽>0、宽深比） | failed |

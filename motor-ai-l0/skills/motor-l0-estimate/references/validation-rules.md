@@ -23,7 +23,7 @@
 | V03 | 定子内外径比 | warning | stator_od / stator_id / poles |
 | V04 | 长径比 λ | warning | core_length / stator_id / poles |
 | V05 | 极槽配合 | warning | poles / slots_stator / slots_rotor |
-| V06 | 并联支路整除极数 | failed | poles / parallel_circuits |
+| V06 | 并联支路整除极数且 ≤ q=Qs/(3p) | failed | poles / parallel_circuits / slots_stator |
 | V07 | 齿部磁密 | warning | stator_id / tooth_width / slots_stator / poles |
 | V08 | 轭部磁密 | warning | stator_id / yoke_thickness / poles |
 | V09 | 槽形几何 | failed | stator_od / stator_id / tooth_width / slots_stator |

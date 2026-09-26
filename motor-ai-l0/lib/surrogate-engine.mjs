@@ -22,12 +22,12 @@ import { buildL0Result } from './param-schema.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-/** 默认置信度阈值 */
-export const DEFAULT_CONFIDENCE_THRESHOLD = 0.7
+/** 默认置信度阈值 (v2.0.0: 由 0.7 降到 0.4, 因分族模型最佳 cv_r2≈0.67, 原 0.7 会让所有段被判降级而永不启用) */
+export const DEFAULT_CONFIDENCE_THRESHOLD = 0.4
 
 /** 模型 schema 版本校验 */
 const REQUIRED_SCHEMA = ['l0_surrogate_family', 'l0_surrogate_single']
-const REQUIRED_VERSION_PREFIX = '1.'
+const SUPPORTED_VERSION_PREFIXES = ['1.', '2.']
 
 /**
  * 加载代理模型权重文件
@@ -61,8 +61,9 @@ export function loadSurrogateModel(modelPath) {
     if (!REQUIRED_SCHEMA.includes(model.schema)) {
       throw new Error(`模型 schema 不匹配: 期望 ${REQUIRED_SCHEMA.join('|')}, 实际 ${model.schema}`)
     }
-    if (!model.version?.startsWith(REQUIRED_VERSION_PREFIX)) {
-      throw new Error(`模型版本过旧: ${model.version}, 需要 >= 1.0.0`)
+    const versionOk = SUPPORTED_VERSION_PREFIXES.some((p) => model.version?.startsWith(p))
+    if (!versionOk) {
+      throw new Error(`模型版本不支持: ${model.version}, 需要 ${SUPPORTED_VERSION_PREFIXES.join(' / ')}`)
     }
     
     return model
@@ -184,14 +185,16 @@ export function predictSurrogate(params, model, motorType = null) {
  */
 function predictFromSegment(params, primary, model, motorType) {
   const norm = {
-    featureOrder: primary.feature_names,
+    // primary.feature_names 是 v1.x 格式；v2.x 把特征顺序存在顶层 model.features
+    featureOrder: primary.feature_names ?? model.features,
     feature_mean: primary.feature_mean,
     feature_std: primary.feature_std
   }
   const features = extractFeatures(params, norm)
 
-  // 预测效率
-  const efficiency = predictLinear(features, primary)
+  // 预测效率 (物理合理性钳位: 效率不可能 <50% 或 >99%)
+  const rawEff = predictLinear(features, primary)
+  const efficiency = Math.min(99, Math.max(50, rawEff))
 
   // 置信度：基于 R² 和特征范围
   const confidence = estimateConfidence(features, norm, primary.cv_r2)
@@ -223,9 +226,10 @@ function predictFromSingle(params, model) {
     feature_std: effPrimary.feature_std
   }
   const features = extractFeatures(params, norm)
-  
-  // 直接预测效率
-  const efficiency = predictLinear(features, effPrimary)
+
+  // 直接预测效率 (物理合理性钳位)
+  const rawEff = predictLinear(features, effPrimary)
+  const efficiency = Math.min(99, Math.max(50, rawEff))
   
   // 置信度
   const confidence = estimateConfidence(features, norm, 0.487) // 单模型 R²≈0.49
@@ -242,23 +246,34 @@ function predictFromSingle(params, model) {
 }
 
 /**
- * 检测电机类型（简化版：基于 OD 范围）
+ * 检测电机类型：优先使用显式 motor_type 字段，回退到 OD 启发式
  */
 function detectMotorType(params) {
-  // 简化：根据 OD 判断，实际应根据 motor_type 字段
-  const od = params.stator_od
-  if (od < 400) return 'pmsm'  // 高速小电机
+  const mt = params?.motor_type
+  if (mt === 'pmsm' || mt === '永磁同步电动机' || mt === '永磁' || mt === 'PMSM' || mt === 'BLDC') {
+    return 'pmsm'
+  }
+  if (mt === 'induction' || mt === '异步电动机' || mt === '异步' || mt === 'IM') {
+    return 'induction'
+  }
+  // 回退：OD 启发式（仅当无显式 motor_type 字段时）
+  const od = params?.stator_od
+  if (od != null && od < 400) return 'pmsm'  // 高速小电机
   return 'induction'
 }
 
 /**
  * 估算总损耗（基于效率反推）
+ * 修复（0.1.7-P0）：efficiency 是百分数口径（如 91.34 表示 91.34%），
+ * 旧实现按小数口径算 (1/eff-1) 会得到负值/错误量级；先归一到 [0,1] 再反推。
  */
 function estimateTotalLoss(params, efficiency) {
   const powerKw = params.power_kw ?? 0
   if (!powerKw) return 0
+  const eff = efficiency / 100
+  if (!(eff > 0) || eff >= 1) return 0 // η≤0 或 η≥100% 时无法反推，返回 0 交公式通道兜底
   const powerW = powerKw * 1000
-  return Math.round(powerW * (1 / efficiency - 1) * 100) / 100
+  return Math.round(powerW * (1 / eff - 1) * 100) / 100
 }
 
 /**
