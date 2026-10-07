@@ -355,6 +355,96 @@ check('matrix: 外径上限被遵守且不产出空矩阵', () => {
   return `${matrix.length} 行，最大外径 ${Math.max(...matrix.map((r) => r.stator_od))} ≤ 300，夹紧 ${clamped} 行`
 })
 
+check('matrix: v0.2.4 默认外径上限自伸缩 —— 大机座不再被写死 450mm 夹死', () => {
+  // 旧默认 450mm 与功率完全脱钩：450kW/690V 扫描空间需 OD≈905mm，整批被夹到 450
+  // → 槽面积骤减 → V15 槽满率 120 行全 failed，表现为「物理不可行」实为参数夹紧。
+  const built = buildParamMatrix(
+    { power_kw: 450, speed_rpm: 985, voltage_v: 690, motor_type: 'async', count: 120 }, { maxMatrixSize: 2000 })
+  must(built.od_limit?.source === 'auto', `默认上限应由基准自伸缩，实际 source=${built.od_limit?.source}`)
+  const clamped = built.matrix.filter((r) => r._physics?.od_clamped).length
+  must(clamped === 0, `默认路径不应夹紧，实际夹紧 ${clamped} 行`)
+  const v = runDesignValidate({ params_list: built.matrix }, {})
+  const feasible = (v.summary?.passed ?? 0) + (v.summary?.warning ?? 0)
+  must(feasible > 0, `450kW 放开上限后应产出可行解，实际可行 ${feasible}`)
+  return `默认上限 ${built.od_limit.value}mm（扫描空间上界 ${built.od_limit.scan_space_max_od}mm），夹紧 0 行，可行 ${feasible}`
+})
+
+check('matrix: v0.2.4 零回归 —— 15kW / 200kW PMSM 默认上限与旧写死 450 逐字节一致', () => {
+  // 这两个案例在旧默认下本就没夹紧（OD 上界分别 438 / 343mm），改默认值不得产生任何变化。
+  for (const spec of [
+    { power_kw: 15, speed_rpm: 1460, voltage_v: 380, count: 120 },
+    { power_kw: 200, speed_rpm: 22000, voltage_v: 380, motor_type: 'pmsm', count: 120 },
+  ]) {
+    const a = buildParamMatrix(spec, { maxMatrixSize: 2000 }).matrix
+    const b = buildParamMatrix({ ...spec, stator_od_limit: 450 }, { maxMatrixSize: 2000 }).matrix
+    must(JSON.stringify(a) === JSON.stringify(b),
+      `${spec.power_kw}kW 默认上限改动造成回归：旧 450 未夹紧的场景必须逐字节一致`)
+  }
+  return '15kW / 200kW PMSM 新旧上限逐字节一致'
+})
+
+check('matrix: v0.2.4 显式上限被夹紧时回吐 OD_LIMIT_CLAMPED 告警（且仍严格尊重上限）', () => {
+  const built = buildParamMatrix(
+    { power_kw: 450, speed_rpm: 985, voltage_v: 690, motor_type: 'async', stator_od_limit: 450, count: 120 },
+    { maxMatrixSize: 2000 })
+  const w = (built.warnings ?? [])[0]
+  must(w?.code === 'OD_LIMIT_CLAMPED', `应回吐 OD_LIMIT_CLAMPED，实际 ${w?.code ?? '无告警'}`)
+  must(w.clamped_rows === 120, `夹紧行数应为 120，实际 ${w.clamped_rows}`)
+  must(w.suggested_od_limit > 450, `应给出放宽建议值，实际 ${w.suggested_od_limit}`)
+  for (const row of built.matrix) {
+    must(row.stator_od <= 450, `显式上限未被尊重：${row.stator_od} > 450`)
+  }
+  return `${w.code}：${w.clamped_rows}/${w.total_rows} 行夹紧，建议放宽至 ${w.suggested_od_limit}mm`
+})
+
+check('estimate: v0.2.4 效率封顶不再压平排序 —— 450kW 大机座按未钳位真值排出区分度', () => {
+  // 旧行为：efficiencyCap=96 把 450kW 全部候选钳到 96.00 ⇒ Top10 去重仅 1 个值、极差 0.00pt，
+  // 排序退化成由数组原序决定（谁排第一是随机的），且对外展示的 η96.00% 是假精度。
+  const built = buildParamMatrix(
+    { power_kw: 450, speed_rpm: 985, voltage_v: 690, motor_type: 'async', count: 120 }, { maxMatrixSize: 2000 })
+  const v = runDesignValidate({ params_list: built.matrix }, {})
+  const feasIdx = [...(v.passed_indices ?? []), ...(v.warning_indices ?? [])]
+  const feasRows = feasIdx.map((i) => built.matrix[i])
+  must(feasRows.length > 0, '前置条件：450kW 应有可行解')
+
+  const est = runL0Estimate({ params_list: feasRows, top_n: 10, sort_by: 'efficiency' }, { efficiencyCap: 96 })
+  const top = est.results
+  const capped = top.filter((r) => r.efficiency_capped === true).length
+  must(capped > 0, `本批应存在触顶行（用于验证封顶仍生效），实际触顶 ${capped}/${top.length}`)
+
+  const raws = top.map((r) => r.efficiency_raw)
+  for (let i = 1; i < raws.length; i++) {
+    must(raws[i - 1] >= raws[i], `排序未按真值降序：${raws[i - 1]} < ${raws[i]}`)
+  }
+  const distinct = new Set(raws).size
+  const spread = Math.round((Math.max(...raws) - Math.min(...raws)) * 100) / 100
+  must(distinct > 1, `真值应保留区分度，实际去重仅 ${distinct} 个值（排序被压平）`)
+  must(est.efficiency_capped_count > 0 && est.efficiency_note, '应据实回吐触顶计数与说明')
+  return `Top${top.length} 真值 ${raws[0]}~${raws[raws.length - 1]}%（极差 ${spread}pt，${distinct} 个不同值），触顶 ${capped} 行，显示值仍为 ${top[0].efficiency}%`
+})
+
+check('estimate: v0.2.4 封顶值本身不变 —— efficiency 仍与 L1 同口径（零回归）', () => {
+  const row = quickL0Estimate({
+    stator_od: 400, stator_id: 240, core_length: 300, air_gap: 1.0,
+    poles: 2, voltage: 380, speed: 3000, slots_stator: 24, slots_rotor: 20,
+    rotor_od: 238, tooth_width: 15.7, power_kw: 200, cooling: 'oil_immersed',
+  }, { efficiencyCap: 96 })
+  must(row.efficiency <= 96, `efficiency 必须仍被封顶到 96（与 L1 同口径），实际 ${row.efficiency}`)
+  must(row.efficiency_raw >= row.efficiency,
+    `真值不得小于钳位值：raw=${row.efficiency_raw} < capped=${row.efficiency}`)
+  must(row.efficiency_capped === true, '该样本应被标记触顶')
+  // 不触顶场景：15kW 小机座不得被误标
+  const small = quickL0Estimate({
+    stator_od: 180, stator_id: 108, core_length: 100, air_gap: 0.6,
+    poles: 4, voltage: 380, speed: 1460, slots_stator: 36, slots_rotor: 28,
+    rotor_od: 106.8, tooth_width: 4.7, power_kw: 15, cooling: 'forced_air',
+  }, { efficiencyCap: 96 })
+  must(small.efficiency_capped === false, `15kW 不应触顶，实际 raw=${small.efficiency_raw}`)
+  must(Math.abs(small.efficiency_raw - small.efficiency) < 1e-9,
+    `未触顶行真值应等于显示值：raw=${small.efficiency_raw} vs ${small.efficiency}`)
+  return `大样本 capped=${row.efficiency}%/raw=${row.efficiency_raw}%；15kW 未触顶 raw=${small.efficiency_raw}%`
+})
+
 check('matrix: P3 高速工况 —— 22000rpm 归入 2 极档（f≈367Hz）', () => {
   must(recommendPoles(22000) === 2, '22000rpm 应推荐 2 极（f=366.7Hz，与现场工况吻合）')
   must(recommendPoles(1500) === 4, '1500rpm 应推荐 4 极')
@@ -430,7 +520,7 @@ check('estimate[代理]: surrogate 通道端到端可用且不被钳底', () => 
   const cfg = { l0Mode: 'surrogate', surrogatePath: 'models/l0_surrogate_family.json', surrogateConfidenceThreshold: 0.4 }
   const { results, l0_mode, surrogate_model_version } = runL0Estimate({ params_list: rows, top_n: 5 }, cfg)
   must(l0_mode === 'surrogate', `应走代理通道，实际 ${l0_mode}`)
-  must(surrogate_model_version === '2.2.0', `代理模型版本应为 2.2.0，实际 ${surrogate_model_version}`)
+  must(surrogate_model_version === '2.3.0-fixseg', `代理模型版本应为 2.3.0-fixseg，实际 ${surrogate_model_version}`)
   for (const r of results) {
     must(r.efficiency > 50, `代理预测被钳到下限 50（失真），实际 ${r.efficiency}`)
     must(r.efficiency <= 99, `效率超出上界 ${r.efficiency}`)
@@ -463,9 +553,45 @@ check('estimate: 每 participating ms 级（100 组 < 100ms）', () => {
 check('index: tools/l0 可在无 DSH Runtime 下加载', () => {
   must(typeof toolsIndex.registerL0Tools === 'function', 'registerL0Tools 未导出')
   must(Array.isArray(toolsIndex.L0_TOOL_NAMES), 'L0_TOOL_NAMES 未导出')
-  must(toolsIndex.L0_TOOL_NAMES.length === 3, `当前应有 3 个工具，实际 ${toolsIndex.L0_TOOL_NAMES.length}`)
+  must(toolsIndex.L0_TOOL_NAMES.length === 4, `当前应有 4 个工具，实际 ${toolsIndex.L0_TOOL_NAMES.length}`)
   must(toolsIndex.L0_TOOL_NAMES.includes('motor_design_validate'), 'design-validate 未注册')
+  must(toolsIndex.L0_TOOL_NAMES.includes('motor_l0_pipeline'), 'pipeline 聚合工具未注册')
   return `可加载，工具: ${toolsIndex.L0_TOOL_NAMES.join(', ')}`
+})
+
+// ---------- 40. 聚合流水线工具（B 方案：根治 2000 行截断）----------
+import { runL0Pipeline } from '../tools/l0/pipeline.mjs'
+
+check('pipeline: 三步链聚合 + 计数自洽 + 默认 Top10', () => {
+  const out = runL0Pipeline({ power_kw: 15, speed_rpm: 1460, voltage_v: 380, motor_type: 'induction', count: 120 }, {})
+  must(out.summary.generated === 120, `应生成 120 行，实际 ${out.summary.generated}`)
+  must(
+    out.summary.passed + out.summary.warning + out.summary.failed === out.summary.generated,
+    'passed+warning+failed 必须等于 generated（防止静默丢行）')
+  must(out.summary.count_ok === true, 'count_ok 应为 true（无截断且三级分组自洽）')
+  must(out.summary.top_n_returned <= 10, `聚合工具默认应封顶 ≤10 行，实际 ${out.summary.top_n_returned}`)
+  must(out.elapsed_ms < 200, `流水线耗时 ${out.elapsed_ms}ms 超出预算`)
+  // 上下文体量：JSON 输出应远小于 2000 行
+  const lineCount = JSON.stringify(out, null, 2).split('\n').length
+  must(lineCount < 2000, `聚合输出 ${lineCount} 行仍超 2000 上限`)
+  return `生成 ${out.summary.generated} / 剔除 ${out.summary.failed} / 可行 ${out.summary.feasible_count} / 回吐 ${out.summary.top_n_returned} 行（${lineCount} 行）`
+})
+
+check('pipeline: V16 超同步在聚合链路内被拦截（15kW 异步 6极@1460 → 切 4极）', () => {
+  // 直接给 6 极（超同步非法档），聚合工具应自动把 failed 项剔除，
+  // 且 summary 反映：failed 含超同步方案，TopN 不出现 V16 failed 行。
+  const out = runL0Pipeline({ power_kw: 15, speed_rpm: 1460, voltage_v: 380, poles: 6, motor_type: 'induction', count: 120 }, {})
+  must(out.summary.failed >= 1, `6极@1460 超同步应被 V16 拦下至少 1 项，实际 failed=${out.summary.failed}`)
+  // TopN 行的 recommended / results 不应含 V16 failed 候选（已在过滤环节剔除）
+  must(out.recommended === null || out.recommended.verdict !== 'failed', 'TopN 不应推荐已判 failed 方案')
+  return `failed=${out.summary.failed}（含超同步档） / TopN 已过滤`
+})
+
+check('pipeline: write_handoff 落盘且路径可见', () => {
+  const out = runL0Pipeline({ power_kw: 15, speed_rpm: 3000, count: 24 }, { handoffDir: join(ROOT, '.l0_handoff_test') })
+  must(typeof out.handoff_path === 'string' && out.handoff_path.length > 0, 'handoff_path 应为非空字符串')
+  must(existsSync(out.handoff_path), 'handoff 文件未实际落盘')
+  return `handoff → ${out.handoff_path}`
 })
 
 // ---------- 26~35. W4：物理一致性校验 ----------
@@ -580,6 +706,38 @@ check('validate: 批量模式三级分组 + rule_hits 可定位生成偏差', ()
   must(out.failed_reasons.every((f) => f.issues.every((i) => i.level === 'failed')),
     'failed_reasons 混入非 failed 条目')
   return `${JSON.stringify(out.summary)} top=${out.rule_hits[0].rule}×${out.rule_hits[0].count}`
+})
+
+check('validate: V16 极数-转速超同步拦截（异步 reject 6极@1460 / 8极@985，PMSM 跳过）', () => {
+  // 6 极 @ 1460rpm：同步 1000 < 1460 ⇒ 超同步，异步机非法
+  const sixPole = validateDesign({
+    stator_od: 310, stator_id: 207.9, rotor_od: 206.7, shaft_dia: 59,
+    core_length: 226.4, air_gap: 0.59, tooth_width: 7.42, yoke_thickness: 18,
+    poles: 6, voltage: 380, speed: 1460, slots_stator: 72, slots_rotor: 58,
+    turns_per_coil: 2, parallel_circuits: 1, power_kw: 15,
+  })
+  must(sixPole.issues.some((i) => i.rule === 'V16' && i.level === 'failed'),
+    '6极@1460rpm 超同步应判 V16 failed')
+
+  // 4 极 @ 1460rpm：同步 1500 > 1460 ⇒ 合法（转差 2.7%）
+  const fourPole = validateDesign({
+    stator_od: 260, stator_id: 170, rotor_od: 169, shaft_dia: 59,
+    core_length: 155, air_gap: 0.5, tooth_width: 7.42, yoke_thickness: 18,
+    poles: 4, voltage: 380, speed: 1460, slots_stator: 36, slots_rotor: 28,
+    turns_per_coil: 22, parallel_circuits: 2, power_kw: 15,
+  })
+  must(!fourPole.issues.some((i) => i.rule === 'V16'),
+    '4极@1460rpm 同步 1500>1460 应判合法（不触发 V16）')
+
+  // PMSM：V16 不适用（跳过）
+  const pmsm = validateDesign({
+    stator_od: 200, stator_id: 110, rotor_od: 106, shaft_dia: 37.1,
+    core_length: 170, air_gap: 2.0, tooth_width: 7.2, yoke_thickness: 18,
+    poles: 2, voltage: 380, speed: 22000, slots_stator: 24, slots_rotor: 0,
+    turns_per_coil: 12, parallel_circuits: 1, power_kw: 200, motor_type: 'pmsm',
+  })
+  must(pmsm.skipped.includes('V16'), 'PMSM 应跳过 V16')
+  return '6极@1460 拦截 / 4极@1460 放行 / PMSM 跳过'
 })
 
 check('validate: escalate 能把温升规则升级为 failed', () => {

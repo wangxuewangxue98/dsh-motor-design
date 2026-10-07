@@ -27,6 +27,12 @@ node scripts/verify.mjs
 2. `motor_design_validate` —— 批量物理校验，剔除 `failed`
 3. `motor_l0_estimate` —— 对剩余候选排序，输出 TopN 与 L1 交接载荷
 
+> ⚠️ **推荐用聚合工具 `motor_l0_pipeline` 一步跑完上述三步链**。DSH 对话上下文有 **2000 行读取上限**：
+> 当 `count=120` 时，单 `motor_param_matrix` 就回显 4000+ 行，模型静默丢行后计数对不上 120 还**无报错**——
+> 这是「让模型亲手编排三步链」的结构性风险（三案例实战全中）。聚合工具在插件进程内跑完三步链，
+> 只回吐紧凑摘要（计数自检 + Top10 + 交接载荷 + 文件交接路径），上下文恒 < 2000 行，从根上绕开截断。
+> 只有在单独调试某一步（查完整校验报告、手调 failed 阈值）时才拆开用三个独立工具。
+
 > ⚠️ `motor_l0_estimate` 只接受 `params_list`（每项含 16 个 L1 顶层字段），**不接受** `power_kw` / `speed_rpm` 这类散装命名参数 —— 请先用第 1 步生成矩阵再传入。
 > L0 结果只用于**排序与相对比较**，不用于绝对值交付；输出恒带 `solve_mode='l0'` 标记，最终结论须由 L1/L2 给出。
 >
@@ -37,7 +43,7 @@ node scripts/verify.mjs
 > | **公式通道**（默认） | `l0Mode: 'auto'` / `'formula'` | 效率 + 温升 + 损耗拆分 + 齿/轭磁密 + 功率因数 + 可行判定 —— 字段完整 | 日常排序与相对比较 |
 > | **代理通道**（可选增强） | `l0Mode: 'surrogate'` | **仅效率**（温升/损耗/磁密不输出） | 异步机效率排序的交叉参考 |
 >
-> 代理模型 v2.2.0 由 4955 条真实 RMxprt 结果训练（`designs.db.l0_residuals`，`fault=0`，效率 ∈ [50,99]），按机座外径分三段：
+> 代理模型 v2.3.0-fixseg（在 v2.2.0 基础上用全量 6029 条真实 RMxprt 结果重训，特征扩为含 `poles` 的 5 维；`designs.db.l0_residuals`，`fault=0`，效率 ∈ [50,99]），按机座外径分三段：
 >
 > | 机种 | 样本 OD 覆盖 | 样本数 | 5 折 CV R² | MAE |
 > |---|---|---|---|---|
@@ -60,9 +66,10 @@ node scripts/verify.mjs
 
 | 工具 | 作用 | 关键入参 |
 |---|---|---|
+| `motor_l0_pipeline` | **推荐入口**：三步链聚合，只回紧凑摘要 + 文件交接，根治 2000 行截断 | `power_kw` `speed_rpm` `count` `top_n` `write_handoff` |
 | `motor_param_matrix` | 生成候选参数矩阵（聚焦扫描，非笛卡尔积） | `power_kw` `speed_rpm` `voltage_v` `poles` `count` |
-| `motor_l0_estimate` | 毫秒级估算 + 排序 + L1 交接载荷 | `params_list` `top_n` `sort_by` |
-| `motor_design_validate` | 12 条物理一致性校验，返回 `passed`/`warning`/`failed` | `params_list` `escalate` |
+| `motor_l0_estimate` | 毫秒级估算 + 排序 + L1 交接载荷（默认 Top10） | `params_list` `top_n` `sort_by` |
+| `motor_design_validate` | 15 条物理一致性校验，返回 `passed`/`warning`/`failed` | `params_list` `escalate` |
 
 入参别名：`power`→`power_kw`、`rpm`→`speed_rpm`、`volt`→`voltage_v`。
 `sort_by` 白名单：`efficiency` `torque_density` `temp_rise` `total_loss` `power`（`temp_rise`、`total_loss` 升序，越小越好）。
@@ -94,9 +101,9 @@ $ motor_l0_estimate        sort_by: 'efficiency'  →  Top5，80 个可行候选
 |---|---|---|
 | `level` | `'l0'` | 层级总闸。设为 `l1`/`l2` 立即抛错（快速失败，杜绝静默降级） |
 | `l0Mode` | `'auto'` | `formula` 纯公式（字段完整）/ `surrogate` 代理模型（**仅输出效率**）/ `auto` = 公式通道，段外与低置信度自动降级 |
-| `surrogatePath` | `'models/l0_surrogate_family.json'` | 代理模型路径（v2.2.0） |
+| `surrogatePath` | `'models/l0_surrogate_family.json'` | 代理模型路径（v2.3.0-fixseg） |
 | `surrogateConfidenceThreshold` | `0.4` | 代理置信度门限，低于此值降级公式 |
-| `efficiencyCap` | `96` | 效率封顶（与 L1 同口径，避免两层排序跳变） |
+| `efficiencyCap` | `96` | 效率封顶（与 L1 同口径，避免两层排序跳变）。v0.2.4 起仅钳**展示值** `efficiency`，排序按 `efficiency_raw`（未封顶真值） |
 | `insulationClass` | `'F'` | 绝缘等级，决定温升限值（B=80K / F=105K / H=125K） |
 
 其余配置项（本地统计 `usageLog`；L0 运行 `surrogatePath` / `surrogateConfidenceThreshold` / `maxMatrixSize` / `topNPreview` / `tempRiseRange` / `airGapFluxT` / `highSpeedRpm`；脱敏回传 `telemetryEnabled` / `telemetryEndpoint` / `telemetryBatchSize` / `telemetryIntervalSec` / `sessionTelemetry`）见 [`docs/ENGINEERING.md`](docs/ENGINEERING.md#八配置全表) 与本文「脱敏聚合指标回传」节。

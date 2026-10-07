@@ -22,7 +22,7 @@ whenToUse: >
 user-invocable: true
 metadata:
   author: Motor-AI
-  version: 0.2.3
+  version: 0.2.4
   level: l0
   tier: free
 ---
@@ -68,12 +68,19 @@ L0 是**广筛层**：用纯 JS 经验公式在毫秒级把成百上千个参数
 | `voltage` | ✅ | 电压 V（380 / 660 / …） |
 | `poles` | ⬜ | 极数，缺省由 `recommendPoles(speed)` 推荐 |
 | `cooling` | ⬜ | 冷却方式，缺省 `forced_air` |
-| `stator_od_limit` | ⬜ | 外径上限 mm（机座号约束） |
+| `stator_od_limit` | ⬜ | 外径上限 mm（机座号/隔爆外壳约束）。缺省按基准尺寸自伸缩，夹紧时回吐 `OD_LIMIT_CLAMPED` 告警 |
 | `count` | ⬜ | 组合数，缺省 24 |
 
 **极数推荐口径**：高速（≥12000rpm）一律 2 极。
 永磁同步机**不存在 1 极** —— 若用户口径出现 1 极，按 2 极处理并说明
 （依据 f = n·p/120：22000rpm × 2 / 120 = 366.7Hz，与现场工况吻合）。
+
+> ⚠️ **推荐入口：`motor_l0_pipeline` 一步跑完三步链**。DSH 对话上下文有 **2000 行读取上限**：
+> `count=120` 时单 `motor_param_matrix` 就回显 4000+ 行，模型静默丢行后计数对不上 120 还**无报错**——
+> 这是「让模型亲手编排三步链」的结构性风险（15kW/75kW/200kW 三案例实战全中）。
+> 聚合工具在插件进程内串完 `buildParamMatrix → runDesignValidate → runL0Estimate`，
+> 只回吐紧凑摘要（计数自检 `summary.count_ok` + Top10 + 交接载荷 + `handoff_path`），上下文恒 < 2000 行。
+> **仅当单独调试某一步（查完整校验报告、手调 failed 阈值）才拆开用三个独立工具**，并务必把完整矩阵落盘到文件而非在对话里搬运。
 
 ### Phase 2 · 参数矩阵生成
 
@@ -100,7 +107,8 @@ L0 是**广筛层**：用纯 JS 经验公式在毫秒级把成百上千个参数
 
 ### Phase 4 · L0 估算
 
-调用 `motor_l0_estimate`，对剔除后的组合做毫秒级估算。
+调用 `motor_l0_estimate`（或在上游直接用聚合工具 `motor_l0_pipeline` 一步拿结果），对剔除后的组合做毫秒级估算。
+注意 `motor_l0_estimate` 输出**默认封顶 Top10**（`top_n:0` 才取全量），避免回吐全量矩阵触发 DSH 截断。
 输出含原生 6 字段（`efficiency` / `torque` / `temp_rise` / `total_loss` /
 `torque_density` / `prediction_source`）+ L1 镜像字段。
 

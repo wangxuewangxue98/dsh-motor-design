@@ -119,9 +119,12 @@ export async function registerDesignValidate(ctx, config = {}) {
       '校验电机设计参数的物理一致性，返回 passed / warning / failed 三级结论。\n' +
       '输入 params_list 应来自 motor_param_matrix 的产出（每项含 16 个 L1 顶层字段）。\n' +
       '覆盖几何链、气隙、内外径比、长径比、极槽配合、并联支路、齿轭磁密、槽形、\n' +
-      '电频率、转子轭厚、温升限值共 12 组规则。\n' +
+      '电频率、转子轭厚、温升限值、匝数闭环、槽满率、极数-转速同步一致性共 15 组规则' +
+      '（V01–V12 + V14 反电势闭环 + V15 槽满率 + V16 极数-转速同步一致性，V13 附于 V06）。\n' +
       '典型用法：流水线第二步——先对参数矩阵批量校验，把 failed 项剔除后\n' +
-      '再交给 motor_l0_estimate 估算排序。',
+      '再交给 motor_l0_estimate 估算排序。\n' +
+      '⚠️ 广筛时本工具批量报告也很大，建议直接用聚合工具 motor_l0_pipeline（内部串三步链，\n' +
+      '只回紧凑摘要 + 计数自检，绕开 DSH 2000 行截断）；单独调本工具仅用于调试某条规则。',
     parameters: TOOL_PARAMS,
     output: {
       schema: { type: 'string' },

@@ -22,12 +22,24 @@
 P_out = P_rated
 P_loss = P_cu + P_fe + P_mech
 η = P_out / (P_out + P_loss) × 100%
-η = min(η, efficiencyCap)
+η_raw = η                      # 未封顶真值，排序用
+η = min(η, efficiencyCap)      # 展示值，与 L1 同口径
 ```
 
 **封顶口径**：`efficiencyCap=96` 对齐 Python 侧 `_run_simulated`
 （`Scripts/motor_tools.py:752`）。目的是避免同一设计在 L0 / L1 之间
 排序跳变 —— 两边用同一口径比"谁更准"更重要。
+
+**v0.2.4：封顶与排序解耦。** cap 是口径约定，不是物理真值。大机座整批触顶时
+450kW 实测 Top10 全部 96.00（去重 1 个值、极差 0.00pt），按 `efficiency` 排序
+等于没排。故：
+
+- 展示值 `efficiency` —— 仍按 cap 钳位，维持 L1 同口径（**对外引用这个数**）
+- 真值 `efficiency_raw` —— 未封顶，**排序按它**，结果行可直接读到
+- 标记 `efficiency_capped` —— true 表示展示值被钳过，不等于真值
+- 顶层 `efficiency_capped_count` / `efficiency_note` —— 本批触顶规模与说明
+
+即：跨层可比性没变，排序区分度回来了。
 
 > ⚠ 当前 96 对高速高效机偏保守（推算值可达 97.5% 被压住）。
 > 待 W4 标定收敛后重评，`references` 与 `motor-constants.mjs` 同步更新。
@@ -130,6 +142,6 @@ By = B_gap · π · Dsi / (2 · p · yoke · k_stack)
 | 2 | 铜损缺电路约束（曾为经验系数） | 已改物理式，待标定 J |
 | 3 | 机械损未标定 | 量级偏保守 |
 | 4 | 散热面积未计散热筋 | 温升偏高 |
-| 5 | efficiencyCap=96 权宜值 | 高速高效机被压 |
+| 5 | efficiencyCap=96 权宜值 | 高速高效机被压（v0.2.4 起排序已改用 `efficiency_raw`，仅展示值受影响） |
 
 标定目标：|Δη| ≤ 2pt、|Δ温升| ≤ 10K。

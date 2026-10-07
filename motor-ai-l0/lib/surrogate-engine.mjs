@@ -152,6 +152,51 @@ export function predictLinear(features, coeffs) {
 }
 
 /**
+ * 评估单棵 GBR 决策树（sklearn 数组导出格式）
+ * 约定：feature[i] === -2 表示叶子节点，values[i] 为叶子输出；
+ *       叶子节点 left/right 均为 -1。以 maxIter 兜底防异常树结构死循环。
+ * @param {number[]} features 标准化特征向量
+ * @param {object} tree 单棵树 { feature, threshold, left, right, values }
+ * @returns {number} 该树对残差的贡献
+ */
+function applyTree(features, tree) {
+  let node = 0
+  const maxIter = tree.feature.length + 1
+  for (let i = 0; i < maxIter; i++) {
+    const f = tree.feature[node]
+    if (f === -2) {
+      return tree.values[node]
+    }
+    if (features[f] <= tree.threshold[node]) {
+      node = tree.left[node]
+    } else {
+      node = tree.right[node]
+    }
+  }
+  return tree.values[node] ?? 0
+}
+
+/**
+ * GBR 残差校正预测（ridge_plus_gbr 第二阶段）
+ * 公式（与训练端 M1 一致）：residual = init + learning_rate * Σ applyTree(features, tree)
+ * 残差与 primary 线性预测同单位（效率百分点），最终效率 = primary + residual。
+ * 模型无 gbr 字段时返回 0（退化为纯 ridge 通道，行为不变）。
+ * @param {number[]} features 标准化特征向量
+ * @param {object|undefined} gbr GBR 模型对象（含 init/learning_rate/trees）
+ * @returns {number} 残差修正量（效率百分点）
+ */
+export function predictGBR(features, gbr) {
+  if (!gbr || !Array.isArray(gbr.trees) || gbr.trees.length === 0) {
+    return 0
+  }
+  let sum = 0
+  for (const tree of gbr.trees) {
+    sum += applyTree(features, tree)
+  }
+  return (gbr.init ?? 0) + (gbr.learning_rate ?? 1) * sum
+}
+
+/**
  * 代理模型预测单个样本（分族模型）
  * @param {object} params L0 参数字典
  * @param {object} model 模型对象
@@ -166,7 +211,7 @@ export function predictSurrogate(params, model, motorType = null) {
   if (model.schema === 'l0_surrogate_family') {
     const segment = selectFamilySegment(statorOd, type, model)
     if (segment) {
-      return predictFromSegment(params, segment.primary, model, type)
+      return predictFromSegment(params, segment, model, type)
     }
     // 超出范围，返回 null 让调用方降级
     return null
@@ -183,7 +228,8 @@ export function predictSurrogate(params, model, motorType = null) {
 /**
  * 从分族模型预测
  */
-function predictFromSegment(params, primary, model, motorType) {
+function predictFromSegment(params, segment, model, motorType) {
+  const primary = segment.primary
   const norm = {
     // primary.feature_names 是 v1.x 格式；v2.x 把特征顺序存在顶层 model.features
     featureOrder: primary.feature_names ?? model.features,
@@ -192,11 +238,20 @@ function predictFromSegment(params, primary, model, motorType) {
   }
   const features = extractFeatures(params, norm)
 
-  // 预测效率 (物理合理性钳位: 效率不可能 <50% 或 >99%)
+  // 基础预测（加权 Ridge）
   const rawEff = predictLinear(features, primary)
-  const efficiency = Math.min(99, Math.max(50, rawEff))
 
-  // 置信度：基于 R² 和特征范围
+  // GBR 残差校正（ridge_plus_gbr 第二阶段）：final = base + residual
+  // 残差与 primary 同单位（效率百分点），模型无 gbr 字段时退化为纯 ridge（行为不变）
+  const gbrResidual = predictGBR(features, segment.gbr)
+  const correctedEff = rawEff + gbrResidual
+
+  // 预测效率 (物理合理性钳位: 效率不可能 <50% 或 >99%)
+  const efficiency = Math.min(99, Math.max(50, correctedEff))
+
+  const usedGbr = !!segment.gbr && Array.isArray(segment.gbr.trees) && segment.gbr.trees.length > 0
+
+  // 置信度：基于 R² 和特征范围（维持与纯 ridge 通道一致，避免改变降级判定）
   const confidence = estimateConfidence(features, norm, primary.cv_r2)
 
   return {
@@ -207,6 +262,8 @@ function predictFromSegment(params, primary, model, motorType) {
     prediction_source: 'surrogate',
     family: { motor_type: motorType, size: primary.tag?.split('_')[0] },
     cv_r2: primary.cv_r2,
+    used_gbr: usedGbr,
+    gbr_residual_pp: usedGbr ? Math.round(gbrResidual * 1000) / 1000 : 0,
   }
 }
 
@@ -387,5 +444,6 @@ export default {
   buildSurrogateResult,
   extractFeatures,
   selectFamilySegment,
+  predictGBR,
   DEFAULT_CONFIDENCE_THRESHOLD,
 }

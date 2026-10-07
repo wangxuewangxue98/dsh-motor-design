@@ -6,8 +6,14 @@
  *
  * 排序口径（跨层一致性关键点）：
  *   L0 与 L1 必须能放在一起比。若 L0 封顶 98.5% 而 L1 封顶 96%，
- *   同一批方案在两层的排序会跳变 —— 故效率统一 clamp 到 config.efficiencyCap（默认 96，
- *   对齐 motor_tools.py:752）。
+ *   同一批方案在两层的排序会跳变 —— 故**展示值** efficiency 统一 clamp 到
+ *   config.efficiencyCap（默认 96，对齐 motor_tools.py:752）。
+ *
+ * v0.2.4 修正：cap 是"口径约定"不是物理真值。大机座整批触顶时（450kW 实测 Top10
+ *   全 96.00，去重 1 个值、极差 0.00pt），按 efficiency 排序等于没排 —— 谁第一由数组
+ *   原序决定。故**排序改用未封顶真值 efficiency_raw**，展示值仍是 efficiency，
+ *   并在结果行给出 efficiency_capped 标记 + 顶层 efficiency_note 说明。
+ *   跨层一致性未受影响：cap 值本身与钳位行为完全不变。
  *
  * 本文件同样保持「纯函数 + 薄封装」结构：
  *   runL0Estimate() 零依赖可单测；registerL0Estimate() 才触碰 DSH Runtime。
@@ -31,18 +37,30 @@ export const TOOL_PARAMS = {
     type: 'array', required: true,
     description: '参数组合列表，每项须含 stator_od/poles/voltage/speed 四个 L1 严格必填字段',
   },
-  top_n: { type: 'number', description: '返回前 N 个结果，默认全部' },
+  top_n: { type: 'number', description: '返回前 N 个结果。默认 10（已封顶，避免回吐全量触发 DSH 2000 行截断）；显式传 0 才取全量' },
   sort_by: {
     type: 'string',
-    description: '排序字段：efficiency / torque_density / temp_rise，默认 efficiency',
+    description: '排序字段：efficiency / efficiency_raw / torque_density / temp_rise，默认 efficiency。' +
+      '注意：默认 efficiency 排序已改用未封顶真值（efficiency_raw），避免大机座整批触顶时排序被压平',
   },
 }
 
 /** 允许参与排序的字段白名单（防注入 sort 到任意键） */
-export const SORTABLE_FIELDS = ['efficiency', 'torque_density', 'temp_rise', 'total_loss', 'power']
+export const SORTABLE_FIELDS = ['efficiency', 'efficiency_raw', 'torque_density', 'temp_rise', 'total_loss', 'power']
 
 /** temp_rise 为「越小越好」，其余为「越大越好」 */
 const ASCENDING_FIELDS = new Set(['temp_rise', 'total_loss'])
+
+/**
+ * 取排序键（v0.2.4）
+ * 效率维度必须用**未封顶真值** efficiency_raw：efficiency 被 efficiencyCap 钳过，
+ * 大机座整批触顶时会全部相等（450kW 实测 Top10 全 96.00），排序退化成由数组原序决定。
+ * 代理通道行没有 efficiency_raw，退回 efficiency。
+ */
+function sortKey(row, sortBy) {
+  const v = sortBy === 'efficiency' ? (row.efficiency_raw ?? row.efficiency) : row[sortBy]
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0
+}
 
 /**
  * L0 批量估算（纯函数，零依赖，可单测）
@@ -53,7 +71,10 @@ export function runL0Estimate(rawArgs, config = {}) {
   const { spec: args } = normalizeSpec(rawArgs)
   const paramsList = Array.isArray(args.params_list) ? args.params_list : []
   const sortBy = SORTABLE_FIELDS.includes(args.sort_by) ? args.sort_by : 'efficiency'
-  const topN = Number(args.top_n) > 0 ? Number(args.top_n) : null
+  // C 方案（根治 2000 行截断）：默认不再回吐全量，封顶 Top10；
+  // 显式 top_n:0 才取全量（Number(0) > 0 为 false ⇒ 走默认值 10，故「全量」改用下面的特殊分支）
+  const topN = Number(args.top_n) > 0 ? Number(args.top_n) : 10
+  const wantAll = Number(args.top_n) === 0
 
   const efficiencyCap = config.efficiencyCap ?? 96
   const maxTempClamp = config.tempRiseRange ?? [45, 130]
@@ -121,9 +142,11 @@ export function runL0Estimate(rawArgs, config = {}) {
       if (results.length === paramsList.length) {
         const elapsed = Date.now() - started
         const ascending = ASCENDING_FIELDS.has(sortBy)
-        results.sort((a, b) => (ascending ? a[sortBy] - b[sortBy] : b[sortBy] - a[sortBy]))
+        results.sort((a, b) => (ascending
+          ? sortKey(a, sortBy) - sortKey(b, sortBy)
+          : sortKey(b, sortBy) - sortKey(a, sortBy)))
 
-        const effectiveTopN = topN ?? results.length
+        const effectiveTopN = wantAll ? results.length : topN
         const topRows = results.slice(0, effectiveTopN)
 
         const handoff = buildHandoff(topRows, {
@@ -187,9 +210,11 @@ export function runL0Estimate(rawArgs, config = {}) {
   }
 
   const ascending = ASCENDING_FIELDS.has(sortBy)
-  results.sort((a, b) => (ascending ? a[sortBy] - b[sortBy] : b[sortBy] - a[sortBy]))
+  results.sort((a, b) => (ascending
+    ? sortKey(a, sortBy) - sortKey(b, sortBy)
+    : sortKey(b, sortBy) - sortKey(a, sortBy)))
 
-  const effectiveTopN = topN ?? results.length
+  const effectiveTopN = wantAll ? results.length : topN
   const topRows = results.slice(0, effectiveTopN)
 
   // TopN 交接载荷 —— v3 §10.1：L0 → L1
@@ -204,6 +229,14 @@ export function runL0Estimate(rawArgs, config = {}) {
   const feasibleCount = results.filter((r) => r.feasible === true).length
   const recommended = topRows.find((r) => r.feasible === true) ?? null
 
+  // v0.2.4：统计触顶比例并据实告知 —— efficiency 是「与 L1 同口径」的钳位显示值，
+  // 触顶时它不等于真值；排序已改用 efficiency_raw，但展示值仍为 efficiency。
+  const cappedCount = results.filter((r) => r.efficiency_capped === true).length
+  const efficiencyNote = cappedCount > 0
+    ? `本批 ${cappedCount}/${results.length} 行效率触顶被钳到 ${efficiencyCap}%（与 L1 同口径的显示值，非真值）；` +
+      `排序已按未钳位真值 efficiency_raw 进行，结果行内可直接读到。`
+    : undefined
+
   return {
     results: topRows,
     handoff,
@@ -214,8 +247,18 @@ export function runL0Estimate(rawArgs, config = {}) {
     returned: topRows.length,
     feasible_count: feasibleCount,
     recommended: recommended
-      ? { stator_od: recommended.params?.stator_od, poles: recommended.params?.poles, efficiency: recommended.efficiency, verdict: recommended.verdict }
+      ? {
+        stator_od: recommended.params?.stator_od,
+        poles: recommended.params?.poles,
+        efficiency: recommended.efficiency,
+        efficiency_raw: recommended.efficiency_raw,
+        efficiency_capped: recommended.efficiency_capped,
+        verdict: recommended.verdict,
+      }
       : null,
+    efficiency_cap: efficiencyCap,
+    efficiency_capped_count: cappedCount,
+    efficiency_note: efficiencyNote,
     sorted_by: sortBy,
     sort_order: ascending ? 'asc' : 'desc',
     l0_mode: config.l0Mode ?? 'formula',
@@ -243,6 +286,8 @@ export async function registerL0Estimate(ctx, config = {}) {
       '避免「看起来效率高」的假方案污染 TopN。\n' +
       '输出每项的效率、转矩、温升、总损耗、转矩密度，以及可直接被 L1 消费的镜像字段。\n' +
       '结果附 TopN 交接载荷（l1_handoff），用于把候选集交给 RMxprt 精算。\n' +
+      '⚠️ 输出默认封顶 Top10（top_n:0 才取全量）；广筛 120 行矩阵请勿直接用本工具回吐全量，\n' +
+      '优先用聚合工具 motor_l0_pipeline（内部跑完三步链，只回紧凑摘要 + 文件交接，绕开 DSH 2000 行截断）。\n' +
       '纯本地计算，不调用任何外部求解器。',
     parameters: TOOL_PARAMS,
     output: {

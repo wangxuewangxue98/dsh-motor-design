@@ -1,8 +1,8 @@
 {
   "plugin_id": "dsh-motor-ai-l0",
   "name": "电机AI辅助设计软件插件",
-  "version": "0.2.3",
-  "skill_version": "0.2.3",
+  "version": "0.2.4",
+  "skill_version": "0.2.4",
   "description": "电机AI辅助设计软件插件 · 覆盖电机设计全流程（需求解析 → 候选矩阵 → L0/L1/L2 解算 → Top10 校验）；L0 毫秒级广筛，纯 JS 零求解器依赖",
   "channel": "l0",
   "tier": "free",

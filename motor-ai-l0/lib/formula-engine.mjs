@@ -302,6 +302,13 @@ export function estimateTempRise({ statorOd, coreLength, cooling }, totalLossW) 
  * L1 仿真效率去噪克隆 —— motor_tools.py:750-752
  *   base_eff = 85 + (od-180)·0.04 + (poles-8)·1.2，Python 侧另有 ±1.5 噪声
  */
+/**
+ * 未封顶效率的物理硬上界（v0.2.4）
+ * 仅作数值保险：物理模型不可能算出 >100% 的效率，取 99.9 以防浮点/极端输入溢出。
+ * 注意与 efficiencyCap 的区别：cap 是「与 L1 同口径」的口径约定，此值是物理边界。
+ */
+const RAW_EFF_MAX = 99.9
+
 export function l1EfficiencyProxy({ statorOd, poles }, clampMax = SIM_EFF.clampMax) {
   const base =
     SIM_EFF.base +
@@ -384,6 +391,11 @@ export function quickL0Estimate(params, opts = {}) {
   const poleFactor = POLE_EFFICIENCY_FACTOR[poles] ?? 0.98
   const rawEff = efficiencyFromLosses(powerKw, totalLossW) * poleFactor
   const efficiency = round2(Math.min(efficiencyCap, Math.max(SIM_EFF.clampMin, rawEff)))
+  // v0.2.4：efficiencyCap 存在的意义是「与 L1 同口径」，不是物理真值。
+  // 大机座整批触顶时 efficiency 全被压成同一个数 ⇒ TopN 排序失去区分度（450kW 实测 10/10 触顶）。
+  // 故额外保留未封顶真值供排序使用，并打触顶标记，让调用方知道 efficiency 是"钳位显示值"。
+  const efficiencyRaw = round2(clamp(rawEff, SIM_EFF.clampMin, RAW_EFF_MAX))
+  const efficiencyCapped = rawEff > efficiencyCap + 1e-9
 
   // ---- 温升（物理通道，含液冷标定修正）----
   const tempRise = estimateTempRise({ statorOd, coreLength, cooling }, totalLossW)
@@ -409,6 +421,8 @@ export function quickL0Estimate(params, opts = {}) {
 
   const native = {
     efficiency,
+    efficiency_raw: efficiencyRaw,
+    efficiency_capped: efficiencyCapped,
     torque: round2(torque),
     temp_rise: tempRise,
     total_loss: totalLossW,

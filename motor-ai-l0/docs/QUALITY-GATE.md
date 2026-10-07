@@ -41,7 +41,9 @@ node scripts/regression.mjs --json              # 机器可读输出
 2. **铜损**：槽面积由几何推算，缺少「匝数 × 电流」的电路约束；槽满率 0.45 与电密 5.5 A/mm² 均为经验值
 3. **机械损**：`MECH_LOSS_K = 5` 未标定，仅保证量级正确
 4. **温升**：散热面积按**光滑**机座外表面积计，未计散热筋；`COOLING_COEFFICIENT` 为单点标定
-5. **效率封顶**：`efficiencyCap=96` 是为与 `_run_simulated` 同口径的权宜值，对高效高速机会低估
+5. **效率封顶**：`efficiencyCap=96` 是为与 `_run_simulated` 同口径的权宜值，对高效高速机会低估。
+   v0.2.4 起封顶只影响展示值 `efficiency`；**排序与 TopN 区分度改用未封顶真值 `efficiency_raw`**，
+   整批触顶时结果行会带 `efficiency_capped=true`、顶层带 `efficiency_note` 说明
 
 ---
 
@@ -78,6 +80,7 @@ node scripts/regression.mjs --json              # 机器可读输出
 
 - [ ] 用 RMxprt 批量结果做 native vs L1 回归，拟合 `kh/ke`、`MECH_LOSS_K`、`COOLING_COEFFICIENT`
 - [ ] 回归目标：标定域内 `|Δη| ≤ 2pt`、`|Δ温升| ≤ 10K`
+- [x] 校准前先解耦"封顶"与"排序"（v0.2.4 已完成）：cap 保持 96 维持 L1 同口径，排序改用 `efficiency_raw`
 - [ ] 校准完成后重新评估 `efficiencyCap` 是否需要放宽（当前 96 对高速高效机偏保守）
 
 ### 翻转判据

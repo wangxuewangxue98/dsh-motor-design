@@ -7,3 +7,7 @@ __pycache__/
 dist/
 metadata/
 *.tgz
+
+# 自检 / 运行期产物（motor_l0_pipeline write_handoff 落盘目录与测试残留）
+l0-handoff/
+.l0_handoff_test/

@@ -43,6 +43,7 @@ export const RULE_CATALOG = [
   { id: 'V12', name: '温升限值', severity: 'warning', needs: 'power_kw 或 torque_nm（+ 冷却方式）' },
   { id: 'V14', name: '反电势闭环', severity: 'failed', needs: 'voltage/speed/poles/stator_id/core_length/slots_stator/parallel_circuits/turns_per_coil' },
   { id: 'V15', name: '槽满率可行性', severity: 'failed', needs: 'stator_od/stator_id/slots_stator/poles/peak_current/turns_per_coil/parallel_circuits' },
+  { id: 'V16', name: '极数-转速同步一致性', severity: 'failed', needs: 'speed/poles' },
 ]
 
 /** 可在 config 中把严重度提升为 failed 的规则（默认 warning） */
@@ -424,6 +425,31 @@ export function validateDesign(row, opts = {}) {
     }
   } else {
     skipped.push('V15')
+  }
+
+  // ---- V16 极数-转速同步一致性（超同步拦截，P0 门禁）----
+  // 异步电动机额定转速必须低于同步转速 n_sync = 120·f_line/p（转差为正才能输出转矩）；
+  // 若 n_sync ≤ 额定转速 ⇒ 转差 ≤ 0（超同步），异步机无法作为电动机运行（只能作发电机/制动）。
+  // 同步机（PMSM/BLDC/IPM）无转差概念，本规则不适用，显式跳过。
+  // ⚠ 工频 f_line 按 IEC/中国 50Hz 假设；60Hz 电网需后续在 config 暴露 line_freq_hz。
+  if (speed !== null && poles !== null) {
+    const isPm = isPmsmType(row?.motor_type)
+    if (isPm) {
+      skipped.push('V16')
+    } else {
+      const LINE_FREQ_HZ = 50
+      const nSync = (120 * LINE_FREQ_HZ) / poles
+      metrics.sync_speed_rpm = round1(nSync)
+      if (nSync <= speed) {
+        // 推荐极数：满足 n_sync > 转速 的最大极数（取 floor 留 1e-6 余量避免同步边界=speed 误判）
+        const recommendedPole = Math.max(2, Math.floor((120 * LINE_FREQ_HZ) / speed - 1e-6) || 2)
+        fail('V16', `极数 ${poles} 与转速 ${speed}rpm 不同步：同步转速 ${round1(nSync)}rpm ≤ 额定转速，` +
+          `异步机转差≤0（超同步），无法作为电动机运行；该转速档应选 ${recommendedPole} 极` +
+          `（n_sync=${(120 * LINE_FREQ_HZ) / recommendedPole}rpm）`)
+      }
+    }
+  } else {
+    skipped.push('V16')
   }
 
   // ---- V13 每线圈匝数下限（附在 V06 组，不单独占号）----

@@ -225,7 +225,7 @@ Python 走 `Knowledge/y_series_physics.json` 查表；L0 要求零外部依赖�
 | `surrogateConfidenceThreshold` | `0.7` | 置信度低于此值自动降级到公式模式 |
 | `maxMatrixSize` | `2000` | 参数矩阵最大组合数 |
 | `topNPreview` | `20` | L0 结果预览返回的 TopN 数量 |
-| `efficiencyCap` | `96` | 效率封顶（对齐 `motor_tools.py:752`，避免 L0/L1 排序跳变） |
+| `efficiencyCap` | `96` | 效率封顶（对齐 `motor_tools.py:752`，避免 L0/L1 排序跳变）。⚠ v0.2.4 起它只作用于**展示值** `efficiency`；排序与区分度看 `efficiency_raw` |
 | `tempRiseRange` | `[45, 130]` | `max_temp` 钳位区间（**°C**）。⚠ 命名待议 —— 易被误读为 L0 温升（K），拟改 `maxTempClamp` |
 | `airGapFluxT` | `0.8` | 气隙磁密基准 T（齿 / 轭磁密反算输入），PMSM 典型 0.75~0.90 |
 | `insulationClass` | `'F'` | 绝缘等级，决定温升限值（B=80K / F=105K / H=125K） |

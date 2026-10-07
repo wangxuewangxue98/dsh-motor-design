@@ -17,7 +17,9 @@
  * @property {number} surrogateConfidenceThreshold  置信度低于此值降级到公式
  * @property {number} maxMatrixSize          参数矩阵最大组合数
  * @property {number} topNPreview            L0 结果预览 TopN
- * @property {number} efficiencyCap          效率封顶（对齐 _run_simulated L752）
+ * @property {number} efficiencyCap          效率封顶（对齐 _run_simulated L752）。
+ *                                            v0.2.4 起仅钳展示值 efficiency；
+ *                                            排序与区分度看未封顶真值 efficiency_raw
  * @property {[number, number]} tempRiseRange temp 钳位区间 (°C)，对齐 L1 max_temp；命名待议（拟改 maxTempClamp）
  * @property {boolean} [l1Enabled]           预留
  * @property {boolean} [l2Enabled]           预留

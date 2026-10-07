@@ -5,6 +5,25 @@
 
 版本三重一致性：`package.json.version` = `SKILL.md` 的 `metadata.version` = `CHANGELOG.md` 最新条目。
 
+## [0.2.4] - 2026-10-07 — 代理模型 v2.3.0-fixseg 部署 + GBR 残差校正启用
+
+### 🚀 代理模型升级：v2.2.0 → v2.3.0-fixseg
+- **特征空间扩展**：5 特征（含 `poles`），OD 三分位切段（small/medium/large × induction/pmsm）。
+- **模型锁定**：云端重训流水线锁定 `scikit-learn==1.9.1`（`numpy==2.5.0` / `scipy==1.18.1`），复现 G7 门禁（纯 numpy 回放 vs sklearn 重训 maxdiff < 1e-6）。
+- **校验**：`verify.mjs` 70/70 通过；代理模型版本断言 `2.3.0-fixseg`。
+
+### ✨ 新能力：GBR 残差校正（ridge_plus_gbr 第二阶段）
+- `lib/surrogate-engine.mjs` 新增 `predictGBR()`，消费模型每段 `gbr` 字段（400 树 / `lr=0.05`），对 ridge 基线做残差修正：`final = primary + gbr_residual`。
+- 单测新增 4 例（无 gbr 退化为 0、残差量级合理、预测携带 `used_gbr` / `gbr_residual_pp`），单测 18 → 22 全绿。
+- 置信度门控维持 ridge 通道口径（不放大降级），仅提升预测精度。
+
+### 🔧 工程
+- `tools/l0/pipeline.mjs` 聚合工具随包发布（一步跑完 `buildParamMatrix → runDesignValidate → runL0Estimate`，规避 DSH 2000 行截断）。
+- 版本三重一致性：package.json / SKILL.md metadata / CHANGELOG 同步至 0.2.4。
+
+### ⚠️ 不在本次发布范围
+- V16（极数-转速同步一致性校验）等规则层改动仍在开发中，未并入本版本，避免裹挟未经验证的变更。
+
 ## [0.2.3] - 2026-09-27 — 默认通道回归修复 + 对外物料（推广就绪）
 
 ### 🔴 P0 回归修复：`auto` 不再进入代理通道

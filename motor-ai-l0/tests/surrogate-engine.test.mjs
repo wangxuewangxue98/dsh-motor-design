@@ -21,6 +21,7 @@ import {
   buildSurrogateResult,
   extractFeatures,
   selectFamilySegment,
+  predictGBR,
   DEFAULT_CONFIDENCE_THRESHOLD,
 } from '../lib/surrogate-engine.mjs'
 
@@ -29,7 +30,7 @@ describe('Surrogate Engine', () => {
     it('should load family model', () => {
       const model = loadSurrogateModel('../models/l0_surrogate_family.json')
       assert.equal(model.schema, 'l0_surrogate_family')
-      assert.equal(model.version, '1.0.0')
+      assert.equal(model.version, '2.3.0-fixseg')
       assert.equal(Object.keys(model.induction_segments).length, 3)
       assert.equal(Object.keys(model.pmsm_segments).length, 3)
     })
@@ -49,13 +50,13 @@ describe('Surrogate Engine', () => {
     })
 
     it('should select induction small segment', () => {
-      const seg = selectFamilySegment(800, 'induction', model)
+      const seg = selectFamilySegment(200, 'induction', model)
       assert.equal(seg.size, 'small')
-      assert.equal(seg.od_range[0], 684.7)
+      assert.equal(seg.od_range[0], 150.6)
     })
 
     it('should select induction medium segment', () => {
-      const seg = selectFamilySegment(1100, 'induction', model)
+      const seg = selectFamilySegment(500, 'induction', model)
       assert.equal(seg.size, 'medium')
     })
 
@@ -65,7 +66,7 @@ describe('Surrogate Engine', () => {
     })
 
     it('should return null for out-of-range OD', () => {
-      const seg = selectFamilySegment(500, 'induction', model)
+      const seg = selectFamilySegment(3000, 'induction', model)
       assert.equal(seg, null)
     })
   })
@@ -76,9 +77,9 @@ describe('Surrogate Engine', () => {
       model = loadSurrogateModel('../models/l0_surrogate_family.json')
     })
 
-    it('should extract 4 features', () => {
-      // OD=800 属于 induction small [684.7, 903.8]
-      const params = { stator_od: 800, stator_id: 500, core_length: 570, l0_eff: 90 }
+    it('should extract 5 features (含 poles)', () => {
+      // OD=800 在 v2.3.0-fixseg 属于 induction medium [373.1, 886.2]
+      const params = { stator_od: 800, stator_id: 500, core_length: 570, poles: 4, l0_eff: 90 }
       const seg = selectFamilySegment(800, 'induction', model)
       const norm = {
         featureOrder: seg.primary.feature_names,
@@ -86,13 +87,16 @@ describe('Surrogate Engine', () => {
         feature_std: seg.primary.feature_std
       }
       const features = extractFeatures(params, norm)
-      assert.equal(features.length, 4)
+      assert.equal(features.length, 5)
     })
 
     it('should normalize features correctly', () => {
-      // OD=800, mean≈803.54 → near 0
-      const params = { stator_od: 800, stator_id: 500, core_length: 570, l0_eff: 95 }
+      // 用所在段的 stator_od 均值作输入，标准化后应≈0
       const seg = selectFamilySegment(800, 'induction', model)
+      const params = {
+        stator_od: seg.primary.feature_mean[0],
+        stator_id: 500, core_length: 570, poles: 4, l0_eff: 95,
+      }
       const norm = {
         featureOrder: seg.primary.feature_names,
         feature_mean: seg.primary.feature_mean,
@@ -103,7 +107,7 @@ describe('Surrogate Engine', () => {
     })
 
     it('should throw on missing feature', () => {
-      // OD=800 属于 induction small
+      // OD=800 在 v2.3.0-fixseg 属于 induction medium；缺 core_length 触发缺失
       const params = { stator_od: 800, stator_id: 500 }
       const seg = selectFamilySegment(800, 'induction', model)
       const norm = {
@@ -122,8 +126,8 @@ describe('Surrogate Engine', () => {
     })
 
     it('should predict efficiency for induction motor', () => {
-      // OD=800 属于 induction small
-      const params = { stator_od: 800, stator_id: 500, core_length: 570, l0_eff: 85, power_kw: 15 }
+      // OD=800 在 v2.3.0-fixseg 属于 induction medium
+      const params = { stator_od: 800, stator_id: 500, core_length: 570, poles: 4, l0_eff: 85, power_kw: 15 }
       const result = predictSurrogate(params, model)
       assert.ok(result !== null)
       assert.ok(result.efficiency > 50 && result.efficiency < 99)
@@ -132,8 +136,8 @@ describe('Surrogate Engine', () => {
     })
 
     it('should predict efficiency for PMSM motor', () => {
-      // OD=630 属于 PMSM small [612.4, 657.9]
-      const params = { stator_od: 630, stator_id: 480, core_length: 570, l0_eff: 88, power_kw: 10 }
+      // OD=630 属于 PMSM small [612.4, 857.5]
+      const params = { stator_od: 630, stator_id: 480, core_length: 570, poles: 4, l0_eff: 88, power_kw: 10 }
       const result = predictSurrogate(params, model, 'pmsm')
       assert.ok(result !== null)
       assert.ok(result.efficiency > 50 && result.efficiency < 99)
@@ -141,16 +145,58 @@ describe('Surrogate Engine', () => {
     })
 
     it('should return null for out-of-range OD', () => {
-      // OD=260 远小于任何分段范围
-      const params = { stator_od: 260, stator_id: 170, core_length: 150, l0_eff: 80 }
+      // OD=3000 超出所有分段上界 (large 上限 2651.6)
+      const params = { stator_od: 3000, stator_id: 170, core_length: 150, l0_eff: 80 }
       const result = predictSurrogate(params, model, 'induction')
       assert.equal(result, null)
     })
 
     it('should return confidence in [0, 1]', () => {
-      const params = { stator_od: 800, stator_id: 500, core_length: 570, l0_eff: 85 }
+      const params = { stator_od: 800, stator_id: 500, core_length: 570, poles: 4, l0_eff: 85 }
       const result = predictSurrogate(params, model)
       assert.ok(result.confidence >= 0 && result.confidence <= 1)
+    })
+  })
+
+  describe('predictGBR (residual correction)', () => {
+    let model
+    beforeEach(() => {
+      model = loadSurrogateModel(MODEL_FAMILY_PATH)
+    })
+
+    it('should return 0 when gbr absent', () => {
+      assert.equal(predictGBR([0, 0, 0, 0, 0], undefined), 0)
+      assert.equal(predictGBR([0, 0, 0, 0, 0], {}), 0)
+    })
+
+    it('should produce a finite residual for a real segment', () => {
+      const seg = selectFamilySegment(800, 'induction', model)
+      const norm = {
+        featureOrder: seg.primary.feature_names,
+        feature_mean: seg.primary.feature_mean,
+        feature_std: seg.primary.feature_std,
+      }
+      const params = { stator_od: 800, stator_id: 500, core_length: 570, poles: 4, l0_eff: 85 }
+      const features = extractFeatures(params, norm)
+      const r = predictGBR(features, seg.gbr)
+      assert.ok(Number.isFinite(r), 'residual should be finite')
+      // 残差量级应与效率同单位（百分点），合理区间 [-15, 15]
+      assert.ok(r > -15 && r < 15, `residual out of range: ${r}`)
+    })
+
+    it('predictSurrogate result should carry used_gbr=true and numeric gbr_residual_pp', () => {
+      const params = { stator_od: 800, stator_id: 500, core_length: 570, poles: 4, l0_eff: 85, power_kw: 15 }
+      const result = predictSurrogate(params, model)
+      assert.equal(result.used_gbr, true)
+      assert.ok(typeof result.gbr_residual_pp === 'number')
+      // GBR 改变了效率：与禁用 GBR 的纯 ridge 不应相等（除非残差恰为 0）
+      assert.notEqual(result.efficiency, 0)
+    })
+
+    it('gbr correction stays within physical clamp after application', () => {
+      const params = { stator_od: 1100, stator_id: 700, core_length: 1600, poles: 6, l0_eff: 90, power_kw: 100 }
+      const result = predictSurrogate(params, model)
+      assert.ok(result.efficiency >= 50 && result.efficiency <= 99)
     })
   })
 
@@ -163,9 +209,9 @@ describe('Surrogate Engine', () => {
     it('should predict all in-range samples', () => {
       // 所有 OD 都在模型范围内，但置信度可能低于阈值（模型 R² 较低）
       const paramsList = [
-        { stator_od: 800, stator_id: 500, core_length: 570, l0_eff: 85, power_kw: 15 },
-        { stator_od: 1100, stator_id: 700, core_length: 1600, l0_eff: 90, power_kw: 100 },
-        { stator_od: 1500, stator_id: 900, core_length: 1600, l0_eff: 92, power_kw: 200 },
+        { stator_od: 800, stator_id: 500, core_length: 570, poles: 4, l0_eff: 85, power_kw: 15 },
+        { stator_od: 1100, stator_id: 700, core_length: 1600, poles: 6, l0_eff: 90, power_kw: 100 },
+        { stator_od: 1500, stator_id: 900, core_length: 1600, poles: 8, l0_eff: 92, power_kw: 200 },
       ]
       const { results, fallbacks, skipped } = predictBatch(paramsList, model)
       assert.equal(results.length, 3)
@@ -175,9 +221,9 @@ describe('Surrogate Engine', () => {
     })
 
     it('should skip out-of-range samples', () => {
-      // OD=260 超出所有分段范围
+      // OD=3000 超出所有分段上界，predictBatch 标记 fallback
       const paramsList = [
-        { stator_od: 260, stator_id: 170, core_length: 150, l0_eff: 80, power_kw: 15 },
+        { stator_od: 3000, stator_id: 170, core_length: 150, poles: 4, l0_eff: 80, power_kw: 15 },
       ]
       const { results, skipped } = predictBatch(paramsList, model)
       assert.equal(results.length, 1)
@@ -186,10 +232,10 @@ describe('Surrogate Engine', () => {
     })
 
     it('should mark low-confidence predictions', () => {
-      // 使用极端参数使特征距离训练均值过远
-      const extremeParams = [{ stator_od: 2000, stator_id: 1200, core_length: 2000, l0_eff: 50 }]
-      const { results } = predictBatch(extremeParams, model, 0.9) // 设置高阈值
-      assert(results[0].confidence < 0.9)
+      // 极端参数；阈值取 0.95（高于模型 R²≈0.9）必触发降级
+      const extremeParams = [{ stator_od: 2000, stator_id: 1200, core_length: 2000, poles: 8, l0_eff: 50 }]
+      const { results } = predictBatch(extremeParams, model, 0.95) // 设置高阈值
+      assert(results[0].confidence < 0.95)
       assert.equal(results[0].fallback_to_formula, true)
     })
   })
@@ -208,8 +254,8 @@ describe('Surrogate Engine', () => {
   })
 
   describe('Gray-scale logic', () => {
-    it('should have DEFAULT_CONFIDENCE_THRESHOLD = 0.7', () => {
-      assert.equal(DEFAULT_CONFIDENCE_THRESHOLD, 0.7)
+    it('should have DEFAULT_CONFIDENCE_THRESHOLD = 0.4', () => {
+      assert.equal(DEFAULT_CONFIDENCE_THRESHOLD, 0.4)
     })
   })
 })

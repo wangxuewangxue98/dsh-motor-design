@@ -136,7 +136,9 @@ export const PARAM_SCHEMA = {
 
 /** L0 原生字段 —— 物理损耗通道的独立产出 + v0.1.6 可追溯诊断字段 */
 export const L0_NATIVE_FIELDS = [
-  'efficiency',       // %   物理损耗模型推算
+  'efficiency',       // %   物理损耗模型推算（按 efficiencyCap 封顶，与 L1 同口径）
+  'efficiency_raw',   // %   未封顶真实值（v0.2.4）—— 排序用，避免封顶压平区分度
+  'efficiency_capped',// bool 是否触顶被封（v0.2.4）—— 触顶时 efficiency 非真值
   'torque',           // Nm  9550·P/n
   'temp_rise',        // K   热负荷法温升（注意：与 max_temp 的 °C 口径不同）
   'total_loss',       // W   铜损+铁损+机械损

@@ -54,7 +54,7 @@ export const TOOL_PARAMS = {
     type: 'string',
     description: `冷却方式，默认 forced_air。合法值: ${COOLING_ALLOWED.join('/')}`,
   },
-  stator_od_limit: { type: 'number', description: '定子外径上限 (mm)，默认 450' },
+  stator_od_limit: { type: 'number', description: '定子外径上限 (mm)。缺省时按基准尺寸自伸缩（≈扫描空间上界×1.05，向上取整到 50mm），保证默认路径不被夹紧；显式传入（机座号 / 隔爆外壳等硬约束）则严格尊重，夹紧时会回吐 warning' },
   base_diameter: { type: 'number', description: '基准内径中心 (mm)，覆盖经验估算' },
   base_length: { type: 'number', description: '基准铁心长度中心 (mm)' },
   count: { type: 'number', description: '目标方案数，默认 20' },
@@ -93,6 +93,32 @@ function linspace(lo, hi, n) {
  * @param {object} [config] 插件配置：{ maxMatrixSize, topNPreview }
  * @returns {{matrix: object[], total: number, returned: number, truncated: boolean, spec: object, applied: string[]}}
  */
+/**
+ * 外径上限默认值：跟随本插件自身的基准尺寸自伸缩（v0.2.4）
+ *
+ * 外径是自下而上推出来的（内径 d ÷ 内外径比），不是查表来的，
+ * 所以上限也必须由同一套基准推出来，否则就会像写死的 450mm 那样
+ * 在大机座上把整批候选夹死。
+ *
+ * 取值：扫描空间自身上界（最大内径 ÷ 最小内外径比）× 1.05 余量，向上取整到 50mm。
+ * ⇒ 默认路径恒不夹紧；用户显式传值则完全不参与计算。
+ *
+ * @param {number} baseD 基准内径 (mm)
+ * @param {number} scanRange 扫描半幅（如 0.15）
+ * @param {number[]} poleList 极数候选
+ * @param {(pole:number)=>number} ratioOf 内外径比函数
+ * @returns {number} 建议外径上限 (mm)
+ */
+export function defaultOdLimit(baseD, scanRange, poleList, ratioOf) {
+  let need = 0
+  for (const pole of poleList) {
+    const od = (baseD * (1 + scanRange)) / ratioOf(pole)
+    if (Number.isFinite(od) && od > need) need = od
+  }
+  if (!Number.isFinite(need) || need <= 0) return 450 // 兜底：退化输入沿用旧值
+  return Math.ceil((need * 1.05) / 50) * 50
+}
+
 export function buildParamMatrix(rawSpec, config = {}) {
   const { spec, applied } = normalizeSpec(rawSpec)
   const maxMatrixSize = config.maxMatrixSize ?? 2000
@@ -110,7 +136,7 @@ export function buildParamMatrix(rawSpec, config = {}) {
   const poles = spec.poles ?? recommendPoles(speedRpm)
   const torqueNm = spec.torque_nm ?? computeTorque(powerKw, speedRpm)
   const cooling = COOLING_ALLOWED.includes(spec.cooling) ? spec.cooling : 'forced_air'
-  const odLimit = spec.stator_od_limit ?? 450
+  // 外径上限见下方 dSteps/lSteps 之后 —— 默认值需依赖基准尺寸与极数表，无法在此定出
   const count = Math.min(maxMatrixSize, Math.max(1, Math.floor(spec.count ?? 20)))
 
   // ---- PMSM 口径开关（P0，0.1.4）----
@@ -133,6 +159,19 @@ export function buildParamMatrix(rawSpec, config = {}) {
 
   const dSteps = linspace(baseD * (1 - scanRange), baseD * (1 + scanRange), axis)
   const lSteps = linspace(baseL * (1 - scanRange), baseL * (1 + scanRange), axis)
+
+  // ---- 外径上限（v0.2.4：默认值自伸缩，不再写死 450）----
+  // 旧默认 450mm 与功率完全脱钩，而 OD 是自下而上由基准尺寸推出来的：
+  //   450kW/690V 需要 OD≈703mm，整批被夹到 450 → 槽面积骤减 → V15 槽满率全灭，
+  //   表现为「物理不可行」，实为参数夹紧；75kW 需 OD≈610mm，被夹 65% 却仍剩可行解，
+  //   Top1 极数被从 4 极压成 6 极，异常被静默吞掉。
+  // 新默认值 = 扫描空间自身上界 ×1.05 向上取整到 50mm ⇒ 默认路径永不夹紧。
+  // 显式传入（机座号 / 隔爆外壳）严格尊重，并在夹紧时回吐 warning。
+  const odLimitExplicit = Number.isFinite(Number(spec.stator_od_limit)) && spec.stator_od_limit != null
+    ? Number(spec.stator_od_limit)
+    : null
+  const odLimitNeeded = defaultOdLimit(baseD, scanRange, poleList, ratioOf)
+  const odLimit = odLimitExplicit ?? odLimitNeeded
 
   const matrix = []
   const seenKeys = new Set()
@@ -269,7 +308,38 @@ export function buildParamMatrix(rawSpec, config = {}) {
     }
   }
 
+  // ---- 夹紧告警（v0.2.4）----
+  // 夹紧本身不报错：用户给的硬约束必须在限制内给出方案；但「夹紧了多少、本该多大」
+  // 必须让调用方看见 —— 否则会像 450kW 那样把参数夹紧误读成物理不可行。
+  const clampedRows = returned.filter((r) => r._physics?.od_clamped).length
+  const warnings = []
+  const odLimitMeta = {
+    value: odLimit,
+    source: odLimitExplicit != null ? 'user' : 'auto',
+    scan_space_max_od: round1(odLimitNeeded / 1.05),
+    suggested: odLimitNeeded,
+  }
+  if (clampedRows > 0) {
+    warnings.push({
+      code: 'OD_LIMIT_CLAMPED',
+      level: 'warning',
+      clamped_rows: clampedRows,
+      total_rows: returned.length,
+      od_limit: odLimit,
+      needed_od: odLimitMeta.scan_space_max_od,
+      suggested_od_limit: odLimitNeeded,
+      message:
+        `${clampedRows}/${returned.length} 行的定子外径被 stator_od_limit=${odLimit}mm 夹紧` +
+        `（扫描空间最大需 ${odLimitMeta.scan_space_max_od}mm）。` +
+        `夹紧会压缩槽面积，可能触发 V15 槽满率批量判废、并把最优解的极数压错，` +
+        `使本可行的机座表现为「0 可行」。建议放开 stator_od_limit 至 ${odLimitNeeded}mm，` +
+        `或省略该参数走默认自伸缩上限。`,
+    })
+  }
+
   return {
+    warnings,
+    od_limit: odLimitMeta,
     matrix: returned,
     total: matrix.length,
     returned: returned.length,
@@ -327,4 +397,4 @@ export async function registerParamMatrix(ctx, config = {}) {
   }))
 }
 
-export default { buildParamMatrix, registerParamMatrix, TOOL_PARAMS, recommendPoles, poleCandidates }
+export default { buildParamMatrix, registerParamMatrix, TOOL_PARAMS, recommendPoles, poleCandidates, defaultOdLimit }
