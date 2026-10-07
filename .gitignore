@@ -63,3 +63,6 @@ instance/
 *.7z
 *.rar
 Releases/
+
+# 1.4GB 运行期大文件，禁止入仓（2026-10-07 已从历史移除）
+Scripts/control_map.json
