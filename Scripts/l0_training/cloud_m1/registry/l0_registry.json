@@ -1,0 +1,15 @@
+{
+ "schema": "l0_model_registry",
+ "current": "3.1.0-fixseg",
+ "versions": {
+  "3.1.0-fixseg": {
+   "model": "D:\\MotorDesign\\Scripts\\l0_training\\cloud_m1\\03_M1产物\\l0_surrogate_family_v3.json",
+   "registered_at": "2026-10-07T09:09:46Z",
+   "metrics": "D:\\MotorDesign\\Scripts\\l0_training\\cloud_m1\\03_M1产物\\metrics_retrain.json",
+   "gate": "D:\\MotorDesign\\Scripts\\l0_training\\cloud_m1\\03_M1产物\\gate_report_cloudauthority_20261007.json",
+   "notes": "sklearn 1.9.1 锁定重训(方案B); G7 maxdiff=7.8e-9; 门禁 7/7 PASS; 覆盖原云端 da8627cb(缺版本锁)",
+   "is_current": false,
+   "gates_passed": "7/7"
+  }
+ }
+}

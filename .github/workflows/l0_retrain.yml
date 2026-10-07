@@ -1,0 +1,105 @@
+# .github/workflows/l0_retrain.yml
+# ============================================================================
+# L0 代理模型云端重训 CI（M1 流水线 + M2 注册表/门禁）
+# §10 决策：云载体 = GitHub Actions；触发节奏 = 定时(每月1日) + 手动(workflow_dispatch)
+#
+# 运行机理：
+#   1. 训练数据 = 仓库内已提交的快照
+#      Scripts/l0_training/cloud_m1/00_输入数据/l0_residuals_snapshot_full.jsonl
+#      （本地刷新快照需本机跑 `extract_l0_residuals.py --full` 后提交该文件；
+#        CI runner 无 sqlite DB，故 workflow 不传 --full，直接用已提交快照训练）
+#   2. 门禁 G1–G7 不通过 → 流水线非零退出 → 本 job 失败 → 阻断发布（保留上一版）
+#   3. 成功后把新模型 / 门禁报告 / 注册表提交回仓库，使仓库成为模型真源
+#   4. 路径通过环境变量注入（L0_SNAPSHOT / L0_BASELINE / L0_PYTHON），
+#      用 github.workspace 拼绝对路径（train 子进程 cwd 为 02_脚本，必须绝对），
+#      本机 Windows 默认值不变（见 common_real.py / retrain_pipeline.py）
+# ============================================================================
+name: L0 Surrogate Retrain
+
+on:
+  # —— 触发节奏（两者）：定时 + 手动 ——
+  schedule:
+    # 每月 1 日 18:00 UTC 定时重训（按需调整 cron）
+    - cron: "0 18 1 * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "登记用的模型版本号（留空则默认 3.1.0-auto）"
+        required: false
+        default: "3.1.0-auto"
+      notes:
+        description: "登记备注"
+        required: false
+        default: "GitHub Actions 定时/手动重训"
+
+# 提交模型/注册表回仓库需要写权限
+permissions:
+  contents: write
+
+# 避免重叠重训（定时与手动同时触发时串行）
+concurrency:
+  group: l0-retrain
+  cancel-in-progress: false
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      # CI 用 github.workspace 拼绝对路径，覆盖本机 Windows 绝对路径
+      # （train 子进程 cwd=02_脚本，相对路径会错位，故必须绝对）
+      L0_SNAPSHOT: ${{ github.workspace }}/Scripts/l0_training/cloud_m1/00_输入数据/l0_residuals_snapshot_full.jsonl
+      L0_BASELINE: ${{ github.workspace }}/Scripts/l0_training/cloud_m1/00_输入数据/l0_surrogate_family_baseline.json
+      L0_PYTHON: python3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies (锁定 sklearn==1.9.1)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r Scripts/l0_training/cloud_m1/requirements.txt
+
+      - name: Run retrain pipeline (train → gate G1–G7 → register)
+        id: pipeline
+        run: |
+          python Scripts/l0_training/cloud_m1/retrain_pipeline.py \
+            --version "${{ github.event.inputs.version || '3.1.0-auto' }}" \
+            --notes  "${{ github.event.inputs.notes  || 'GitHub Actions 定时/手动重训' }}"
+          # 注：不传 --full（CI 无 DB）；如需刷新数据请本机抽取后提交快照
+
+      - name: Upload artifacts (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: l0-retrain-${{ github.run_id }}
+          path: |
+            Scripts/l0_training/cloud_m1/03_M1产物/l0_surrogate_family_v3.json
+            Scripts/l0_training/cloud_m1/03_M1产物/gate_report.json
+            Scripts/l0_training/cloud_m1/03_M1产物/metrics_retrain.json
+            Scripts/l0_training/cloud_m1/registry/l0_registry.json
+          retention-days: 30
+
+      - name: Commit model & registry back to repo (on success)
+        if: success()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add \
+            Scripts/l0_training/cloud_m1/03_M1产物/l0_surrogate_family_v3.json \
+            Scripts/l0_training/cloud_m1/03_M1产物/gate_report.json \
+            Scripts/l0_training/cloud_m1/03_M1产物/metrics_retrain.json \
+            Scripts/l0_training/cloud_m1/registry/l0_registry.json
+          if git diff --cached --quiet; then
+            echo "无变更，跳过提交"
+          else
+            git commit -m "chore(l0): retrain ${{ github.event.inputs.version || '3.1.0-auto' }} via CI"
+            git push
+          fi
