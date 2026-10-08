@@ -18,7 +18,7 @@ dsh-motor-ai-l0/
 │   ├── motor-constants.mjs          # 常量（构建期由 knowledge-sync 生成，勿手改）
 │   ├── formula-engine.mjs           # 经验公式引擎（零依赖、确定性）
 │   ├── surrogate-engine.mjs         # 代理模型引擎（formula / surrogate / auto 三档 + 置信度门控）
-│   ├── design-rules.mjs             # 12 条物理一致性规则（纯函数）
+│   ├── design-rules.mjs             # 17 条物理一致性规则（纯函数）
 │   ├── usage-log.mjs                # 本地用量日志（零依赖 JSONL，静默降级，不注入 DSH 服务）
 │   └── regression-gate.mjs          # 物理边界门 + 回归门
 ├── tools/l0/
@@ -105,24 +105,30 @@ dsh-motor-ai-l0/
 
 ---
 
-## 三、12 条物理一致性校验规则（V01~V12）
+## 三、17 条物理一致性校验规则（V01~V12、V14~V18）
 
-实现在 `lib/design-rules.mjs` 的 `RULE_CATALOG`。
+实现在 `lib/design-rules.mjs` 的 `RULE_CATALOG`（V13 已并入 V06）。
+下表按代码真值生成 —— **V08 自 v0.1.7 起是硬门禁 `failed`**，早期文档记为 warning 的表述已作废。
 
 | 规则 | 内容 | 默认严重度 |
 |---|---|---|
 | V01 | 几何链自洽（OD>ID>转子径>轴径） | failed |
-| V02 | 气隙边界 + 转子外径一致性 | failed |
-| V03 | 定子内外径比 vs `idRatio(poles)` | warning |
+| V02 | 气隙与转子外径一致 | failed |
+| V03 | 定子内外径比 | warning |
 | V04 | 长径比 λ | warning |
-| V05 | 极槽配合 + 每极每相槽数 q + 定转子槽数差 | warning |
-| V06 | 并联支路数整除极数、a ≤ q（Qs/(3p)，整数槽）、匝数下限 | failed |
-| V07 | 齿部磁密 vs 目标 1.02T | warning |
-| V08 | 轭部磁密 vs 目标 0.82T | warning |
-| V09 | 槽形几何（槽宽>0、宽深比） | failed |
-| V10 | 电频率（>400Hz 提示、>1200Hz 越界） | warning |
-| V11 | 转子轭最小厚度 | failed |
-| V12 | 温升 vs 绝缘等级限值 | warning（模型未标定） |
+| V05 | 极槽配合 | warning |
+| V06 | 极数合法性与并联支路整除 | failed |
+| V07 | 齿部磁密 | warning |
+| V08 | 轭部磁密 | **failed** |
+| V09 | 槽形几何 | failed |
+| V10 | 电频率 | warning |
+| V11 | 转子轭厚度 | failed |
+| V12 | 温升限值 | warning |
+| V14 | 反电势自洽性 | failed |
+| V15 | 槽满率可行性 | failed |
+| V16 | 极数-转速同步一致性（频率可配置） | failed |
+| V17 | 匝数整量化可行性 | failed |
+| V18 | 电源频率合法性 | failed |
 
 `escalate` 可把任一条软规则临时提升为 `failed`（如 `['V12']`）。
 缺必要输入时规则记入 `skipped`，**绝不静默通过**。

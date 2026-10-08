@@ -118,6 +118,34 @@ export function isPmsmType(motorType) {
   return PMSM_TYPES.has(String(motorType).toLowerCase())
 }
 
+/** 异步机别名集（与 PMSM_TYPES 对偶）。'async' 此前不在任何别名表里，
+ *  会导致 detectMotorType 落入 OD 启发式静默误判 —— 0.2.6 P0 补齐。 */
+export const INDUCTION_TYPES = new Set([
+  'induction', 'async', 'im',
+  '异步电动机', '异步电机', '异步', '三相异步电动机', '三相异步电机', '感应电动机',
+])
+
+/**
+ * 规范化电机类型（0.2.6 P0）：显式别名 → 'pmsm' | 'induction'；
+ * 缺省/无法识别 → 'induction' 并标 assumed。
+ * 依据：生成路径（buildParamMatrix）对缺省 motor_type 一律按 induction 几何产行
+ * （usePm = isPmsmType(undefined) = false），推理路径必须与生成同默认，
+ * 否则出现「生成按异步、推理按 OD<400 误判 pmsm」的口径分裂 —— 即 10 万案例压测
+ * 定位的 P0：OD<612.4mm 中小型异步机代理通道静默 skipped 19.8%。
+ * @param {string|undefined} motorType 用户输入
+ * @returns {{ type: 'pmsm'|'induction', assumed: boolean, unrecognized: boolean }}
+ */
+export function resolveMotorType(motorType) {
+  if (motorType == null || motorType === '') {
+    return { type: 'induction', assumed: true, unrecognized: false }
+  }
+  const s = String(motorType).toLowerCase()
+  if (PMSM_TYPES.has(s)) return { type: 'pmsm', assumed: false, unrecognized: false }
+  if (INDUCTION_TYPES.has(s)) return { type: 'induction', assumed: false, unrecognized: false }
+  // 显式给了但不认识 —— 按 induction 处理（与生成路径一致），但要让人看见
+  return { type: 'induction', assumed: false, unrecognized: true }
+}
+
 /** 类比模式的 OD 估算比 —— physics_kernel.py:532 (base_od = base_d / 0.60) */
 export const ANALOGY_OD_RATIO = 0.60
 
@@ -240,8 +268,45 @@ export const POLE_EFFICIENCY_FACTOR = {
   1: 1.005, 2: 1.0, 4: 0.995, 6: 0.99, 8: 0.985, 10: 0.98, 12: 0.975,
 }
 
-/** 铁损 Steinmetz 简化系数 */
-export const STEINMETZ = { kh: 0.02, ke: 0.0001, alpha: 1.6, fluxDensity: 1.2 }
+/** 铁损 Steinmetz 简化系数（v3 变频标定 2026-10-08 写回）。
+ *  依据：变频扫参 21 点（f 24~195Hz 8×、B_eff 0.18~1.45T 7.9×），NNLS 内点解
+ *  kh=3.9398e-2 / ke=1.3322e-4，R²=0.9896 / MAPE 15.9%。
+ *  v2 旧值（kh=0.02/ke=0.0001）因样本 f 恒 ≈49Hz 双基共线不可辨识（R²=0.559）。
+ *  B 口径：B_eff=(Bt+By)/2 真值口径，与 formula-engine 生产链一致。 */
+export const STEINMETZ = { kh: 0.039398, ke: 0.00013322, alpha: 1.6, fluxDensity: 1.2 }
+
+/** 铜耗分档系数（v3 标定 2026-10-08，按额定功率查档）。
+ *  依据：控制变量扫参（固定几何只扫匝数）三档实测——
+ *    small(15kW)  k=0.2629 R²=0.9727 n=12
+ *    medium(75kW) k=0.3949 R²=0.9700 n=12
+ *    large(450kW) k=1.0039 R²=0.9168 n=8
+ *  单系数 R² 仅 0.854/MAPE 168%，分档后整体 R²=0.9185/MAPE 26.2%。
+ *  ⚠ 分档边界（30/100kW）基于本次三档样本划定，向未采样机座外插需复验。
+ *  口径说明：k 修正的是「公式+输入口径」总偏差（标定用 RMxprt 真值 I/N，
+ *  生产用电气闭环反推 I/N），故必须与 deriveElectricalClosure 同路径使用。 */
+export const COPPER_LOSS_K = {
+  small: 0.2629,   // ≤30kW
+  medium: 0.3949,  // 30~100kW
+  large: 1.0039,   // >100kW
+}
+
+/** 铜耗分档边界（kW），与 COPPER_LOSS_K 同一真源 */
+export const COPPER_K_BINS = [
+  { name: 'small', maxKw: 30 },
+  { name: 'medium', maxKw: 100 },
+  { name: 'large', maxKw: Infinity },
+]
+
+/** 机械耗+杂散损耗按输出功率分档比例（v3 标定 2026-10-08）。
+ *  RMxprt 真值 mech_real(=total−cu−fe) 跨档实测 ≈ 3.0%/2.2%/2.0% × P_out，
+ *  与「杂散损耗按输出功率百分比」的工程惯例一致（GB/T 标准杂散损耗上限 2.5%/2.0%/1.5%+，
+ *  实测值含风摩后偏高属合理）。原风摩公式 MECH_LOSS_K 低估 −87%（60W vs 真值 453W @15kW），
+ *  是 L0 效率偏乐观 ~4pt 的主因，故按功率分档比例替代。标定证据：scripts/calibrate_losses_v3.mjs。 */
+export const MECH_STRAY_RATIO = {
+  small: 0.030,   // ≤30kW
+  medium: 0.022,  // 30~100kW
+  large: 0.020,   // >100kW
+}
 
 /** 电密取值基准 A/mm²（L1 侧 random.uniform(3.5, 7.5)）。
  *  ⚠ 仅作为「未提供真实电流时」的回退电密；正常路径由 deriveElectricalClosure
@@ -298,6 +363,43 @@ export const INSULATION_LIMITS = { B: 80, F: 105, H: 125 }
 
 /** 缺省按 F 级考核（工业变频电机主流） */
 export const DEFAULT_INSULATION_CLASS = 'F'
+
+/**
+ * 电源频率 (Hz) —— 同步转速 n_sync = 120·f/p 的自变量
+ * ---------------------------------------------------------------------------
+ * v0.2.5 新增。此前 V16 把 50Hz 硬编码在规则体内，导致 60Hz 电网 / VFD 变频工况
+ * 全被误判为「超同步」——实测 4 极机在 1500rpm 处形成断崖（120×50/4=1500），
+ * 而该转速在 60Hz 下是 6 极机的正常同步点。即断崖本身是判据错误而非物理事实。
+ * 缺省 50Hz 保持 IEC/中国工频口径不变（向后兼容）；60Hz 电网与变频工况经
+ * config `line_freq_hz` 或行内 `line_freq_hz` 字段覆盖。
+ */
+export const DEFAULT_LINE_FREQ_HZ = 50
+
+/**
+ * 电源频率合法区间 (Hz)
+ * 下限 20Hz：低于此值 n_sync 极低，常规电机已无法在额定转速附近工作（判据可信度不足）。
+ * 上限 400Hz：电频率判据 FREQ_LIMITS.fail=1200 更宽松，此处仅拦明显越界的输入笔误/乱填。
+ */
+export const LINE_FREQ_MIN_HZ = 20
+export const LINE_FREQ_MAX_HZ = 400
+
+/**
+ * 电源频率解析：行内字段优先于 opts（工具参数），缺省 50Hz。
+ * 非法值一律回落缺省并由调用方决定是否告警（此处不做 warn，避免污染 issues 语义）。
+ * @param {object} row 参数行（可选携带 line_freq_hz）
+ * @param {object} [opts] 工具参数（lineFreqHz）
+ * @returns {number} 频率 Hz
+ */
+export function resolveLineFreqHz(row, opts = {}) {
+  const cand = [row?.line_freq_hz, opts.lineFreqHz]
+  for (const v of cand) {
+    if (typeof v === 'number' && Number.isFinite(v)
+      && v >= LINE_FREQ_MIN_HZ && v <= LINE_FREQ_MAX_HZ) {
+      return v
+    }
+  }
+  return DEFAULT_LINE_FREQ_HZ
+}
 
 /**
  * P3 高速气隙档：常规机气隙上限 AIR_GAP_MAX=1.5mm 不适用于高速工况。
@@ -360,11 +462,86 @@ export function toothWidth(statorId, slotsStator) {
   return round2((Math.PI * statorId) / (2 * slotsStator))
 }
 
-/** 轭厚 —— physics_kernel.py:601-602 */
+/**
+ * 轭厚（比例式）—— physics_kernel.py:601-602
+ * ⚠ v0.2.5 订正：本式**无任何磁密约束**，恒等于 half×0.40。
+ *   高速大 Dsi 工况下它只给 12.7~17.6mm 轭厚，而 By≤1.9T 需要 21.9~48.4mm，
+ *   缺口 7.7~30.8mm ⇒ V08 必然判饱和（实测 200kW/22000rpm PMSM By=5.28T）。
+ *   本函数**保留原样**以维持既有调用方（L1 载荷/回退路径）行为不变，
+ *   新的按磁密反解口径见 yokeThicknessForFlux()，矩阵生成走新函数。
+ */
 export function yokeThickness(statorOd, statorId) {
   const half = (statorOd - statorId) / 2
   const slotDepth = round1(half * 0.60)
   return round1(half - slotDepth)
+}
+
+/**
+ * 轭厚（按磁密需求反解）—— v0.2.5 新增，对应改进方案 P0
+ * ---------------------------------------------------------------------------
+ * 推导：轭部磁密 By = Bg·Dsi / (p·yoke·k_stack)  ⇒  反解所需轭厚
+ *       yoke_required = Bg·Dsi / (p·By_target·k_stack)
+ *
+ * 为什么要改：原比例式（half×0.40）在高速大 Dsi 下给出物理上不可实现的轭厚，
+ *   使 V08 把**全部**候选判死。V08 判据本身是正确的，缺的是「生成端按磁密配厚」。
+ *
+ * @param {object} p
+ * @param {number} p.statorId    定子内径 mm
+ * @param {number} p.poles       极数
+ * @param {number} [p.airGapFlux] 气隙磁密 T，缺省 AIR_GAP_FLUX_DEFAULT
+ * @param {number} [p.targetBy]  目标轭磁密 T，缺省 B_YOKE_WARN_T（留 0.4T 裕度）
+ * @returns {number} 所需轭厚 mm（向上取整到 0.1mm）
+ */
+export function yokeThicknessForFlux({
+  statorId, poles, airGapFlux = AIR_GAP_FLUX_DEFAULT, targetBy = B_YOKE_WARN_T,
+}) {
+  if (!(statorId > 0) || !(poles > 0) || !(targetBy > 0)) return null
+  const required = (airGapFlux * statorId) / (poles * targetBy * STACKING_FACTOR)
+  return round1(required)
+}
+
+/**
+ * 矩阵用轭厚/外径求解 —— v0.2.5 新增（改进方案 P0 的实际落点）
+ * ---------------------------------------------------------------------------
+ * 在比例式基础上取「比例值」与「磁密需求值」的较大者，并在轭厚被放大时
+ * **同步放大定子外径**（轭厚只能从 Dsi 与 OD 之间的环带里出）。
+ *
+ * ⚠ 放大 OD 意味着本行不再是「用户请求的那个机座」，故返回 grown 标记，
+ *   由 param-matrix 写入 _physics.od_grown_for_yoke 供追溯。
+ *
+ * @returns {{yoke_thickness:number, stator_od:number, slot_depth:number,
+ *            yoke_by_ratio:number, yoke_by_flux:number|null, grown:boolean}}
+ */
+export function solveYokeAndFrame({
+  statorOd, statorId, poles, airGapFlux = AIR_GAP_FLUX_DEFAULT, targetBy = B_YOKE_WARN_T,
+}) {
+  const half = Math.max(1, (statorOd - statorId) / 2)
+  const yokeByRatio = round1(half * 0.40)          // 原比例式口径
+  const slotDepthRatio = round1(half * 0.60)       // 原槽深口径
+  const yokeByFlux = yokeThicknessForFlux({ statorId, poles, airGapFlux, targetBy })
+
+  if (yokeByFlux === null || yokeByFlux <= yokeByRatio) {
+    return {
+      yoke_thickness: yokeByRatio,
+      stator_od: round1(statorOd),
+      slot_depth: slotDepthRatio,
+      yoke_by_ratio: yokeByRatio,
+      yoke_by_flux: yokeByFlux,
+      grown: false,
+    }
+  }
+
+  // 轭厚需放大：保持原槽深（不缩槽，槽满率另行由 V15 判），外径相应外扩
+  const newYoke = round1(Math.ceil(yokeByFlux * 10) / 10)
+  const newOd = round1(statorId + 2 * (slotDepthRatio + newYoke))
+  return {
+    yoke_thickness: newYoke,
+    stator_od: newOd,
+    slot_depth: slotDepthRatio,
+    yoke_by_ratio: yokeByRatio,
+    yoke_by_flux: yokeByFlux,
+    grown: true,
+  }
 }
 
 /** 轴径 —— physics_kernel.py:605 */
@@ -418,6 +595,7 @@ export default {
   MIN_ROTOR_YOKE_MM, FREQ_LIMITS, FLUX_TOLERANCE, SLOT_ASPECT_RANGE,
   B_YOKE_WARN_T, B_YOKE_SAT_T,
   ID_RATIO_TOLERANCE, HIGH_SPEED_RPM, AIR_GAP_MAX_HIGH_SPEED, airGapMax,
-  empiricalAirGap, toothWidth, yokeThickness, shaftDia, rotorOd,
+  empiricalAirGap, toothWidth, yokeThickness, yokeThicknessForFlux, solveYokeAndFrame,
+  shaftDia, rotorOd,
   lambdaRange, clamp, round1, round2, round3, round4, round5, fitLambdaWithinRange,
 }

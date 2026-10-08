@@ -5,6 +5,216 @@
 
 版本三重一致性：`package.json.version` = `SKILL.md` 的 `metadata.version` = `CHANGELOG.md` 最新条目。
 
+## [0.2.6] - 2026-10-08 — P0 motor_type 透传修复 + 经验回灌闭环 + --cmp 跨版本对比进 CI
+
+本批修复源于 v0.2.5 的 1000 案例 + 10 万案例两轮独立压测（外部测试者复核，
+含 4 次断言口径自我修正的完整留痕）。压测确认 0.2.5 的 7 项声明修复全部兑现、
+V16 断崖在 1rpm 精度下彻底消除，唯一未修的 P0 在本版闭环。
+
+### 发版卫生：泄漏门禁自身失效（0.2.5 tarball 遗留问题的收口）
+- **门禁漏洞**：`P0 发布物无本机绝对路径泄漏` 的正则只匹配 `C:/Users/...`，
+  对 `D:/MotorDesign/...` 这类工作区盘符**完全失明** —— 0.2.5 泄漏就是因此漏网，
+  而门禁当时仍报 95/95 全绿。已扩展为匹配任意盘符 + 真实目录名
+  （`C:/Users`、`D:/MotorDesign`、`D:/dsh-motor-ai-l0`），并用注入样本双向验证
+  （注入 → ❌ 失败，移除 → ✅ 通过），非"永远绿"断言。
+- **本次拦下的真实泄漏**：`scripts/loss_calib_v{2,3}_result.json` 为标定运行产物，
+  v2 内含 `D:/MotorDesign/output/...` 数据集绝对路径。已删除，
+  并在 `package.json.files` 加反选 `!scripts/loss_calib*_result.json`。
+  **再次印证根因**：`files` 是白名单且优先级高于 `.gitignore`/`.npmignore`，
+  「已 gitignore」≠「不进包」——本版起所有本地运行产物一律用 `!` 反选排除。
+
+### P0：`params.motor_type` 透传（唯一阻塞零摩擦集成的缺陷）
+- **现象**：79.5% 生成行 `motor_type` 缺失 → 代理通道 `detectMotorType()` 落入
+  OD 启发式（od<400→pmsm），与生成路径默认（induction）矛盾，
+  OD<612.4mm 中小型异步机被静默误判 pmsm → 分族选段失败 → skipped 19.8%
+- **修复**（三处）：
+  - `lib/motor-constants.mjs` 新增 `resolveMotorType()`：别名归一（补 'async'/'im' 等
+    异步别名——它们此前不在任何别名表，是压测之外的第二处静默误判源）+
+    缺省显式判 induction 并标 `assumed`
+  - `tools/l0/param-matrix.mjs`：行对象**无条件**携带规范化 `motor_type`（与 0.2.5
+    `line_freq_hz` 同模式）；`spec` 回吐 `motor_type_assumed`；缺省/无法识别时回吐
+    `MOTOR_TYPE_ASSUMED` 告警（info/warning 两级）
+  - `lib/surrogate-engine.mjs`：`detectMotorType()` **删除 OD 启发式**，
+    改走 `resolveMotorType` —— 几何按异步口径生成时，推理端猜 pmsm 是放大错误不是修正错误
+- P1 顺带：两个通道 summary 均补 `returned_feasible_count`（返回集可能混入
+  infeasible_thermal 三态行，调用方需要可自检的口径）
+- 门禁 94→**95/95**：新增「P0 motor_type 透传」4 类断言（行级透传/双层告警/别名归一/P1 计数）
+
+### 经验回灌闭环（tools/feedback/experience-hub.mjs，新增）
+- `capture`：规格采样 → 公式通道（v3.1 已标定损耗）→ 本地 JSONL 经验样本
+  （`models/experience/`，不出网不外发）
+- `pair`：现役代理模型 vs 公式通道逐例配对，输出 MAE/bias/跳过原因分布
+- `shadow`：确定性二分训练/评估集拟合影子分桶模型（不落盘覆盖现役模型），
+  MAE 显著更优才建议触发正式重训
+- **首轮实测（300 spec / 12000 样本）**：现役模型（旧损耗常数训练）MAE=7.9pt /
+  bias=+5.8pt，影子基线 0.886pt —— 结论：建议触发正式重训（导出样本给 Python 侧 M1/M2/M3 管线）
+
+### --cmp 跨版本对比（scripts/cmp.mjs，新增）
+- 按「新规则是否拦截了旧规则放行的输入」四组归类：
+  `both_ok / new_only（改进）/ old_only_blocked_by_rule（预期拦截）/ regression_suspect`
+- **只有 regression_suspect 才判回退** —— 直接固化压测复盘教训
+  （把 V18 拦截越界频率误读成「200rpm 回退 80pp」的事不再发生）
+- CI 固化见 `.github/workflows/ci.yml`
+
+### CI（.github/workflows/ci.yml，新增）
+- `gate`：push/PR 跑单测 + 95 项门禁
+- `cmp`：手动/每周定时，`scripts/cmp.mjs --against <npm latest>`，疑似回退退出非零
+
+### 门禁与回归
+- 门禁 95/95，单测 22/22
+- `scripts/cmp.mjs --against 0.2.5` 实测：24 用例 0 疑似回退（P0 修复不改变可行性口径）
+
+## [0.2.5] - 2026-10-08 — 10 万案例压测复核修复：V16 频率可配置 + 绝缘等级透传 + 转矩口径契约 + 极数合法性
+
+本批修复源于 10 万案例规模压测的复核结论。
+**压测报告的三处结论经源码取证后订正**，修复的是「判据与契约」而非「计算公式」。
+
+### 社区反馈闭环（v0.2.5 新增）
+
+新增 `tools/feedback/case-feedback.mjs`：用户在自己的机器上生成**结论式** issue 草稿。
+
+| 层次 | 例子 | 是否回传 |
+|---|---|---|
+| L1 明细 | `stator_od=425, l0_eff=93.73` | ❌ 永不 |
+| L2 结论 | `1400~1500rpm 可行率 66.7% → 1500~3000rpm 33.3%` | ✅ |
+| L3 元统计 | `V16 failed×40` | ✅ |
+
+三条硬约束：
+1. **工具只返回草稿字符串**，不导出 `params`/`matrix` —— 脱敏靠"不产出"而非过滤。
+2. 草稿强制过 **10 项脱敏自检**（几何/槽数/匝数/电流/效率/客户名/绝对路径/UNC/哈希/邮箱），
+   命中任一即抛错拒绝输出。实测注入 10/10 全部拦截。
+3. **永不实现自动提交**（`caseReportAutoSubmit` 恒 false）—— 自动上报是信任的重灾区。
+
+断崖检测用双条件（绝对跌幅 ≥30pt **且** 相对比 ≤0.60），单用任一都会误判。
+
+同期新增 `.github/ISSUE_TEMPLATE/` 三套模板（问题 / 案例反馈 / 标定数据）与 README 社区反馈小节。
+
+### 损耗标定：未达阈值，拒绝写回（诚实记录）
+
+用 MotorDesign 生产库 44 行 RMxprt 真值（`source_path LIKE 'cal_%'`，已剔除铁损占比 >50%
+的失真行）标定 `formula-engine.mjs` 的损耗公式，**结果未达规格阈值（R²≥0.85/0.80/0.85），
+故未修改任何常量**。根因已定位，属数据形态问题而非系数问题：
+
+| 目标 | 实测 R² | 阈值 |
+|---|---|---|
+| 铜损 | 0.107 | 0.85 |
+| 铁损 | 0.685 | 0.80 |
+| 总损 | 0.296 | 0.85 |
+
+- 铜耗：L0 反推匝数与 RMxprt 实际匝数高度相关（R²=0.962），但**铜损比值跨 420 倍
+  （0.025~10.5）** ⇒ 非比例偏差。L0 输入是规格级（功率/电压/转速/极数），
+  真值铜损是设计级（含绕组/并联/线规），**信息量不匹配**，乘性系数无法弥补。
+- 铁损：两个基函数 `f·B^α` 与 `f²·B²` 在样本域内共线，最小二乘解出**负的 `ke`**
+  （物理上无意义）⇒ 无法独立辨识。
+- 正确的数据采集形态应是**控制变量扫参**（固定工况档，只变线规/并联/匝数之一），
+  而非跨功率档随机抽样。后者恰是本批数据的形态。
+
+标定脚本 `scripts/calibrate_losses.mjs` 已可复现运行（`--apply` 仅在全绿时写回）。
+
+| 项 | 压测报告结论 | 源码复核 | 处置 |
+|---|---|---|---|
+| 转矩守恒 91.4% 失效 | P0 | ❌ **断言口径错**：`estimated_torque` 是 D²L 类比外推量，与 `target_torque`(9550P/n) 本就不同物理量；`native.torque` 与规格偏差 **0%** | 标记口径，不改公式 |
+| B 级温升越限 806 例 | P0 | ✅ 成立，但根因是**参数透传断裂**（非判据缺失）：`params.insulation_class` 从未被消费 | 3 处透传 |
+| 奇数极放行 297 例 | P0 | ⚠️ 当前版本实际已被 V14 拦；真实缺口是 V06 缺奇偶判据 | 补判据 |
+| 1500rpm 断崖 | P0 | ✅ 成立，根因是 `LINE_FREQ_HZ=50` 硬编码 **+ `recommendPoles` 把 1460~1500 全给 4 极** | 频率可配置 |
+
+### 1️⃣ V16 电源频率可配置 + 新增 V18（断崖根除）
+- `motor-constants.mjs` 新增 `DEFAULT_LINE_FREQ_HZ=50` / `LINE_FREQ_MIN_HZ=20` / `LINE_FREQ_MAX_HZ=400` / `resolveLineFreqHz()`。
+- `V16` 不再硬编码 50Hz；4极@1500rpm 在 50Hz 判死（n_sync=1500 触及同步点）、**60Hz 下合法**（n_sync=1800）。
+- **新增 V18 电源频率合法性**（failed）：越界或非数值显式判出，不静默回落 50Hz —— 否则 V16 会拿错误频率去判超同步。
+- `recommendPoles(speedRpm, lineFreqHz)` 改为按 `n_sync = 120·f/p > n` 反推档位：
+  **1500rpm@50Hz → 2 极**（4/6/8 极的 n_sync=1500/1000/750 全部 ≤1500 即超同步），1460rpm 仍 4 极。
+- **实测断崖消除**：修复前 1500rpm 可用率 **0.15%** → 修复后 **100%**（1440~1800rpm 全档 100%）。
+
+### 2️⃣ 绝缘等级透传修复（B 级用户此前被按 F 级考核）
+- 取证根因：`formula-engine.mjs` 只从 `opts.insulationClass` 取值，而 `l0-estimate.mjs` 两处调用**只传 `{efficiencyCap, maxTempClamp}`**
+  ⇒ 矩阵行的 `insulation_class` 100% 丢失，B 级(80K) 用户一律按 F 级(105K) 判且无任何告警。
+- 现取值优先级：**行内 `params.insulation_class` > 工具入参 > config > 默认 F**；矩阵行新增携带 `line_freq_hz` / `insulation_class`。
+- 新增 `insulation_class_valid` / `insulation_class_effective`：非法等级（如 Z 级）显式标 `valid=false`，不再静默按 F 级放行。
+- **实测**：30kW/1460rpm/natural ⇒ B 级可用率 95%（limit 80K）、F 级 100%（105K）、H 级 100%（125K），三档正确区分。
+
+### 3️⃣ 转矩口径契约（P0，防下游误用）
+- 矩阵行新增 `torque_basis='analogy_d2l'` / `torque_is_spec=false` / `torque_ratio_estimated_over_target`。
+- `motor_l0_estimate` 返回体新增 `torque_contract` 声明：指明**规格字段为 `torque_nm`(9550P/n)**，
+  `estimated_torque` 是 `torque_nm × (D²L)/(D²L_base)` 的几何类比外推量，**不得当规格使用**。
+- 转矩公式本身**未改动**（`native.torque` 与规格偏差 0%）。
+
+### 4️⃣ V06 补极数合法性（防御纵深）
+- 极数必须为**正偶数**（交流绕组产生 2p 极主磁场）：3/5/7/9 极物理不存在，判 failed 并给出最近合法极数。
+- 独立于 `parallel_circuits` 分支判定 —— 否则未填并联支路的行会整段跳过极数校验。
+- 非法值（0 / 1 / 2.5 极）同样拦截。
+
+### 📦 发版卫生修复（0.2.5 发布后核验发现，已随 0.2.5 一并生效）
+`npm publish` 后解包 tarball 逐文件核验，发现三处本机绝对路径随包外发：
+
+| 位置 | 内容 | 处置 |
+|---|---|---|
+| `scripts/loss_calib_v2_result.json` | `D:/MotorDesign/output/...` | 文件删除 + `.gitignore` 登记 |
+| `scripts/publish.mjs` / `release.mjs` | 硬编码 managed Python 绝对路径 | 改读`MANAGED_PYTHON` 环境变量 |
+| `scripts/_publish_0_2_{1,2,3}.py` | 旧版本发版脚本，含 `D:\` 绝对路径 | 用完即删（无任何引用） |
+
+**根因**：`.gitignore` **管不住 npm 打包** —— `package.json.files` 是白名单，优先级高于
+`.npmignore` / `.gitignore`。已在 `.npmignore` 顶部写明这一优先级，避免后来人误以为ignore 生效。
+
+新增门禁 `P0 发布物无本机绝对路径泄漏`：按 `files` 白名单扫描全部发布目录，
+匹配盘符绝对路径即失败。已用注入样本反向验证（注入 →❌，移除 → ✅），非"永远绿"断言。
+门禁 **93 → 94/94**。
+
+### 门禁
+- `verify.mjs` **82 → 94/94**（新增 12 项：V16频率与断崖、V18频率合法性、绝缘透传三路一致、
+  转矩口径、极数奇偶、V10/V16 频率口径不串扰、社区反馈闭环 4 项、PMSM 高速回归 4 项、
+  发布物路径泄漏 1 项）。
+- 订正 1 条固化缺陷的旧断言：原「1500rpm 应推荐 4 极」正是断崖根因本身，已按 `n_sync > n` 重写。
+- 回归门 B **OK**（无劣化）；门 A 仍为既有 `small55kw` thermal DEBT，未新增欠账。
+- 单测 22/22 通过。
+
+### 📦 同批并入 0.2.5（2026-10-07 批次）：高速 PMSM 卡死修复 —— P5 能力门 + P0 轭厚按磁密反解 + P1 匝数量化语义拆分 + P2 磁密口径自洽
+
+本版针对实测缺陷「200kW/22000rpm/380V/PMSM ⇒ 120/120 候选全 failed、`recommended=null`」做根因修复。
+**修复前 0 可行 → 修复后 44 行通过校验、43 行可行**，且 `recommended=null` 不再是死胡同（能力门给出明确出路）。
+
+#### 🚪 P5 新增：L0 能力门（适用域前置判定）
+- 新增 `lib/applicability-gate.mjs`：在**调用前**按电频率 / 电压 / 转速 / 机种四维度判定 L0 是否适用，三档 `ok` / `caution` / `reject`。
+- 标定域（基于实测划定）：`f ≤ 400Hz`、`n ≤ 3000rpm`、`U ≤ 690V`；PMSM 无 dq/弱磁/退磁模型，恒为 `caution`。
+- `motor_l0_estimate` 返回体新增 `applicability` / `applicability_reasons` / `applicability_advice` / `applicability_note`。
+- **核心价值**：`feasible_count=0` 时明确归因为「超出 L0 标定域」而非「设计上无解」，并给出可执行出路（升压 / 降速 / 增极 / 直接进 L1·L2）。
+- 设计原则：能力门只判**工具适用性**，不判**设计可行性** —— 二者混淆会导致「工具越界 ⇒ 谎称设计不可行」。
+
+#### 🔧 P0 轭厚按磁密需求反解（主修复）
+- **根因**：`yokeThickness()` 恒等于 `(OD−Dsi)/2 × 0.40`，**无任何磁密约束**。高速大 Dsi 下只给 12.7~17.6mm，而 `By ≤ 1.9T` 需 21.9~48.4mm（缺口 7.7~30.8mm）⇒ V08 必然判饱和。**V08 判据本身物理正确，缺的是生成端配厚。**
+- 新增 `yokeThicknessForFlux()`（`yoke_required = Bg·Dsi/(p·By_target·k_stack)`）与 `solveYokeAndFrame()`（取比例值与磁密需求值的较大者，轭厚放大时同步外扩 OD）。
+- 实测收益（count=120）：`V08 failed ×120 → 0`；15kW 基线 `failed 80 → 40`；200kW/690V 不变。
+- **硬约束优先**：`stator_od_limit` 是约束、磁密需求是目标，**目标不得覆盖约束**。上限内放不下足够轭厚时，如实回吐 `yoke_limited_by_od_cap` 并由 V08 判失败，不靠偷扩上限掩盖。
+- `defaultOdLimit()` 同步 P0 感知（把轭厚增量计入上限），否则「默认配置」会悄悄抵消 P0 的修复。
+
+#### 🔧 P1 匝数量化语义拆分（V14 修正 + 新增 V17）
+- **根因**：V14 拿**已被 `Math.max(1,·)` 钳整**的匝数反算 E，再要求偏差 ≤10% —— 等于「用自己量化过的值校验自己的量化误差」，属逻辑循环。理想匝 0.716 → 钳成 1 匝 ⇒ E 306.6V vs 219.4V（偏差 39.8%）**必然自证失败**。
+- **职责拆分**：
+  - `V14`（改名「反电势自洽性」）= 只抓「填错」。仅当理想匝 ≥1（无钳位放大）且行内匝偏离理想值 >2× / <0.5× 时判 failed。
+  - `V17`（新增「匝数整量化可行性」）= 判物理可实现性。理想匝 <1 ⇒ 圆线整匝绕组无解，报错**必带可执行出路**（升压倍数 / 降频增极 / 加大 Dsi·L / 分数槽）。
+- `deriveElectricalClosure` 新增 `turns_per_coil_ideal` / `turns_quant_dev` / `turns_rounded_up`，量化偏差显式可查。
+- **避免重复归因**：理想匝 <1 时不再报 V14（否则会把「整匝无解」误导成「参数填错」，诱导用户去改本来正确的电压/几何）。
+
+#### 🔧 P2 气隙磁密按工况自洽
+- **根因**：`AIR_GAP_FLUX_DEFAULT=0.80` 全程硬编码，且 By 公式不含转速 ⇒ 同几何下 `n=250` 与 `n=22000` 的 By **逐行相同**，V08 结构上无法区分高速。
+- 新增 `airGapFluxActual()`：由**实际整数匝数**反解气隙磁密（`Bg_actual = Bg_intent · N_ideal/N_int`），V07/V08 改用它判定 —— 铁芯真正承受的磁密由实际匝数决定。
+- **消除自相矛盾**：此前 V14 说「E 偏差 39.8%」（按实际匝数）、V08 却按意图匝数说「By 正常」，同一物理量两个口径。
+- 可回退：`bg_caliber='intent'` 回到 v0.2.4 旧口径，便于对外口径对齐与历史对比；`metrics.flux.bg_caliber` 回吐所用口径。
+
+#### 📉 撤回一项此前的错误结论：并联支路方向（P3）
+- 此前分析称「`turns = N·a·3/Qs` 把并联支路 a 乘进去、方向反了，应改成除 a」。**经数值验证该结论错误**：
+  `a` 条并联支路并联在同一相电压上 ⇒ 每支路串联匝数必须都是 N ⇒ 每线圈匝 = N·3a/Qs **确实应乘 a**。
+  实测：`a=1→8` 时每相串联匝恒定 111.33、E 恒定 219.4V；若错误地改成除 a，E 将崩至 2.9V（偏差 98.7%）。
+  ⇒ **代码保持原样**，并加单测固化该不变量，防止后续误改。
+
+#### ✅ 门禁与文档
+- `verify.mjs` **70 → 最终 94/94**（本批 P0/P1/P2/P5 共 9 项，压测复核 6 项，社区反馈闭环 4 项，
+  PMSM 高速回归 4 项，发布物泄漏 1 项 —— 逐批累计；单批数字见各段）。单测 22/22。
+- 校验规则共 **17 条**（V01–V12、V14–V18；V13 已并入 V06）。
+- 回归门 B 无劣化；门 A 仍为 DEBT（既有 `small55kw` 越带 1.75pt，未受本版影响）。
+- 修正两条**编码了旧缺陷行为**的断言：①「2极轭饱和必然全批 failed」（其前提「无论轭厚如何都无法避免饱和」经 P0 证伪）；②「默认上限与旧写死 450 逐字节一致」（P0 使部分行 OD 合法增长至 490mm，前提不再成立，改为断言「未放大行逐字节一致 + 默认上限 P0 感知且被严格尊重」）。
+- 校验规则文档此前停留在 12 条且把 V08 记为 `warning`，已按 `RULE_CATALOG` 校正（V08 自 v0.1.7 起即硬门禁 `failed`）；本版最终为 **17 条**。
+
 ## [0.2.4] - 2026-10-07 — 代理模型 v2.3.0-fixseg 部署 + GBR 残差校正启用
 
 ### 🚀 代理模型升级：v2.2.0 → v2.3.0-fixseg
@@ -21,8 +231,10 @@
 - `tools/l0/pipeline.mjs` 聚合工具随包发布（一步跑完 `buildParamMatrix → runDesignValidate → runL0Estimate`，规避 DSH 2000 行截断）。
 - 版本三重一致性：package.json / SKILL.md metadata / CHANGELOG 同步至 0.2.4。
 
-### ⚠️ 不在本次发布范围
-- V16（极数-转速同步一致性校验）等规则层改动仍在开发中，未并入本版本，避免裹挟未经验证的变更。
+### ⚠️ 关于 V16
+- 0.2.4 发布时曾记录「V16 未并入本版本」。**该记录与实际发布物不符**：`npm publish` 从工作树打包，
+  已发布的 0.2.4 包内 `design-rules.mjs` **实际含 V16**（解包核验：V16 × 5 处）。
+  0.2.4 的 git 提交随后已通过 amend 补齐，使 git 与 npm 内容一致。
 
 ## [0.2.3] - 2026-09-27 — 默认通道回归修复 + 对外物料（推广就绪）
 

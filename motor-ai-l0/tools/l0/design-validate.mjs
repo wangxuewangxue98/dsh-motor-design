@@ -20,6 +20,7 @@
 import { validateDesign, validateDesignBatch, RULE_CATALOG, ESCALATABLE_RULES }
   from '../../lib/design-rules.mjs'
 import { normalizeSpec } from '../../lib/param-schema.mjs'
+import { DEFAULT_LINE_FREQ_HZ } from '../../lib/motor-constants.mjs'
 import { getUsageSink, logUsage } from '../../lib/usage-log.mjs'
 
 /** 工具入参声明 */
@@ -31,7 +32,19 @@ export const TOOL_PARAMS = {
     description: `提升为 failed 的规则 id，可选: ${ESCALATABLE_RULES.join('/')}`,
   },
   insulation_class: { type: 'string', description: '绝缘等级 B/F/H，默认 F' },
+  line_freq_hz: {
+    type: 'number',
+    description: `电源频率 Hz，默认 ${DEFAULT_LINE_FREQ_HZ}。60Hz 电网与 VFD 变频工况必须显式传入，`
+      + '否则 V16 会按 50Hz 判超同步（4 极机在 1500rpm 处形成假断崖）',
+  },
   air_gap_flux: { type: 'number', description: '气隙磁密基准 T，默认 0.80' },
+  bg_caliber: {
+    type: 'string',
+    enum: ['actual', 'intent'],
+    description: 'v0.2.5：磁密判据口径。actual=按实际整数匝数反解的气隙磁密判定（默认，'
+      + '铁芯真正承受的磁密）；intent=按设计意图 0.80T 判定（v0.2.4 旧口径，便于历史对比）。'
+      + '显式传 air_gap_flux 时以该值为准。',
+  },
   include_thermal: { type: 'boolean', description: '是否执行温升校验，默认 true' },
   include_reports: { type: 'boolean', description: '批量模式是否回传逐条报告，默认 false' },
 }
@@ -48,9 +61,14 @@ export function runDesignValidate(rawArgs, config = {}) {
   const opts = {
     escalate: Array.isArray(args.escalate) ? args.escalate : undefined,
     insulationClass: args.insulation_class ?? args.insulationClass ?? config.insulationClass,
+    // v0.2.5：电源频率入参透传（V16/V18 判据的自变量）
+    lineFreqHz: typeof args.line_freq_hz === 'number' ? args.line_freq_hz
+      : (typeof config.line_freq_hz === 'number' ? config.line_freq_hz : undefined),
     airGapFlux: typeof args.air_gap_flux === 'number'
       ? args.air_gap_flux
       : (typeof config.airGapFluxT === 'number' ? config.airGapFluxT : undefined),
+    bgCaliber: args.bg_caliber === 'intent' ? 'intent'
+      : (args.bg_caliber === 'actual' ? 'actual' : (config.bgCaliber ?? 'actual')),
     includeThermal: args.include_thermal === false ? false : true,
     efficiencyCap: config.efficiencyCap,
     maxTempClamp: config.tempRiseRange,

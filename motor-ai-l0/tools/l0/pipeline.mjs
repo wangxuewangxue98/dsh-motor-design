@@ -31,7 +31,7 @@ export const TOOL_PARAMS = {
   poles: { type: 'number', description: '极数，缺省由转速推荐' },
   motor_type: {
     type: 'string',
-    description: '电机类型（opt-in）。传 PMSM/BLDC/IPM 走永磁生产口径；不传维持异步 legacy 口径',
+    description: '电机类型。传 PMSM/BLDC/IPM 走永磁生产口径；不传按 induction（异步 legacy 口径）生成并回吐 MOTOR_TYPE_ASSUMED 提示。PMSM 工况必须显式传入，否则整批按异步几何计算',
   },
   torque_nm: { type: 'number', description: '额定转矩 (Nm)，缺省由 9550·P/n 推算' },
   cooling: { type: 'string', description: '冷却方式，默认 forced_air' },

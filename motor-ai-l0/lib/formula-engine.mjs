@@ -17,6 +17,7 @@
 import {
   TORQUE_CONST, AIR_GAP_MIN, AIR_GAP_MAX, SIM_EFF, SIM_TEMP, LOSS_SPLIT,
   STEINMETZ, COOLING_COEFFICIENT, DEFAULT_COOLING, POLE_EFFICIENCY_FACTOR,
+  COPPER_LOSS_K, COPPER_K_BINS, MECH_STRAY_RATIO,
   CURRENT_DENSITY_REF, FLUX_TARGET, STACKING_FACTOR, AMBIENT_TEMP_C,
   B_YOKE_SAT_T,
   J_DESIGN, WINDING_FACTOR, POWER_FACTOR_REF, ETA_REF_FOR_CURRENT,
@@ -223,7 +224,16 @@ export function deriveElectricalClosure({
   const phi = (2 * airGapFlux * (statorId / 1000) * (coreLength / 1000)) / poles  // Wb/极
   if (f <= 0 || phi <= 0) return null
   const nPhase = uph / (4.44 * f * phi * windingFactor)
-  const turnsPerCoil = Math.max(1, Math.round((nPhase * a * 3) / slotsStator))
+  // v0.2.5 P1：区分「理想匝数」与「整匝匝数」
+  //   理想匝数 turnsIdeal = N·a·3/Qs 是连续量，由电压/频率/几何唯一确定；
+  //   实际绕组只能用整数匝 ⇒ turnsPerCoil = max(1, round(turnsIdeal))。
+  //   原实现只输出整匝值并让 V14 拿它反算 E 再判 ±10%，等于「用自己量化过的值
+  //   校验自己的量化误差」——当 turnsIdeal<1 时被钳到 1 匝，E 必然大幅偏离 Uph，
+  //   V14 结构性自证失败（实测 200kW/22000rpm 理想 0.716 匝→钳成 1 匝→E 偏差 39.8%）。
+  //   故此处同时输出理想匝数与量化偏差，交由 V14（自洽性）与 V17（离散度）分别判据。
+  const turnsIdeal = (nPhase * a * 3) / slotsStator
+  const turnsPerCoil = Math.max(1, Math.round(turnsIdeal))
+  const turnsQuantDev = turnsIdeal > 0 ? Math.abs(turnsPerCoil - turnsIdeal) / turnsIdeal : 1
   const backEmf = 4.44 * f * nPhase * phi * windingFactor
   const backEmfOk = Math.abs(backEmf - uph) / uph <= BACKEMF_TOL
 
@@ -241,6 +251,9 @@ export function deriveElectricalClosure({
     flux_per_pole_wb: round5(phi),
     turns_per_phase: round2(nPhase),
     turns_per_coil: turnsPerCoil,
+    turns_per_coil_ideal: round3(turnsIdeal),
+    turns_quant_dev: round3(turnsQuantDev),
+    turns_rounded_up: turnsPerCoil > turnsIdeal + 1e-9,
     parallel_circuits: a,
     back_emf_v: round1(backEmf),
     back_emf_ok: backEmfOk,
@@ -252,12 +265,22 @@ export function deriveElectricalClosure({
   }
 }
 
-/** 机械损耗 —— 风磨+轴承经验标定 */
+/** 机械损耗 —— 风磨+轴承经验标定（旧公式，仅保留向后兼容；
+ *  生产链已改用 estimateMechStrayLoss，本函数低估 −87% 详见 MECH_STRAY_RATIO 注释） */
 export function estimateMechanicalLoss({ speedRpm, rotorOdMm }) {
   if (!speedRpm || speedRpm <= 0) return 0
   return Math.round(
     MECH_LOSS_K * Math.pow(speedRpm / 1000, 2) * Math.pow(rotorOdMm / 100, 2)
   )
+}
+
+/** 机械耗+杂散损耗 —— 按输出功率分档比例（v3 标定 2026-10-08）。
+ *  RMxprt 真值（total−cu−fe，含杂散）跨档 ≈ 3.0%/2.2%/2.0% × P_out。
+ *  15kW 实测：公式 453W vs 真值 453W（旧公式仅 60W）。 */
+export function estimateMechStrayLoss({ powerKw }) {
+  if (!powerKw || powerKw <= 0) return 0
+  const frame = COPPER_K_BINS.find((b) => powerKw <= b.maxKw)?.name ?? 'large'
+  return Math.round(powerKw * 1000 * (MECH_STRAY_RATIO[frame] ?? 0.02))
 }
 
 /** 由输出功率与总损耗反推效率 (%) */
@@ -347,7 +370,13 @@ export function quickL0Estimate(params, opts = {}) {
   const efficiencyCap = opts.efficiencyCap ?? SIM_EFF.clampMax
   const maxTempClamp = opts.maxTempClamp ?? [SIM_TEMP.clampMin, SIM_TEMP.clampMax]
   const cooling = params.cooling ?? DEFAULT_COOLING
-  const insulationClass = opts.insulationClass ?? DEFAULT_INSULATION_CLASS
+  // v0.2.5：绝缘等级取值改为「行内字段优先，opts 兜底」。
+  // 取证根因：此前只读 opts.insulationClass，而矩阵行携带的是 params.insulation_class
+  // ⇒ 行内等级从未被消费，B 级(80K) 用户一律按 F 级(105K) 考核且无任何告警。
+  const insulationClass = String(
+    params.insulation_class ?? params.insulationClass ?? opts.insulationClass ?? DEFAULT_INSULATION_CLASS,
+  ).toUpperCase()
+  const insulationValid = Object.prototype.hasOwnProperty.call(INSULATION_LIMITS, insulationClass)
 
   const powerKw = params.power_kw ?? computePowerKw(params.torque_nm ?? 0, params.speed)
   const poles = params.poles
@@ -355,7 +384,6 @@ export function quickL0Estimate(params, opts = {}) {
   const statorId = params.stator_id ?? round1(statorOd * 0.6)
   const coreLength = params.core_length ?? 80
   const slotsStator = params.slots_stator ?? 36
-  const toothWidthMm = params.tooth_width ?? round2((Math.PI * statorId) / (2 * slotsStator))
   const rotorOdMm = params.rotor_od ?? round1(statorId - 2 * (params.air_gap ?? 0.6))
   const airGap = params.air_gap ?? 0.6
   const parallelCircuits = params.parallel_circuits ?? 1
@@ -375,16 +403,31 @@ export function quickL0Estimate(params, opts = {}) {
 
   // ---- 损耗三项 ----
   const coreMassKg = estimateCoreMassKg(statorOd, statorId, coreLength)
+  // 铁耗等效磁密（v3 标定 2026-10-08）：B_eff=(Bt+By)/2 真值口径，与
+  // scripts/calibrate_losses_v3.mjs 的标定口径严格一致（变频样本 f 8×/B 7.9× 双基辨识）。
+  // 此前恒用 STEINMETZ.fluxDensity=1.2T ⇒ 铁耗不随设计变化，R² 无法收敛。
+  // toothB/yokeB 计算因此前移（原先在铁耗之后只为输出可追溯值）。
+  const airGapFlux = opts.airGapFlux ?? AIR_GAP_FLUX_DEFAULT
+  const toothWidthMm = params.tooth_width ?? round2((Math.PI * statorId) / (2 * slotsStator))
+  const toothBraw = (2 * airGapFlux * statorId) / (slotsStator * toothWidthMm * STACKING_FACTOR)
+  const yokeBraw = (airGapFlux * statorId) / (poles * (params.yoke_thickness ?? yokeThickness(statorOd, statorId)) * STACKING_FACTOR)
+  const bEffIron = Math.max(0.05, (toothBraw + yokeBraw) / 2)   // 防退化负值/零
   const pIron = estimateIronLoss({
     speedRpm: params.speed, poles, coreMassKg,
-    fluxDensity: opts.fluxDensity ?? STEINMETZ.fluxDensity,
+    fluxDensity: opts.fluxDensity ?? bEffIron,
   })
   const cu = estimateCopperLoss({
     statorOd, statorId, coreLength, slotsStator, poles,
     peakCurrent: effCurrent, turnsPerCoil: effTurns, parallelCircuits, airGap,
   })
-  const pCopper = cu.copper_loss
-  const pMech = estimateMechanicalLoss({ speedRpm: params.speed, rotorOdMm })
+  // 铜耗分档系数（v3 标定 2026-10-08）：档内模型形状正确（R² 0.92~0.97），
+  // 档间幅度差 3.8× ⇒ 按额定功率查档修正。k 修正「公式+输入口径」总偏差，
+  // 必须与上方电气闭环同路径使用。标定证据：scripts/calibrate_losses_v3.mjs。
+  const frameName = COPPER_K_BINS.find((b) => powerKw <= b.maxKw)?.name ?? 'large'
+  const pCopper = cu.copper_loss * (COPPER_LOSS_K[frameName] ?? 1)
+  // 机械耗+杂散（v3 标定 2026-10-08）：RMxprt 真值含杂散跨档 ≈2.0~3.0%×P_out，
+  // 旧风摩公式低估 −87%，是效率偏乐观 ~4pt 主因。档位与铜耗共用 COPPER_K_BINS。
+  const pMech = estimateMechStrayLoss({ powerKw })
   const totalLossW = pIron + pCopper + pMech
 
   // ---- 效率（物理通道，再按极数与封顶修正）----
@@ -401,11 +444,10 @@ export function quickL0Estimate(params, opts = {}) {
   const tempRise = estimateTempRise({ statorOd, coreLength, cooling }, totalLossW)
   const tempLimit = INSULATION_LIMITS[insulationClass] ?? INSULATION_LIMITS[DEFAULT_INSULATION_CLASS]
   const thermalOk = tempRise <= tempLimit
-
   // ---- 磁密（齿/轭）可追溯输出 ----
-  const airGapFlux = opts.airGapFlux ?? AIR_GAP_FLUX_DEFAULT
-  const toothB = round2((2 * airGapFlux * statorId) / (slotsStator * toothWidthMm * STACKING_FACTOR))
-  const yokeB = round2((airGapFlux * statorId) / (poles * (params.yoke_thickness ?? yokeThickness(statorOd, statorId)) * STACKING_FACTOR))
+  // （airGapFlux/toothWidthMm 已前移至损耗段 —— 铁耗 B_eff 口径需要，见上方注释）
+  const toothB = round2(toothBraw)
+  const yokeB = round2(yokeBraw)
   // v0.1.7：轭部饱和判据（Bj 超硅钢饱和极限 ~1.9T ⇒ 轭部无法承载磁通，设计不可行）
   const yokeSat = yokeB > B_YOKE_SAT_T
 
@@ -442,6 +484,16 @@ export function quickL0Estimate(params, opts = {}) {
     thermal_rise_k: tempRise,
     thermal_limit_k: tempLimit,
     insulation_class: insulationClass,
+    // v0.2.5：非法绝缘等级不得静默按 F 级考核 —— 显式标记，交接方可拒绝消费
+    insulation_class_valid: insulationValid,
+    insulation_class_effective: insulationValid ? insulationClass : DEFAULT_INSULATION_CLASS,
+    // v0.2.5：生效电源频率。V16/V18 的自变量，随行可见便于下游核对
+    // （此前 V16 硬编码 50Hz，结果行无从判断是工频判还是 50Hz 假设判）
+    ...(Number.isFinite(Number(params.line_freq_hz))
+      || Number.isFinite(Number(opts.lineFreqHz))
+      ? { line_freq_hz: Number.isFinite(Number(params.line_freq_hz))
+        ? Number(params.line_freq_hz) : Number(opts.lineFreqHz) }
+      : {}),
     peak_current: effCurrent,
     turns_per_coil: effTurns,
     parallel_circuits: parallelCircuits,
@@ -469,7 +521,7 @@ export function quickL0Estimate(params, opts = {}) {
 export default {
   computeTorque, computePowerKw, computeD2L, computeLambda, validateLambda,
   electricalFrequency, estimateCoreMassKg, estimateIronLoss, estimateCopperLoss,
-  estimateMechanicalLoss, efficiencyFromLosses, splitLosses, estimateTempRise,
+  estimateMechanicalLoss, estimateMechStrayLoss, efficiencyFromLosses, splitLosses, estimateTempRise,
   l1EfficiencyProxy, l1MaxTempProxy, quickL0Estimate, copperResistivity,
   slotGeometryDerived, deriveElectricalClosure,
 }

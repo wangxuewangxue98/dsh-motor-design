@@ -1,0 +1,63 @@
+name: "🧪 回归用例 / 标定数据贡献"
+description: 用真实求解结果补充 benchmarks 或提供模型标定数据时使用
+title: "[bench] "
+labels: ["benchmark", "calibration"]
+body:
+  - type: checkboxes
+    id: kind
+    attributes:
+      label: 贡献内容
+      options:
+        - label: benchmarks/ 回归用例（工况且匿名化）
+        - label: 模型标定数据（损耗 / 效率真值）
+    validations:
+      required: true
+  - type: textarea
+    id: spec
+    attributes:
+      label: 工况档位
+      description: 工况且保留（复现必需），设计明细不保留
+      value: |
+        kW /  V /  rpm /  极 /  异步|永磁同步 / 冷却
+    validations:
+      required: true
+  - type: textarea
+    id: expect
+    attributes:
+      label: 期望行为与实测结果
+      description: |
+        期望行为：例「该转速档应给出可行方案 Top5」
+        实测结果：例「返回 0 条可行」
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: |
+        ⚠️ **关于温升数据的重要提醒**
+
+        请务必确认你提供的 `max_temp` / 温升值是**真值**而非估算。
+        本项目发现某些求解链路对温升使用经验估算式（含随机噪声项），此类数据无法用于标定，
+        混入会让标定结论完全失真。若你不确定，请注明来源。
+  - type: textarea
+    id: loss
+    attributes:
+      label: 损耗与效率真值（若有）
+      description: 单位 W / %。没有就留空，不要估填
+      render: text
+      placeholder: |
+        total_loss:    W
+        copper_loss:   W
+        iron_loss:     W
+        efficiency:    %
+        温升来源: 真值 / 估算 / 不确定
+    validations:
+      required: false
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 声明
+      options:
+        - label: 我确认上述数据来自真实电磁/热求解，而非经验估算或手动填写
+        - label: 我同意这些数据以匿名形式进入本仓库的回归/标定集
+    validations:
+      required: true

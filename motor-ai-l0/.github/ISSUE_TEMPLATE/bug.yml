@@ -1,0 +1,56 @@
+name: "🐛 问题反馈（Bug / 校验判据异议）"
+description: 校验结果与物理预期不符、或插件行为异常时使用
+title: "[bug] "
+labels: ["bug", "needs-repro"]
+body:
+  - type: textarea
+    id: symptom
+    attributes:
+      label: 现象
+      description: 一句话说明：什么输入 → 什么输出 → 你认为应该是什么
+      placeholder: "例：450kW/690V/985rpm/6极，校验说轭部磁密超限，但按 B=1.2T 计算应低于 1.9T"
+    validations:
+      required: true
+  - type: textarea
+    id: spec
+    attributes:
+      label: 复现输入（只填规格档位）
+      description: "不要粘贴几何明细（外径/内径/槽数/匝数/电流等）。工况且要给，那是复现必需的。"
+      value: |
+        功率:      kW
+        电压:      V
+        转速:      rpm
+        极数:      极
+        机种:      异步 / 永磁同步
+        冷却:      IC411 / IC416 / 液冷
+        电源频率:  Hz（默认 50）
+        绝缘等级:  B / F / H（默认 F）
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      description: 规则编号 + 插件结论 + 你认为不合理的原因
+      placeholder: |
+        规则编号: V__
+        插件结论: ...
+        我的预期: ...
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: 环境
+      description: 插件版本 / DSH CLI 或 Desktop / Node 版本
+      placeholder: "0.2.5 / Desktop 0.10.0 (dsh 0.1.7) / v24.9.0"
+    validations:
+      required: false
+  - type: textarea
+    id: basis
+    attributes:
+      label: 物理依据（强烈建议填写）
+      description: 用一句话说清你认为该判据为什么错。这一项通常能让修复快一个数量级。
+      placeholder: "例：1500rpm@50Hz 下 4 极 n_sync=1500，转差为 0 不是负，不应判超同步"
+    validations:
+      required: false

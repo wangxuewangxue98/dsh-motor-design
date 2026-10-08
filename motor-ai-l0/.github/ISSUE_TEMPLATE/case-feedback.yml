@@ -1,0 +1,51 @@
+name: "📊 案例反馈（工况可用性结论）"
+description: 你的工况跑不出方案 / 结果明显不合理时，生成结论式反馈草稿
+title: "[case] "
+labels: ["case-feedback", "needs-repro"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **这份反馈包含什么、不包含什么**
+
+        包含（可回传，低敏感）：规则命中次数、分箱可行率、断崖定位。
+
+        不包含（永不回传）：任何几何 / 槽数 / 匝数 / 电流 / 效率数值、客户或项目标识。
+        反馈草稿生成器内置 10 项脱敏自检，命中任一敏感模式即拒绝输出。
+
+        插件**永不自动提交**，草稿由你本人粘贴、人工署名。
+  - type: textarea
+    id: spec
+    attributes:
+      label: 工况档位
+      description: 逐个列出要反馈的工况规格档
+      value: |
+        -  kW /  V /  rpm /  极 / 异步|永磁同步 / IC411|IC416|液冷
+    validations:
+      required: true
+  - type: textarea
+    id: draft
+    attributes:
+      label: 生成的反馈草稿
+      description: 在 DSH 会话里调用 buildCaseFeedbackDraft 生成，把输出粘贴到这里
+      render: markdown
+      placeholder: |
+        import { buildCaseFeedbackDraft } from 'dsh-motor-ai-l0/tools/feedback/case-feedback.mjs'
+        const draft = buildCaseFeedbackDraft({
+          pluginVersion: '0.2.5',
+          cases: [{ label: '工况A', spec: { power_kw: 450, voltage_v: 690, speed_rpm: 985, poles: 6 } }],
+        })
+    validations:
+      required: false
+  - type: textarea
+    id: observe
+    attributes:
+      label: 你的观察
+      description: 草稿抓不到的现场信息。例如该工况在你们厂的实际做法、你认为哪条规则判错了、已用 RMxprt 验证的对比结论（只给结论，不给设计明细）
+    validations:
+      required: false
+  - type: markdown
+    attributes:
+      value: |
+        **我们的承诺**：一旦修复，会把该工况匿名化后纳入 `benchmarks/` 回归用例，由 CI 永久保护，
+        你的工况从此不会回归。

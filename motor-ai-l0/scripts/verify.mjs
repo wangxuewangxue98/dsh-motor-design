@@ -14,7 +14,7 @@
  * 用法：
  *   node scripts/verify.mjs
  */
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { readdir, access } from 'node:fs/promises'
 import { join, dirname, resolve, relative } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -30,20 +30,45 @@ import {
 } from '../lib/param-schema.mjs'
 import {
   computeTorque, computeD2L, computeLambda, validateLambda, quickL0Estimate,
+  deriveElectricalClosure,
 } from '../lib/formula-engine.mjs'
 import { buildParamMatrix, recommendPoles, poleCandidates } from '../tools/l0/param-matrix.mjs'
 import { runL0Estimate } from '../tools/l0/l0-estimate.mjs'
 import { runDesignValidate } from '../tools/l0/design-validate.mjs'
 import {
   RULE_CATALOG, validateDesign, validateDesignBatch,
-  toothFluxDensity, yokeFluxDensity,
+  toothFluxDensity, yokeFluxDensity, airGapFluxActual,
 } from '../lib/design-rules.mjs'
+import {
+  assessApplicability, scenarioFromMatrix, APPLICABILITY,
+} from '../lib/applicability-gate.mjs'
+import { solveYokeAndFrame, yokeThicknessForFlux, resolveMotorType } from '../lib/motor-constants.mjs'
+import { selectFamilySegment } from '../lib/surrogate-engine.mjs'
 import { evaluateSuite, makeBaseline, compareBaseline } from '../lib/regression-gate.mjs'
 import {
   TELEM_FIELDS, sanitizeTelemetry, aggregateUsage,
 } from '../lib/telemetry.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+
+/** 递归列出目录下所有文件（发布物泄漏扫描用，跳过 node_modules 与隐藏目录） */
+function walk(dir) {
+  const out = []
+  let ents
+  try { ents = readdirSync(dir, { withFileTypes: true }) } catch { return out }
+  for (const e of ents) {
+    if (e.name === 'node_modules' || e.name.startsWith('.')) continue
+    const p = join(dir, e.name)
+    if (e.isDirectory()) out.push(...walk(p))
+    else out.push(p)
+  }
+  return out
+}
+
+// 社区反馈工具（静态导入：check() 是同步的，不能在断言里 await import）
+import {
+  buildCaseFeedbackDraft, assertNoSensitiveData, sensitivityRules,
+} from '../tools/feedback/case-feedback.mjs'
 const results = []
 let failed = 0
 
@@ -369,18 +394,89 @@ check('matrix: v0.2.4 默认外径上限自伸缩 —— 大机座不再被写�
   return `默认上限 ${built.od_limit.value}mm（扫描空间上界 ${built.od_limit.scan_space_max_od}mm），夹紧 0 行，可行 ${feasible}`
 })
 
-check('matrix: v0.2.4 零回归 —— 15kW / 200kW PMSM 默认上限与旧写死 450 逐字节一致', () => {
-  // 这两个案例在旧默认下本就没夹紧（OD 上界分别 438 / 343mm），改默认值不得产生任何变化。
+check('matrix: v0.2.5 P0 零回归 —— 未触发轭厚放大的行与旧写死 450 逐字节一致', () => {
+  // v0.2.5 订正：本用例原断言「默认上限与旧写死 450 逐字节一致」，前提是 450 从不夹紧。
+  // P0 按磁密反解轭厚后，部分行 OD 合法增长超过 450mm（15kW 基线实测需至 490mm），
+  //   ⇒ 该前提不再成立，逐字节全等不是正确的不变量。
+  // 正确的不变量分两层：
+  //   ① 未触发轭厚放大的行（od_grown_for_yoke=false 且未被上限夹紧）必须与旧口径逐字节一致
+  //   ② 默认上限与显式上限给出的行集必须一致（默认上限已 P0 感知，不应额外夹紧）
   for (const spec of [
     { power_kw: 15, speed_rpm: 1460, voltage_v: 380, count: 120 },
     { power_kw: 200, speed_rpm: 22000, voltage_v: 380, motor_type: 'pmsm', count: 120 },
   ]) {
-    const a = buildParamMatrix(spec, { maxMatrixSize: 2000 }).matrix
-    const b = buildParamMatrix({ ...spec, stator_od_limit: 450 }, { maxMatrixSize: 2000 }).matrix
-    must(JSON.stringify(a) === JSON.stringify(b),
-      `${spec.power_kw}kW 默认上限改动造成回归：旧 450 未夹紧的场景必须逐字节一致`)
+    const autoBuilt = buildParamMatrix(spec, { maxMatrixSize: 2000 })
+    const explicit = buildParamMatrix({ ...spec, stator_od_limit: 450 }, { maxMatrixSize: 2000 })
+
+    // ② 默认上限不得比显式 450 更紧（否则 P0 在默认配置下被悄悄抵消）
+    must(autoBuilt.od_limit.value >= 450,
+      `${spec.power_kw}kW 默认上限 ${autoBuilt.od_limit.value}mm 低于旧值 450mm，会抵消 P0 修复`)
+    for (const row of autoBuilt.matrix) {
+      must(row.stator_od <= autoBuilt.od_limit.value,
+        `默认上限未被尊重：${row.stator_od} > ${autoBuilt.od_limit.value}`)
+    }
+
+    // ① 未放大的行逐字节一致（剔除 _physics 里 P0 新增的诊断键后比较）
+    const strip = (r) => {
+      const { _physics, ...rest } = r
+      const { od_grown_for_yoke, yoke_limited_by_od_cap, yoke_required_for_flux,
+        yoke_thickness: _yt, yoke_by_ratio: _yr, yoke_by_flux: _yf,
+        stator_od_requested: _sor, stator_od_after_growth: _soa, ...ph } = _physics ?? {}
+      return JSON.stringify({ ...rest, _physics: ph })
+    }
+    const untouched = autoBuilt.matrix.filter(
+      (r) => !r._physics?.od_grown_for_yoke && !r._physics?.yoke_limited_by_od_cap)
+    // 200kW/22000rpm 极端工况下 P0 对全部行都需放大轭厚（未放大行为 0），
+    //   该场景改验「几何仍然合法」而非逐字节比对，否则断言空转。
+    if (untouched.length === 0) {
+      for (const row of autoBuilt.matrix) {
+        must(row.stator_od > row.stator_id, `放大后 OD(${row.stator_od}) 必须仍大于 Dsi(${row.stator_id})`)
+        must(row.yoke_thickness > 0 && row.rotor_od > 0 && row.shaft_dia > 0,
+          `放大后几何链必须完整（yoke=${row.yoke_thickness} rotor_od=${row.rotor_od}）`)
+      }
+      continue
+    }
+    must(untouched.length > 0, `${spec.power_kw}kW 未找到可比对的未放大行，零回归断言无效`)
+    let compared = 0
+    for (let i = 0; i < Math.min(autoBuilt.matrix.length, explicit.matrix.length); i++) {
+      const ra = autoBuilt.matrix[i]
+      if (ra._physics?.od_grown_for_yoke || ra._physics?.yoke_limited_by_od_cap) continue
+      if (ra.stator_od !== explicit.matrix[i].stator_od) continue  // 上限不同导致的合法差异
+      must(strip(ra) === strip(explicit.matrix[i]),
+        `${spec.power_kw}kW 未触发轭厚放大的行出现回归：行 ${i} 几何不一致`)
+      compared += 1
+    }
+    must(compared > 0, `${spec.power_kw}kW 未找到可比对的未放大行，零回归断言无效`)
   }
-  return '15kW / 200kW PMSM 新旧上限逐字节一致'
+  return '未放大行逐字节一致 + 默认上限 P0 感知且被严格尊重 + 放大后几何链完整'
+})
+
+check('matrix: 0.2.6 P0 motor_type 透传 —— 缺省行携带 induction + MOTOR_TYPE_ASSUMED，代理不再 OD 误判', () => {
+  // 10 万案例压测（v0.2.5）定位的 P0：79.5% 行 motor_type 缺失，
+  // detectMotorType 的 OD 启发式（od<400→pmsm）与生成默认（induction）矛盾，
+  // OD<612.4mm 中小型异步机代理通道静默 skipped 19.8%。
+  const b = buildParamMatrix({ power_kw: 15, speed_rpm: 1460, voltage_v: 380, count: 30 }, { maxMatrixSize: 2000 })
+  must(b.matrix.every((r) => r.motor_type === 'induction'), '缺省 motor_type → 全行携带 induction（代理通道不再落启发式）')
+  const w = (b.warnings ?? []).find((x) => x.code === 'MOTOR_TYPE_ASSUMED')
+  must(!!w && w.level === 'info', '缺省时回吐 MOTOR_TYPE_ASSUMED（info 级）')
+  must(b.spec.motor_type_assumed === true, 'spec.motor_type_assumed=true 让缺省可见')
+  // 显式别名归一：'async' 此前不在别名表 → 落 OD 启发式，是压测报告之外的第二处静默误判源
+  must(resolveMotorType('async').type === 'induction' && !resolveMotorType('async').assumed, "别名 'async' 归一为 induction")
+  must(resolveMotorType('Y2').unrecognized === true, '无法识别的输入标 unrecognized（不静默）')
+  must(resolveMotorType(undefined).assumed === true, '缺省标 assumed')
+  // 旧启发式已删：od=300 按 induction 命中分族段（修复前误判 pmsm → 段缺失 → skipped）
+  const fakeModel = {
+    schema: 'l0_surrogate_family',
+    induction_segments: { small: { od_range: [0, 612.4] } },
+    pmsm_segments: {},
+  }
+  must(!!selectFamilySegment(300, 'induction', fakeModel), 'od=300 按 induction 命中分族段（P0 主场景）')
+  // P1 契约：returned_feasible_count（返回集可能混入 infeasible_thermal，需可自检）
+  const e = runL0Estimate({ params_list: b.matrix.slice(0, 20), top_n: 8, sort_by: 'efficiency' }, {})
+  must(typeof e.returned_feasible_count === 'number' && e.returned_feasible_count >= 0,
+    `returned_feasible_count 已入契约（=${e.returned_feasible_count}）`)
+  must(e.results.every((r) => r.params?.motor_type === 'induction'), '结果行 params.motor_type 已透出')
+  return '行级透传 + 双层告警（warning/info）+ 别名归一 + P1 计数，4 类断言全过'
 })
 
 check('matrix: v0.2.4 显式上限被夹紧时回吐 OD_LIMIT_CLAMPED 告警（且仍严格尊重上限）', () => {
@@ -407,10 +503,18 @@ check('estimate: v0.2.4 效率封顶不再压平排序 —— 450kW 大机座按
   const feasRows = feasIdx.map((i) => built.matrix[i])
   must(feasRows.length > 0, '前置条件：450kW 应有可行解')
 
-  const est = runL0Estimate({ params_list: feasRows, top_n: 10, sort_by: 'efficiency' }, { efficiencyCap: 96 })
+  // v3 机械耗标定（2026-10-08）后 450kW raw ≈94.4 不再自然触顶 96 —— 旧断言依赖
+  // 「损耗低估推高效率」的巧合，故改为动态取真值域中点为 cap，主动制造触顶场景，
+  // 验证封顶机制本身（触顶标记 + 排序仍按 raw 真值 + 区分度保留）。
+  const estRaw = runL0Estimate({ params_list: feasRows, top_n: 10, sort_by: 'efficiency' }, { efficiencyCap: 99 })
+  const rawAll = estRaw.results.map((r) => r.efficiency_raw)
+  must(rawAll.length > 0 && rawAll[0] > rawAll[rawAll.length - 1], '前置条件：raw 真值应有降序区分度')
+  const cap = Math.round(((rawAll[0] + rawAll[rawAll.length - 1]) / 2) * 10) / 10
+
+  const est = runL0Estimate({ params_list: feasRows, top_n: 10, sort_by: 'efficiency' }, { efficiencyCap: cap })
   const top = est.results
   const capped = top.filter((r) => r.efficiency_capped === true).length
-  must(capped > 0, `本批应存在触顶行（用于验证封顶仍生效），实际触顶 ${capped}/${top.length}`)
+  must(capped > 0, `本批应存在触顶行（cap=${cap} 低于 raw 上界 ${rawAll[0]}），实际触顶 ${capped}/${top.length}`)
 
   const raws = top.map((r) => r.efficiency_raw)
   for (let i = 1; i < raws.length; i++) {
@@ -420,16 +524,20 @@ check('estimate: v0.2.4 效率封顶不再压平排序 —— 450kW 大机座按
   const spread = Math.round((Math.max(...raws) - Math.min(...raws)) * 100) / 100
   must(distinct > 1, `真值应保留区分度，实际去重仅 ${distinct} 个值（排序被压平）`)
   must(est.efficiency_capped_count > 0 && est.efficiency_note, '应据实回吐触顶计数与说明')
-  return `Top${top.length} 真值 ${raws[0]}~${raws[raws.length - 1]}%（极差 ${spread}pt，${distinct} 个不同值），触顶 ${capped} 行，显示值仍为 ${top[0].efficiency}%`
+  return `Top${top.length} 真值 ${raws[0]}~${raws[raws.length - 1]}%（极差 ${spread}pt，${distinct} 个不同值），cap=${cap} 触顶 ${capped} 行，显示值仍为 ${top[0].efficiency}%`
 })
 
 check('estimate: v0.2.4 封顶值本身不变 —— efficiency 仍与 L1 同口径（零回归）', () => {
-  const row = quickL0Estimate({
+  const p200 = {
     stator_od: 400, stator_id: 240, core_length: 300, air_gap: 1.0,
     poles: 2, voltage: 380, speed: 3000, slots_stator: 24, slots_rotor: 20,
     rotor_od: 238, tooth_width: 15.7, power_kw: 200, cooling: 'oil_immersed',
-  }, { efficiencyCap: 96 })
-  must(row.efficiency <= 96, `efficiency 必须仍被封顶到 96（与 L1 同口径），实际 ${row.efficiency}`)
+  }
+  // v3 机械耗标定后该样本 raw 不再自然越 96，同上改为动态 cap（raw−1pt）制造触顶
+  const raw200 = quickL0Estimate(p200, { efficiencyCap: 99 }).efficiency_raw
+  const cap200 = Math.floor(raw200 * 10) / 10 - 1
+  const row = quickL0Estimate(p200, { efficiencyCap: cap200 })
+  must(row.efficiency <= cap200, `efficiency 必须仍被封顶（与 L1 同口径），实际 ${row.efficiency} > cap ${cap200}`)
   must(row.efficiency_raw >= row.efficiency,
     `真值不得小于钳位值：raw=${row.efficiency_raw} < capped=${row.efficiency}`)
   must(row.efficiency_capped === true, '该样本应被标记触顶')
@@ -439,15 +547,29 @@ check('estimate: v0.2.4 封顶值本身不变 —— efficiency 仍与 L1 同口
     poles: 4, voltage: 380, speed: 1460, slots_stator: 36, slots_rotor: 28,
     rotor_od: 106.8, tooth_width: 4.7, power_kw: 15, cooling: 'forced_air',
   }, { efficiencyCap: 96 })
-  must(small.efficiency_capped === false, `15kW 不应触顶，实际 raw=${small.efficiency_raw}`)
-  must(Math.abs(small.efficiency_raw - small.efficiency) < 1e-9,
-    `未触顶行真值应等于显示值：raw=${small.efficiency_raw} vs ${small.efficiency}`)
-  return `大样本 capped=${row.efficiency}%/raw=${row.efficiency_raw}%；15kW 未触顶 raw=${small.efficiency_raw}%`
+  // v3 损耗标定（2026-10-08）后 15kW raw 效率进入 96~98 域（铜损高估 +201%→−21%、
+  // 铁耗换真值 B 口径 —— 旧「15kW 必不触顶」断言固化了损耗失真下的效率假值，故撤除）。
+  // 改为断言 capped 标记与 raw 自洽 —— 这才是该样本的本意（不触顶行标记 false 且两值相等）。
+  must(small.efficiency_capped === (small.efficiency_raw > 96),
+    `capped 标记必须与 raw 自洽：raw=${small.efficiency_raw} capped=${small.efficiency_capped}`)
+  if (!small.efficiency_capped) {
+    must(Math.abs(small.efficiency_raw - small.efficiency) < 1e-9,
+      `未触顶行真值应等于显示值：raw=${small.efficiency_raw} vs ${small.efficiency}`)
+  }
+  must(small.efficiency_raw >= 88 && small.efficiency_raw <= 99,
+    `15kW raw 效率应落工程合理域 [88,99]（v3 机械耗标定后基线 ≈93.4），实际 ${small.efficiency_raw}`)
+  return `大样本 capped=${row.efficiency}%/raw=${row.efficiency_raw}%；15kW raw=${small.efficiency_raw}% capped=${small.efficiency_capped}`
 })
 
 check('matrix: P3 高速工况 —— 22000rpm 归入 2 极档（f≈367Hz）', () => {
   must(recommendPoles(22000) === 2, '22000rpm 应推荐 2 极（f=366.7Hz，与现场工况吻合）')
-  must(recommendPoles(1500) === 4, '1500rpm 应推荐 4 极')
+  // v0.2.5 订正：原断言固化「1500rpm→4 极」，而 50Hz 下 4 极 n_sync 恰为 1500rpm
+  // ⇒ 该推荐必然被 V16 判超同步，这正是 10 万案例压测发现的 1500rpm 断崖根因。
+  // 按 n_sync=120·f/p > n 反推：1500rpm 在 50Hz 下 4/6/8 极的 n_sync=1500/1000/750
+  // 全部 ≤1500（即超同步），唯一合法偶极为 2 极（n_sync=3000）。
+  must(recommendPoles(1500) === 2, `1500rpm@50Hz 应推荐 2 极（4/6/8 极均超同步），实际 ${recommendPoles(1500)}`)
+  must(recommendPoles(1460) === 4, '1460rpm 应仍为 4 极（n_sync=1500>1460 合法，未受断崖影响）')
+  must(recommendPoles(1500, 60) === 4, '60Hz 下 1500rpm 应推荐 4 极（n_sync=1800>1500，证明频率感知生效）')
   must(!poleCandidates(2).includes(1), '不得产出 1 极方案（永磁同步机不存在 1 极）')
   const { matrix } = buildParamMatrix(
     { power_kw: 200, speed_rpm: 22000, count: 20 }, { maxMatrixSize: 2000 })
@@ -910,17 +1032,42 @@ check('闭环: 反电势 E≈相电压 Uph（|E-Uph|≤10%），匝数闭环成�
   return `全部 back_emf_ok | E≈${est.results[0].back_emf_v}V`
 })
 
-check('门禁: 液冷 200kW/2极 种子几何轭饱和 ⇒ 全部 infeasible 且不推荐超标方案（V08 硬化）', () => {
+check('门禁: v0.2.5 P0 轭厚按磁密反解 ⇒ 200kW/2极不再全批轭饱和（V08 判据不变）', () => {
   const m = buildParamMatrix({ power_kw: 200, speed_rpm: 22000, voltage_v: 380, motor_type: 'pmsm', cooling: 'liquid_jacket', count: 20 }, {})
   const est = runL0Estimate({ params_list: m.matrix, sort_by: 'efficiency' }, { insulationClass: 'F' })
-  // v0.1.7：该 2 极种子几何下 Dsi/p 比导致轭磁密物理下界 ≥2.1T（>1.9T 硅钢饱和极限），
-  // 无论轭厚如何都无法避免轭饱和 —— 这是物理事实，不是求解器噪声。V08 硬化后必须如实判不可行。
-  must(est.feasible_count === 0, `期望轭饱和导致 0 可行方案，实际 ${est.feasible_count}`)
-  must(est.recommended === null, '轭饱和几何不应被推荐（V08 须拦截，不再推荐超标方案）')
-  // 全部不可行必须因轭饱和（yoke_sat），而非被热限误杀
-  const allYokeSat = est.results.every((r) => r.yoke_sat === true)
-  must(allYokeSat, '全部候选应标记 yoke_sat（轭饱和是唯一阻断项，热限不该误判）')
-  return `feasible=${est.feasible_count} | 全部 yoke_sat=${allYokeSat}（V08 正确拦截轭饱和）`
+  // v0.2.5 订正：本用例原断言「2极下 By 物理下界 ≥2.1T，无论轭厚如何都无法避免饱和」。
+  // 该断言是错的 —— By = Bg·Dsi/(p·yoke·k_stack)，轭厚 yoke 在分母上，
+  // 只要放大轭厚（并相应放大 OD）By 必然下降。旧实现之所以全批饱和，
+  // 是因为 yokeThickness() 恒给 half×0.40、与磁密无关（改进方案 P0 的根因）。
+  // 现在轭厚按 By≤B_YOKE_WARN_T 反解生成，V08 判据本身未变（仍是 >1.9T 判 failed）。
+  const satCount = est.results.filter((r) => r.yoke_sat === true).length
+  must(satCount === 0, `P0 后不应再有轭饱和行，实际 ${satCount}/${est.results.length}`)
+  must(est.feasible_count > 0, `P0 后应产出可行方案，实际 ${est.feasible_count}`)
+  // 反向守卫：V08 判据未被放宽 —— 手填一个薄轭行必须仍被判 failed
+  const thin = { ...m.matrix[0], yoke_thickness: 3, _physics: { ...m.matrix[0]._physics } }
+  const thinRep = validateDesignBatch([thin], { insulationClass: 'F' })
+  const thinV08 = (thinRep.reports?.[0]?.issues ?? []).some((i) => i.rule === 'V08' && i.level === 'failed')
+  must(thinV08, '手填薄轭（yoke=3mm）必须仍被 V08 判 failed（判据不得因 P0 而放宽）')
+  const maxBy = Math.max(...est.results.map((r) => r.yoke_flux_density))
+  must(maxBy <= 1.9, `轭磁密应全部 ≤1.9T，实际最大 ${maxBy}`)
+  return `feasible=${est.feasible_count} | 轭饱和行=${satCount} | By_max=${maxBy}T | 薄轭手填仍被 V08 拦截`
+})
+
+check('门禁: V17 理想匝数<1 判圆线整匝绕组无解（并给出可执行出路）', () => {
+  const m = buildParamMatrix({ power_kw: 200, speed_rpm: 22000, voltage_v: 380, motor_type: 'pmsm', count: 20 }, {})
+  const rep = validateDesignBatch(m.matrix, { insulationClass: 'F' })
+  const v17 = (rep.reports ?? []).flatMap((r) => r.issues ?? []).filter((i) => i.rule === 'V17')
+  must(v17.length > 0, '200kW/22000rpm/380V 应存在 V17 命中（理想匝数<1）')
+  // failed 级（物理无解）必须给出可执行出路；warn 级（可整除但偏差大）只需陈述偏差
+  const v17Fail = v17.filter((i) => i.level === 'failed')
+  const withAdvice = v17Fail.filter((i) => /升压|降频|加大|分数槽/.test(String(i.msg ?? '')))
+  must(v17Fail.length > 0 && withAdvice.length === v17Fail.length,
+    `V17 failed 必须给出可执行出路（升压/降频/加大磁通/分数槽），实际 ${withAdvice.length}/${v17Fail.length}`)
+  // V14 不应再被整数量化偏差误杀：矩阵正常路径的行内匝数必≈理想值
+  const v14Failed = (rep.reports ?? []).flatMap((r) => r.issues ?? []).filter((i) => i.rule === 'V14' && i.level === 'failed')
+  must(v14Failed.length === 0,
+    `V14 不应再对「整数量化」判 failed（该职责已移交 V17），实际命中 ${v14Failed.length}`)
+  return `V17×${v17.length}（failed=${v17Fail.length} 均含出路建议）| V14 failed=${v14Failed.length}`
 })
 
 check('门禁: V15 槽满率>0.78 的 hand-fed 矩阵判 failed', () => {
@@ -933,13 +1080,429 @@ check('门禁: V15 槽满率>0.78 的 hand-fed 矩阵判 failed', () => {
 })
 
 check('门禁: V14 匝数严重失配触发反电势 failed', () => {
-  const m = buildParamMatrix({ power_kw: 200, speed_rpm: 22000, voltage_v: 380, motor_type: 'pmsm', count: 20 }, {})
+  // ⚠ v0.2.5：必须挑**理想匝数 ≥1** 的行做「填错」守卫。
+  //   200kW/22000rpm/380V 全部行理想匝 <1（整匝钳位必然造成 >2× 偏离），
+  //   那属于 V17 的「整匝绕组无解」，V14 按设计不再重复归因（否则误导为「参数填错」）。
+  //   故这里用 15kW/1460rpm 常规工况（理想匝 ~9.3）验证 V14 的自洽性守卫仍然有效。
+  const m = buildParamMatrix({ power_kw: 15, speed_rpm: 1460, voltage_v: 380, count: 20 }, {})
   const good = m.matrix[0]
+  must(good.turns_per_coil >= 2, `守卫用例需理想匝≥1，实际行内匝=${good.turns_per_coil}`)
   const bad = { ...good, turns_per_coil: good.turns_per_coil * 10, _physics: { ...good._physics } }
   const rep = validateDesignBatch([bad], { insulationClass: 'F', includeThermal: true })
   const f = rep.reports[0]
-  must(f.issues.some((i) => i.rule === 'V14' && i.level === 'failed'), '匝数×10 未触发 V14 failed')
-  return `匝数×10 → V14 failed（反电势闭环门禁生效）`
+  must(f.issues.some((i) => i.rule === 'V14' && i.level === 'failed'),
+    `手填 10× 匝数（${good.turns_per_coil}→${bad.turns_per_coil}）未触发 V14 failed`)
+  return `15kW 行内匝 ${good.turns_per_coil}→${bad.turns_per_coil} → V14 failed（自洽性守卫生效）`
+})
+
+// ══════════════════════════════════════════════════════════════
+// v0.2.5 能力门（P5）
+// ══════════════════════════════════════════════════════════════
+
+check('P5: 能力门三档判定（ok / caution / reject）', () => {
+  const ok = assessApplicability({ powerKw: 15, speedRpm: 1460, voltageV: 380, poles: 4, motorType: 'induction' })
+  must(ok.verdict === 'ok', `15kW/1460rpm/380V/4极 异步应判 ok，实际 ${ok.verdict}（${ok.reasons.map((r) => r.code)}）`)
+  must(ok.routing === 'l0' && ok.advice === null, 'ok 档不应给路由建议')
+
+  const caution = assessApplicability({ powerKw: 200, speedRpm: 1460, voltageV: 690, poles: 6, motorType: 'induction' })
+  must(caution.verdict === 'caution', `690V 应判 caution，实际 ${caution.verdict}`)
+  must(caution.routing === 'l0_caution', `caution 档 routing 应为 l0_caution，实际 ${caution.routing}`)
+  must(/横向比较/.test(caution.advice ?? ''), 'caution 档建议必须说明「仅供横向比较」')
+
+  const reject = assessApplicability({ powerKw: 200, speedRpm: 22000, voltageV: 380, poles: 2, motorType: 'pmsm' })
+  must(reject.verdict === 'reject', `22000rpm 应判 reject，实际 ${reject.verdict}`)
+  must(reject.routing === 'l1', `reject 档 routing 应为 l1，实际 ${reject.routing}`)
+  must(/L1/.test(reject.advice ?? '') && /L2/.test(reject.advice ?? ''),
+    'reject 档建议必须同时给出 L1 与 L2 出路')
+  return `ok=${ok.verdict} caution=${caution.verdict} reject=${reject.verdict} | 标定域 f≤${APPLICABILITY.FREQ_CALIBRATED_MAX}Hz/n≤${APPLICABILITY.SPEED_CALIBRATED_MAX}rpm/U≤${APPLICABILITY.VOLTAGE_CALIBRATED_MAX}V`
+})
+
+check('P5: 能力门随工况单调收紧（标定域边界处翻转）', () => {
+  const base = { powerKw: 15, poles: 4, motorType: 'induction', voltageV: 380 }
+  must(assessApplicability({ ...base, speedRpm: APPLICABILITY.SPEED_CALIBRATED_MAX + 1 }).verdict === 'reject',
+    '转速超标定域必须 reject')
+  must(assessApplicability({ ...base, speedRpm: APPLICABILITY.SPEED_CALIBRATED_MAX }).verdict !== 'reject',
+    '转速恰在标定域边界不应 reject')
+  must(assessApplicability({ ...base, speedRpm: 1460, voltageV: APPLICABILITY.VOLTAGE_CALIBRATED_MAX + 1 }).verdict === 'reject',
+    '电压超标定域必须 reject')
+  must(assessApplicability({ ...base, speedRpm: 1460, poles: 60 }).verdict === 'reject',
+    '电频率超标定域必须 reject')
+  return '转速/电压/频率三维度边界翻转正确'
+})
+
+check('P5: 能力门结论进入 motor_l0_estimate 返回体（空转变可执行决策）', () => {
+  const m = buildParamMatrix({ power_kw: 200, speed_rpm: 22000, voltage_v: 380, motor_type: 'pmsm', count: 20 }, {})
+  const rej = runL0Estimate({ params_list: m.matrix, sort_by: 'efficiency' }, {})
+  must(rej.applicability === 'reject', `200kW/22000rpm 应回吐 applicability=reject，实际 ${rej.applicability}`)
+  must(Array.isArray(rej.applicability_reasons) && rej.applicability_reasons.length > 0,
+    'reject 必须回吐具体原因列表')
+  must(/标定域/.test(rej.applicability_note ?? ''),
+    'feasible_count=0 时必须把原因归到「超出标定域」而非「设计上无解」')
+
+  const okM = buildParamMatrix({ power_kw: 15, speed_rpm: 1460, voltage_v: 380, count: 20 }, {})
+  const ok = runL0Estimate({ params_list: okM.matrix, sort_by: 'efficiency' }, {})
+  must(ok.applicability === 'ok', `15kW 应判 ok，实际 ${ok.applicability}`)
+  must(ok.applicability_note === undefined, 'ok 档不应输出能力门噪音')
+  return `200kW→${rej.applicability}(原因${rej.applicability_reasons.length}条) | 15kW→${ok.applicability} 无噪音`
+})
+
+// ══════════════════════════════════════════════════════════════
+// v0.2.5 轭厚按磁密反解（P0）
+// ══════════════════════════════════════════════════════════════
+
+check('P0: solveYokeAndFrame 在磁密不足时放大轭厚且放大后 By≤目标', () => {
+  const need = yokeThicknessForFlux({ statorId: 300, poles: 2 })
+  must(need > 0, 'yokeThicknessForFlux 必须给出正需求值')
+  // 构造一个比例式明显不足的几何
+  const fr = solveYokeAndFrame({ statorOd: 400, statorId: 300, poles: 2 })
+  must(fr.yoke_by_flux > fr.yoke_by_ratio,
+    `磁密需求轭厚(${fr.yoke_by_flux}) 应大于比例式(${fr.yoke_by_ratio})，否则该用例无效`)
+  must(fr.grown === true, '轭厚被放大时 grown 必须为 true')
+  const by = (0.8 * 300) / (2 * fr.yoke_thickness * 0.98)
+  // yokeFluxDensity() 内部按 0.01T 取整展示，故容差取一个显示刻度
+  must(by <= 1.5 + 0.011, `放大后 By=${by.toFixed(3)}T 应 ≤1.5T 目标（含 0.01T 展示刻度容差）`)
+  // 比例式足够时不得放大（零回归）。选 4 极：比例式 60mm > 磁密需求 40.8mm
+  const noGrow = solveYokeAndFrame({ statorOd: 600, statorId: 300, poles: 4 })
+  must(noGrow.grown === false,
+    `轭厚已充足时不得放大（ratio=${noGrow.yoke_by_ratio} flux=${noGrow.yoke_by_flux}）`)
+  must(noGrow.yoke_thickness === noGrow.yoke_by_ratio,
+    '未放大时轭厚必须严格等于比例式值（保证既有行为不变）')
+  return `OD400/Dsi300/p2: 比例${fr.yoke_by_ratio}mm→需求${fr.yoke_by_flux}mm→实配${fr.yoke_thickness}mm(By=${by.toFixed(2)}T)`
+})
+
+check('P0: 放大后的 OD 仍构成完整几何链（不产生非法行）', () => {
+  for (const spec of [
+    { power_kw: 200, speed_rpm: 22000, voltage_v: 380, motor_type: 'pmsm', count: 40 },
+    { power_kw: 15, speed_rpm: 1460, voltage_v: 380, count: 40 },
+  ]) {
+    const built = buildParamMatrix(spec, {})
+    for (const row of built.matrix) {
+      must(row.stator_od > row.stator_id, `OD(${row.stator_od}) 必须 > Dsi(${row.stator_id})`)
+      must(row.stator_id > row.rotor_od, `Dsi(${row.stator_id}) 必须 > rotor_od(${row.rotor_od})`)
+      must(row.rotor_od > row.shaft_dia, `rotor_od 必须 > shaft_dia`)
+      must(row.yoke_thickness > 0, 'yoke_thickness 必须为正')
+      must(row.stator_od <= built.od_limit.value, `OD 超过上限 ${built.od_limit.value}`)
+      const shape = assertMatrixShape(row)
+      must(shape.ok, `矩阵行形状非法：${shape.missing?.join(',')}`)
+    }
+  }
+  return '放大后几何链与形状校验全通过'
+})
+
+check('P0: 显式 od_limit 是硬约束 —— 磁密需求不得突破上限', () => {
+  const built = buildParamMatrix(
+    { power_kw: 200, speed_rpm: 22000, voltage_v: 380, motor_type: 'pmsm', stator_od_limit: 380, count: 40 }, {})
+  for (const row of built.matrix) {
+    must(row.stator_od <= 380, `显式上限未被尊重：${row.stator_od} > 380`)
+  }
+  // 被上限截断的行必须如实标记（不得静默缩小轭厚后假装满足磁密）
+  const capped = built.matrix.filter((r) => r._physics?.yoke_limited_by_od_cap)
+  return `OD≤380 全守住 | 被上限截断行=${capped.length}（轭厚不足由 V08 如实判失败）`
+})
+
+// ══════════════════════════════════════════════════════════════
+// v0.2.5 匝数量化语义拆分（P1）与磁密口径（P2）
+// ══════════════════════════════════════════════════════════════
+
+check('P1: deriveElectricalClosure 同时输出理想匝数与量化偏差', () => {
+  const base = { voltage: 380, speed: 1460, poles: 4, statorId: 200, coreLength: 120, slotsStator: 36, powerKw: 15 }
+  const c = deriveElectricalClosure({ ...base, parallelCircuits: 1 })
+  must(typeof c.turns_per_coil_ideal === 'number', '必须输出 turns_per_coil_ideal')
+  must(typeof c.turns_quant_dev === 'number', '必须输出 turns_quant_dev')
+  // 理想匝 × a 关系：a↑ ⇒ 每线圈匝↑（并联支路方向正确性守卫）
+  const c8 = deriveElectricalClosure({ ...base, parallelCircuits: 8 })
+  must(c8.turns_per_coil > c.turns_per_coil,
+    `并联支路↑ ⇒ 每线圈匝应↑（a=1→${c.turns_per_coil}, a=8→${c8.turns_per_coil}）`)
+  must(Math.abs(c8.turns_per_phase - c.turns_per_phase) < 1,
+    `每相串联匝数应与 a 无关（a=1→${c.turns_per_phase}, a=8→${c8.turns_per_phase}）`)
+  return `a=1 理想${c.turns_per_coil_ideal}→整匝${c.turns_per_coil}(偏差${c.turns_quant_dev}) | a=8 理想${c8.turns_per_coil_ideal}→${c8.turns_per_coil}`
+})
+
+check('P1: V14 只抓「填错」不抓「量化」，量化移交 V17', () => {
+  // 常规工况（理想匝≥1）：矩阵正常路径 V14 必须恒为 0
+  const m = buildParamMatrix({ power_kw: 15, speed_rpm: 1460, voltage_v: 380, count: 20 }, {})
+  const rep = validateDesignBatch(m.matrix, { insulationClass: 'F' })
+  const v14 = (rep.reports ?? []).flatMap((r) => r.issues ?? []).filter((i) => i.rule === 'V14')
+  must(v14.length === 0, `矩阵正常路径 V14 不应命中（自洽性恒成立），实际 ${v14.length}`)
+  const row = m.matrix[0]
+  const bad = { ...row, turns_per_coil: row.turns_per_coil * 10, _physics: { ...row._physics } }
+  const badRep = validateDesignBatch([bad], { insulationClass: 'F' })
+  must(badRep.reports[0].issues.some((i) => i.rule === 'V14' && i.level === 'failed'),
+    '手填 10× 匝数必须仍被 V14 判 failed（自洽性守卫不得失效）')
+  // 理想匝<1 的行不得被 V14 重复归因（该职责归 V17）
+  const pmsm = buildParamMatrix({ power_kw: 200, speed_rpm: 22000, voltage_v: 380, motor_type: 'pmsm', count: 40 }, {})
+  const pmsmRep = validateDesignBatch(pmsm.matrix, { insulationClass: 'F' })
+  const pmsmIssues = (pmsmRep.reports ?? []).flatMap((r) => r.issues ?? [])
+  must(pmsmIssues.filter((i) => i.rule === 'V14').length === 0,
+    '理想匝<1 的工况不得报 V14（避免与 V17 重复归因、误导为参数填错）')
+  const v17n = pmsmIssues.filter((i) => i.rule === 'V17' && i.level === 'failed').length
+  must(v17n > 0, '该工况应由 V17 判整匝绕组无解')
+  return `正常路径 V14=0 | 手填 10× 仍被 V14 拦截 | 22000rpm 重复归因=0（V17 failed×${v17n}）`
+})
+
+check('P1: V17 判据以「取整后偏差」为准，不以「理想匝<1」一刀切（防误杀）', () => {
+  // 反例构造：理想匝 0.995（<1）但取整后偏差仅 0.5% ⇒ 必须可实现，不得判 failed。
+  // 早期实现按「理想匝<1 即无解」判，会把这类完全正常的行误杀（实测误杀数十行）。
+  const V = 380; const f = 100; const phi = 0.001; const kw = 0.95
+  // 用真实矩阵行做基准，只调电压使理想匝逼近 1 匝
+  const m = buildParamMatrix({ power_kw: 15, speed_rpm: 1460, voltage_v: 380, count: 20 }, {})
+  const row = m.matrix[0]
+  const nPhaseIdeal = ((row.slots_stator / 3) * row.turns_per_coil) / Math.max(1, row.parallel_circuits)
+  // 令电压缩放使理想匝 = 0.995
+  const scale = 0.995 / ((nPhaseIdeal * Math.max(1, row.parallel_circuits) * 3) / row.slots_stator)
+  const tuned = {
+    ...row, voltage: V * scale, poles: row.poles, speed: row.speed,
+    stator_id: row.stator_id, core_length: row.core_length,
+    slots_stator: row.slots_stator, parallel_circuits: row.parallel_circuits,
+    _physics: { ...row._physics },
+  }
+  const rep = validateDesign(tuned, { insulationClass: 'F' })
+  const be = rep.metrics?.back_emf
+  must(be && be.turns_ideal < 1, `本用例需理想匝<1，实际 ${be?.turns_ideal}`)
+  must(be.dev <= 0.10, `构造偏差应 ≤10%，实际 ${be.dev}`)
+  const v17 = (rep.issues ?? []).filter((i) => i.rule === 'V17')
+  must(v17.every((i) => i.level !== 'failed'),
+    `理想匝 ${be.turns_ideal}<1 但偏差仅 ${(be.dev * 100).toFixed(1)}% 时不得判 failed（实际：${v17.map((i) => i.level).join(',')}）`)
+
+  // 对照：**只**升速（不降压），使理想匝被压到 1 以下且取整后偏差超容差 ⇒ 必须 failed。
+  //  注意不能同时降压 —— 那会抵消升速效果，理想匝仍停在 1 附近（实测踩过这个坑）。
+  const bad = {
+    ...row, voltage: V, poles: row.poles, speed: row.speed * 12,
+    stator_id: row.stator_id, core_length: row.core_length,
+    slots_stator: row.slots_stator, parallel_circuits: row.parallel_circuits,
+    _physics: { ...row._physics },
+  }
+  const badRep = validateDesign(bad, { insulationClass: 'F' })
+  const badBe = badRep.metrics?.back_emf
+  must(badBe && badBe.turns_ideal < 1 && badBe.dev > 0.10,
+    `对照用例需满足 理想匝<1 且偏差>10%，实际 理想匝=${badBe?.turns_ideal} 偏差=${badBe?.dev}`)
+  const badV17 = (badRep.issues ?? []).filter((i) => i.rule === 'V17' && i.level === 'failed')
+  must(badV17.length > 0, '偏差超容差时 V17 必须判 failed（防守卫被削掉）')
+  return `理想匝${be.turns_ideal}/偏差${(be.dev * 100).toFixed(1)}% → 不判死 | 对照 理想匝${badBe.turns_ideal}/偏差${(badBe.dev * 100).toFixed(1)}% → failed`
+})
+
+check('P2: airGapFluxActual 由实际整数匝数反解，且随转速变化', () => {
+  const base = { voltageV: 380, poles: 4, statorId: 200, coreLength: 120, slotsStator: 36, parallelCircuits: 1, turnsPerCoil: 11 }
+  const bg1 = airGapFluxActual({ ...base, speedRpm: 1000 })
+  const bg2 = airGapFluxActual({ ...base, speedRpm: 8000, turnsPerCoil: 4 })
+  must(bg1 > 0 && bg2 > 0, '反解气隙磁密必须为正')
+  // 缺输入时必须返回 null（调用方回退设计意图值），不得返回 NaN/0
+  must(airGapFluxActual({ ...base, speedRpm: null }) === null, '缺转速必须返回 null')
+  must(airGapFluxActual({ ...base, speedRpm: 1000, turnsPerCoil: 0 }) === null, '缺匝数必须返回 null')
+  return `n=1000rpm/11匝→Bg=${bg1.toFixed(3)}T | n=8000rpm/4匝→Bg=${bg2.toFixed(3)}T（同一 Dsi/L/p，磁密随工况变）`
+})
+
+check('P2: bg_caliber=intent 可回退到 v0.2.4 旧口径（对外可对齐）', () => {
+  const m = buildParamMatrix({ power_kw: 15, speed_rpm: 1460, voltage_v: 380, count: 20 }, {})
+  const actual = runDesignValidate({ params_list: m.matrix, bg_caliber: 'actual' })
+  const intent = runDesignValidate({ params_list: m.matrix, bg_caliber: 'intent' })
+  must(actual.mode === 'batch' && intent.mode === 'batch', '两口径都必须跑通批量模式')
+  const repA = validateDesign(m.matrix[0], { bgCaliber: 'actual' })
+  const repI = validateDesign(m.matrix[0], { bgCaliber: 'intent' })
+  must(repA.metrics.flux.bg_caliber === 'actual', 'metrics 必须回吐所用口径')
+  const byA = repA.metrics.flux.yoke_t
+  const byI = repI.metrics.flux.yoke_t
+  return `同一行 By: actual=${byA}T vs intent=${byI}T（口径可切换，intent 保持旧行为）`
+})
+
+// ═══════════════════════════════════════════════════════════════════
+// v0.2.5 压测复核修复组（1V16频率 / 2绝缘透传 / 3转矩口径 / 4极数合法性）
+// ═══════════════════════════════════════════════════════════════════
+
+check('V16+推荐极数: 电源频率可配置，1500rpm 断崖消除', () => {
+  // 断崖根因：50Hz 硬编码 + recommendPoles 把 1460~1500rpm 全给 4 极，
+  // 而 4 极 n_sync=120×50/4=1500 ⇒ n_sync ≤ speed 被 V16 判死。
+  const at50 = validateDesign({ stator_od: 300, stator_id: 180, core_length: 200, poles: 4, slots_stator: 36, parallel_circuits: 1, turns_per_coil: 8, peak_current: 45, voltage: 380, power_kw: 30, cooling: 'forced_air', speed: 1500 })
+  const at60 = validateDesign({ stator_od: 300, stator_id: 180, core_length: 200, poles: 4, slots_stator: 36, parallel_circuits: 1, turns_per_coil: 8, peak_current: 45, voltage: 380, power_kw: 30, cooling: 'forced_air', speed: 1500, line_freq_hz: 60 })
+  must(at50.issues.some((i) => i.rule === 'V16' && i.level === 'failed'), '50Hz 下 4极@1500rpm 应判 V16 failed（n_sync=1500 触及同步点）')
+  must(!at60.issues.some((i) => i.rule === 'V16'), '60Hz 下 4极@1500rpm 应合法（n_sync=1800>1500）—— 频率感知生效')
+  must(at60.metrics.line_freq_hz === 60, `metrics 应回吐生效频率，实际 ${at60.metrics.line_freq_hz}`)
+  must(at50.metrics.sync_speed_rpm === 1500 && at60.metrics.sync_speed_rpm === 1800,
+    `同步转速应随频率变化：50Hz→${at50.metrics.sync_speed_rpm} 60Hz→${at60.metrics.sync_speed_rpm}`)
+  must(recommendPoles(1500) === 2, '1500rpm@50Hz 唯一合法偶极为 2 极')
+  must(recommendPoles(1500, 60) === 4, '1500rpm@60Hz 应为 4 极')
+  // 断崖消除：原 1500rpm 可行率 0.15%，现推荐极数下 V16 不再判死
+  return `50Hz: n_sync=1500 判死 / 60Hz: n_sync=1800 放行；推荐极数 1500rpm 50Hz→2极 60Hz→4极`
+})
+
+check('V18: 非法电源频率显式判 failed，不静默回落 50Hz', () => {
+  const base = { stator_od: 300, stator_id: 180, core_length: 200, poles: 4, slots_stator: 36, parallel_circuits: 1, turns_per_coil: 8, peak_current: 45, voltage: 380, power_kw: 30, cooling: 'forced_air', speed: 1460 }
+  const bad = validateDesign({ ...base, line_freq_hz: 5 })
+  const nan = validateDesign({ ...base, line_freq_hz: '五十' })
+  const ok = validateDesign({ ...base, line_freq_hz: 60 })
+  must(bad.issues.some((i) => i.rule === 'V18' && i.level === 'failed'), '5Hz 越界应判 V18 failed')
+  must(nan.issues.some((i) => i.rule === 'V18' && i.level === 'failed'), '非数值频率应判 V18 failed')
+  must(!ok.issues.some((i) => i.rule === 'V18'), '60Hz 合法频率不应触发 V18')
+  return `越界/非数值各拦 1，合法放行（V18 独立于 V16 归因）`
+})
+
+check('绝缘等级: params.insulation_class 透传到温升判据（B 级 80K 生效）', () => {
+  // 取证根因：formula-engine 此前只读 opts.insulationClass，行内字段从未被消费
+  const base = { stator_od: 300, stator_id: 180, core_length: 200, poles: 4, slots_stator: 36, parallel_circuits: 1, turns_per_coil: 8, peak_current: 45, speed: 1500, voltage: 380, power_kw: 30, cooling: 'natural' }
+  const viaParams = quickL0Estimate({ ...base, insulation_class: 'B' })
+  const viaOpts = quickL0Estimate(base, { insulationClass: 'B' })
+  const viaF = quickL0Estimate({ ...base, insulation_class: 'F' })
+  must(viaParams.thermal_limit_k === 80, `params 传 B 级应得 80K，实际 ${viaParams.thermal_limit_k}K（透传已修复）`)
+  must(viaOpts.thermal_limit_k === 80, 'opts 传 B 级应得 80K')
+  must(viaF.thermal_limit_k === 105, 'F 级应得 105K')
+  must(viaParams.insulation_class === 'B' && viaParams.insulation_class_valid === true, '结果行应回显生效等级与合法性')
+  const bad = quickL0Estimate({ ...base, insulation_class: 'Z' })
+  must(bad.insulation_class_valid === false && bad.thermal_limit_k === 105, '非法等级应标 valid=false 并回落 F 级 105K')
+  // 端到端：矩阵行 → 估算链路必须保持等级
+  const { matrix } = buildParamMatrix({ power_kw: 30, speed_rpm: 1500, count: 3, poles: 4, insulation_class: 'B' })
+  must(matrix[0].insulation_class === 'B', '矩阵行必须携带 insulation_class')
+  const est = quickL0Estimate(matrix[0], { insulationClass: matrix[0].insulation_class })
+  must(est.thermal_limit_k === 80, `矩阵行等级应生效，实际 ${est.thermal_limit_k}K`)
+  return `params/opts/矩阵三路一致（B=80K、F=105K、Z→valid=false）；B级比F级严 25K`
+})
+
+check('转矩口径: estimated_torque 标注为类比外推量而非规格承诺', () => {
+  // 压测把 _physics.estimated_torque 当规格断言 → 报 91.4% 守恒失效。
+  // 复核：它是 D²L 类比外推量，与 target_torque(9550P/n) 本就不同物理量。
+  const { matrix } = buildParamMatrix({ power_kw: 400, speed_rpm: 750, poles: 4, count: 3 })
+  const row = matrix[0]
+  const ph = row._physics
+  must(ph.torque_basis === 'analogy_d2l', '必须标注 torque_basis=analogy_d2l')
+  must(ph.torque_is_spec === false, '必须显式声明 torque_is_spec=false')
+  must(typeof ph.torque_ratio_estimated_over_target === 'number', '必须给出类比比例供核对')
+  must(Math.abs(ph.target_torque - 400 * 9550 / 750) < 0.01,
+    `target_torque 应等于规格 9550P/n=${(400 * 9550 / 750).toFixed(2)}，实际 ${ph.target_torque}`)
+  // 转矩公式本身正确：native.torque 与规格逐位吻合（偏差 0%）
+  const est = quickL0Estimate(row)
+  must(Math.abs(est.torque - ph.target_torque) < 0.01, `native.torque 应等于规格值，实际 ${est.torque} vs ${ph.target_torque}`)
+  // 交接面必须暴露契约声明
+  const out = runL0Estimate({ params_list: matrix.slice(0, 2) }, {})
+  must(out.torque_contract?.basis === 'analogy_d2l', '返回体必须给出 torque_contract 声明')
+  must(out.torque_contract?.spec_field === 'torque_nm', '必须指明规格字段为 torque_nm')
+  return `target=规格(9550P/n) / estimated=类比外推(D²L)，比例=${ph.torque_ratio_estimated_over_target}；native.torque 与规格偏差 0%`
+})
+
+check('V06: 极数奇偶合法性（3/5/7/9 极物理不存在）', () => {
+  const base = { stator_od: 300, stator_id: 180, core_length: 200, slots_stator: 36, parallel_circuits: 1, turns_per_coil: 8, peak_current: 45, voltage: 380, power_kw: 30, cooling: 'forced_air', speed: 500 }
+  for (const p of [3, 5, 7, 9]) {
+    const v = validateDesign({ ...base, poles: p })
+    must(v.issues.some((i) => i.rule === 'V06' && i.level === 'failed' && i.msg.includes('奇数')),
+      `${p} 极应判 V06 failed（奇数极物理不存在）`)
+  }
+  for (const p of [0, 1, 2.5]) {
+    const v = validateDesign({ ...base, poles: p })
+    must(v.issues.some((i) => i.rule === 'V06' && i.level === 'failed'), `${p} 极应判 V06 failed（非法极数）`)
+  }
+  const ok = validateDesign({ ...base, poles: 4 })
+  must(!ok.issues.some((i) => i.rule === 'V06'), '4 极合法不应触发 V06')
+  // 独立于 parallel：不给 parallel_circuits 也必须校验极数
+  const noPar = validateDesign({ stator_od: 300, stator_id: 180, core_length: 200, slots_stator: 36, speed: 500, poles: 3, voltage: 380, power_kw: 30, cooling: 'forced_air' })
+  must(noPar.issues.some((i) => i.rule === 'V06' && i.level === 'failed'), '未填 parallel_circuits 时仍须校验极数（防御纵深）')
+  return `奇数 3/5/7/9 全拦；0/1/2.5 极全拦；4 极放行；缺 parallel 时仍校验`
+})
+
+check('V10 电频率与 V16 频率口径一致（同源 f_line）', () => {
+  // V10 用 speed·p/120 得电频率（变频工况真实值），V16 用电网频率。
+  // 60Hz 工频 + 4极@1460rpm：电频率 48.7Hz（V10 视角）但电网 60Hz（V16 视角），
+  // 两者物理含义不同，不得互相覆盖 —— 只验证各自成立不被串扰。
+  const base = { stator_od: 300, stator_id: 180, core_length: 200, poles: 4, slots_stator: 36, parallel_circuits: 1, turns_per_coil: 8, peak_current: 45, voltage: 380, power_kw: 30, cooling: 'forced_air', speed: 1460 }
+  const r = validateDesign({ ...base, line_freq_hz: 60 })
+  must(Math.abs(r.metrics.freq_hz - 1460 * 4 / 120) < 0.05,
+    `电频率应按 speed·p/120=${(1460 * 4 / 120).toFixed(1)}Hz，实际 ${r.metrics.freq_hz}Hz`)
+  must(r.metrics.line_freq_hz === 60, `电网频率应独立回吐 60Hz，实际 ${r.metrics.line_freq_hz}`)
+  return `电频率=${r.metrics.freq_hz}Hz（V10 变频口径）/ 电网=${r.metrics.line_freq_hz}Hz（V16 工频口径），互不覆盖`
+})
+
+// ── 社区反馈闭环（v0.2.5）────────────────────────────────────────────
+check('反馈工具：只产出草稿，不产出设计明细', () => {
+  const mod = { buildCaseFeedbackDraft, assertNoSensitiveData, sensitivityRules }
+  const exported = Object.keys(mod).sort()
+  must(exported.includes('buildCaseFeedbackDraft'), '必须导出 buildCaseFeedbackDraft')
+  must(exported.includes('assertNoSensitiveData'), '必须导出脱敏自检')
+  // 红线：不得导出任何携带设计明细的函数
+  const forbidden = exported.filter((k) => /param|matrix|row|result|detail|case_/i.test(k))
+  must(forbidden.length === 0, `不得导出可拿到明细的接口：${forbidden.join(', ')}`)
+  return `导出仅 ${exported.join(', ')}（草稿 + 自检 + 规则表），无明细接口`
+})
+
+check('反馈工具：10 项脱敏自检全部能拦截注入数据', () => {
+  const rules = sensitivityRules()
+  must(rules.length === 10, `脱敏规则应为 10 项，实际 ${rules.length}`)
+  const injections = [
+    'stator_od=425.3', 'slots_stator=72', 'turns_per_coil=8', 'peak_current=496.2',
+    'l0_eff=93.73', '客户: 某某电机厂', 'C:\\Users\\zhang\\d.json', '\\\\srv\\share\\x',
+    'a3f9b2c1d4e5f60718293a4b', 'me@example.com',
+  ]
+  const missed = []
+  for (const text of injections) {
+    try {
+      assertNoSensitiveData(`正常内容\n${text}`)
+      missed.push(text)
+    } catch { /* 正确：应拦截 */ }
+  }
+  must(missed.length === 0, `以下注入未被拦截：${missed.join(', ')}`)
+  return `10/10 注入全部拦截（几何/槽数/匝数/电流/效率/客户/绝对路径/UNC/哈希/邮箱）`
+})
+
+check('反馈工具：草稿过自检且含规则画像与断崖定位', () => {
+  const draft = buildCaseFeedbackDraft({
+    pluginVersion: '0.2.5',
+    count: 8,
+    cases: [
+      { label: '常规 15kW', spec: { power_kw: 15, voltage_v: 380, speed_rpm: 1460, poles: 4 } },
+      { label: '常规 200kW', spec: { power_kw: 200, voltage_v: 690, speed_rpm: 985, poles: 6 } },
+      { label: '对照 1450rpm', spec: { power_kw: 30, voltage_v: 380, speed_rpm: 1450, poles: 4 } },
+      { label: '对照 1500rpm', spec: { power_kw: 30, voltage_v: 380, speed_rpm: 1500, poles: 4 } },
+    ],
+  })
+  must(typeof draft === 'string' && draft.length > 200, '草稿应为非空字符串')
+  must(draft.includes('规则命中画像'), '草稿缺规则命中画像')
+  must(draft.includes('断崖定位'), '草稿缺断崖定位小节')
+  must(draft.includes('隐私声明'), '草稿缺隐私声明（用户敢提交的前提是能自证清白）')
+  must(!/stator_od|turns_per_coil|peak_current/.test(draft), '草稿出现设计明细字段名')
+  return `草稿 ${draft.length} 字符，含画像/分箱/断崖/隐私声明，且无明细字段`
+})
+
+check('反馈工具：可行率口径须把 warning 计入可行（对齐三步链）', () => {
+  const r = buildCaseFeedbackDraft({
+    dryRun: true, count: 8,
+    cases: [{ label: '常规 15kW', spec: { power_kw: 15, voltage_v: 380, speed_rpm: 1460, poles: 4 } }],
+  })
+  must(r.feasibleRate > 0,
+    `常规工况可行率不应为 0（实测 ${r.feasibleRate}）—— 若为 0 说明误用 status==='passed'，`
+    + '把带 warning 的正常方案全算成不可行，会同时废掉断崖检测')
+  must(r.ruleRows.length > 0, '规则画像为空，无法定位阻断源')
+  return `可行率 ${(r.feasibleRate * 100).toFixed(1)}%，命中规则 ${r.ruleRows.length} 条`
+})
+
+check('社区资产：ISSUE 模板与 package.json author 齐备', () => {
+  for (const f of ['bug.yml', 'case-feedback.yml', 'benchmark.yml', 'config.yml']) {
+    must(existsSync(join(ROOT, '.github', 'ISSUE_TEMPLATE', f)), `缺 ISSUE 模板 ${f}`)
+  }
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+  must(pkg.author && pkg.author.name, 'package.json 缺 author（贡献者需要知道找谁）')
+  must(pkg.bugs && pkg.bugs.url, 'package.json 缺 bugs.url')
+  must(pkg.repository && pkg.repository.url, 'package.json 缺 repository.url')
+  return `3 套模板 + config 齐备；author=${pkg.author.name}`
+})
+
+//P0防泄漏：0.2.4/0.2.5 两次发版都把本机绝对路径打进了 npm 包。
+// .gitignore 管不住 npm 打包（files 是白名单，优先级更高），因此改为断言「发布内容里没有硬编码本机路径」。
+check('P0 发布物无本机绝对路径泄漏（0.2.4/0.2.5 教训固化）', () => {
+  const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+  const dirs = (pkg.files || []).filter(f => !f.endsWith('.md') && !f.endsWith('.json'))
+  const bad = []
+  // 只扫会进包的运行时目录（lib/tools/scripts），docs/examples 已在人工审阅范围
+  for (const d of dirs) {
+    const abs = join(ROOT, d)
+    if (!existsSync(abs) || !statSync(abs).isDirectory()) continue
+    for (const f of walk(abs)) {
+      if (!/\.(mjs|js|json|py|md)$/.test(f)) continue
+      const txt = readFileSync(f, 'utf8')
+      // 匹配任意盘符 + 真实目录名的绝对路径
+      //（0.2.6 教训：原正则只覆盖 C:/Users，漏掉 D:/MotorDesign 这类工作区盘符）
+      // 反选锚点：包内合法出现的 <MotorDesign> / <user> 等占位符形态不带盘符与真实目录名
+      const m = txt.match(/[A-Za-z]:[\\/](Users|dsh-motor-ai-l0|MotorDesign)[\\/][^"'`\s]+/g)
+      if (m) bad.push(`${relative(ROOT, f)}: ${[...new Set(m)].join(',')}`)
+    }
+  }
+  must(bad.length === 0, `发布目录含本机绝对路径：\n     ${bad.join('\n     ')}\n     修法：改用环境变量/占位符，或把该文件移出 package.json files`)
+  return `扫描 ${dirs.length} 个发布目录，0 处盘符绝对路径`
 })
 
 // ---------- 输出 ----------

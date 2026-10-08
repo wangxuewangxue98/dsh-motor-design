@@ -158,6 +158,10 @@ export const L0_NATIVE_FIELDS = [
   'thermal_rise_k',         // K    温升
   'thermal_limit_k',        // K    绝缘等级温升限值
   'insulation_class',       // -    B/F/H
+  // v0.2.5：非法等级/频率的可见性字段（防止静默按 F 级 50Hz 考核）
+  'insulation_class_valid', // bool  等级是否合法
+  'insulation_class_effective', // - 实际生效等级（非法时回落 F）
+  'line_freq_hz',           // Hz   生效电源频率（V16/V18 判据输入）
   'peak_current',           // A    峰值电流（闭环反推）
   'turns_per_coil',         // -    每线圈匝数（闭环反推）
   'parallel_circuits',      // -    并联支路

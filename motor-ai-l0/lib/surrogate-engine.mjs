@@ -18,6 +18,7 @@
 import { readFileSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
+import { resolveMotorType } from './motor-constants.mjs'
 import { buildL0Result } from './param-schema.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -303,20 +304,16 @@ function predictFromSingle(params, model) {
 }
 
 /**
- * 检测电机类型：优先使用显式 motor_type 字段，回退到 OD 启发式
+ * 检测电机类型（0.2.6 P0 重写）：显式别名经 resolveMotorType 规范化，
+ * 缺省一律判 induction —— 与生成路径（buildParamMatrix 缺省按异步几何产行）同默认。
+ *
+ * ⚠ 旧实现的 OD 启发式（od<400 → pmsm）已删除：它与生成默认矛盾，
+ *   导致 OD<612.4mm 的中小型异步机在代理通道被静默误判 pmsm → 分族选段失败
+ *   → skipped（10 万案例压测实测 19.8%）。几何是按异步口径生成的，
+ *   推理端再"聪明"地猜 pmsm 也只是放大错误，不是修正错误。
  */
 function detectMotorType(params) {
-  const mt = params?.motor_type
-  if (mt === 'pmsm' || mt === '永磁同步电动机' || mt === '永磁' || mt === 'PMSM' || mt === 'BLDC') {
-    return 'pmsm'
-  }
-  if (mt === 'induction' || mt === '异步电动机' || mt === '异步' || mt === 'IM') {
-    return 'induction'
-  }
-  // 回退：OD 启发式（仅当无显式 motor_type 字段时）
-  const od = params?.stator_od
-  if (od != null && od < 400) return 'pmsm'  // 高速小电机
-  return 'induction'
+  return resolveMotorType(params?.motor_type).type
 }
 
 /**

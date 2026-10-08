@@ -33,10 +33,11 @@ const RELEASE_MJS = resolve(ROOT, 'scripts', 'release.mjs')
 // Windows 下 fork 失败，用 bsdtar（Windows 原生 tar）绝对路径绕过 Git Bash
 const TAR_EXE = join(process.env.WINDIR, 'System32', 'tar.exe')
 // process.execPath 在此环境指向 node.exe，必须显式定位 Python
-// 优先使用 managed Python（WorkBuddy 隔离环境），fallback 到 PATH
-const MANAGED_PYTHON = 'C:/Users/15389/.workbuddy/binaries/python/versions/3.13.12/python.exe'
+// 优先 MANAGED_PYTHON 环境变量 → PATH 上的 python；均不可用时报错
+const MANAGED_PYTHON = process.env.MANAGED_PYTHON || null
 let PYTHON
-try { await access(MANAGED_PYTHON) ; PYTHON = MANAGED_PYTHON } catch { PYTHON = 'python' }
+if (MANAGED_PYTHON) { try { await access(MANAGED_PYTHON); PYTHON = MANAGED_PYTHON } catch { /* fall through */ } }
+if (!PYTHON) PYTHON = 'python'
 // release.mjs 是 Node ESM 脚本，不能用 Python 直接跑
 const NODE = process.execPath
 const PKG = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8'))

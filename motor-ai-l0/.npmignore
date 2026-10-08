@@ -1,0 +1,7 @@
+# 说明：package.json 的 "files" 是白名单，优先级高于 .npmignore，
+# 因此本文件仅在「把某目录移出 files 之后」才起作用。
+# 实际防泄漏靠两条：① 标定结果等运行产物不入库（见 .gitignore）；
+#                ② 一次性发版脚本用完即删（历史脚本硬编码了旧版本号与本机绝对路径）。
+scripts/loss_calib*.json
+l0-handoff/
+.l0_handoff_test/

@@ -23,6 +23,7 @@ import {
   normalizeSpec, assertMatrixShape, buildHandoff, L0_NATIVE_FIELDS, L1_MIRROR_FIELDS,
 } from '../../lib/param-schema.mjs'
 import { quickL0Estimate } from '../../lib/formula-engine.mjs'
+import { resolveMotorType } from '../../lib/motor-constants.mjs'
 import {
   loadSurrogateModel,
   predictBatch,
@@ -30,6 +31,7 @@ import {
   DEFAULT_CONFIDENCE_THRESHOLD,
 } from '../../lib/surrogate-engine.mjs'
 import { getUsageSink, logUsage } from '../../lib/usage-log.mjs'
+import { assessApplicability, scenarioFromMatrix } from '../../lib/applicability-gate.mjs'
 
 /** 工具入参声明 */
 export const TOOL_PARAMS = {
@@ -78,6 +80,21 @@ export function runL0Estimate(rawArgs, config = {}) {
 
   const efficiencyCap = config.efficiencyCap ?? 96
   const maxTempClamp = config.tempRiseRange ?? [45, 130]
+
+  // v0.2.5：按行解析绝缘等级与电源频率，构造 quickL0Estimate 的 opts。
+  // 取证根因：此前两处调用只传 {efficiencyCap, maxTempClamp}，行内的
+  // insulation_class / line_freq_hz 从未到达公式引擎 ⇒ B 级按 F 级判、V16 恒按 50Hz 判。
+  // 行内字段优先于全局 config（同一批内可混排不同等级/频率），缺省才回落 config。
+  const estimateOpts = (row) => ({
+    efficiencyCap,
+    maxTempClamp,
+    ...(row?.insulation_class ? { insulationClass: String(row.insulation_class).toUpperCase() } : {}),
+    ...(Number.isFinite(Number(row?.line_freq_hz)) ? { lineFreqHz: Number(row.line_freq_hz) } : {}),
+    ...(!row?.insulation_class && config.insulationClass
+      ? { insulationClass: String(config.insulationClass).toUpperCase() } : {}),
+    ...(!Number.isFinite(Number(row?.line_freq_hz)) && Number.isFinite(Number(config.line_freq_hz))
+      ? { lineFreqHz: Number(config.line_freq_hz) } : {}),
+  })
   
   // 灰度模式：默认公式通道，仅显式启用 surrogate 时才使用代理模型
   const l0Mode = config.l0Mode ?? 'formula'
@@ -92,6 +109,16 @@ export function runL0Estimate(rawArgs, config = {}) {
   // 'auto' 与 'surrogate' 都走代理通道；'auto' 下代理失败/降级会自动回退公式通道（函数尾部）
   // 代理通道仅输出效率（温升/损耗/磁密/可行判定均由公式通道给出），
   // 因此只在用户显式指定 surrogate 时启用：auto 默认走字段完整的公式通道。
+  // ---- v0.2.5 P5 能力门 ----
+  // L0 的几何/磁密/反电势模型按工频中低压异步标定。超出标定域时模型不会给错数字，
+  //   而是把整批判死（recommended=null），调用方只看到「无解」，无法区分
+  //   「设计真不可行」与「这工具不适用」。能力门把后者显式说出来并给路由建议。
+  // ⚠ 必须在 surrogate 分支之前求值：surrogate 通道的返回体也要带能力门结论。
+  const applicability = assessApplicability(scenarioFromMatrix(paramsList))
+  const gateNote = applicability.verdict === 'ok'
+    ? undefined
+    : `[L0 能力门 ${applicability.verdict.toUpperCase()}] routing=${applicability.routing}\n${applicability.advice}`
+
   if (l0Mode === 'surrogate') {
     try {
       const modelPath = config.surrogatePath ?? 'models/l0_surrogate_family.json'
@@ -102,7 +129,7 @@ export function runL0Estimate(rawArgs, config = {}) {
       //   实测 Python/Node 两套公式仅差 ~0.5pp, 口径一致可安全复用。
       const enriched = paramsList.map((row) => {
         try {
-          const l0 = quickL0Estimate(row, { efficiencyCap: 99 })
+          const l0 = quickL0Estimate(row, { ...estimateOpts(row), efficiencyCap: 99 })
           if (l0 && typeof l0.efficiency === 'number') {
             return { ...row, l0_eff: l0.efficiency }
           }
@@ -116,6 +143,12 @@ export function runL0Estimate(rawArgs, config = {}) {
         surrogateThreshold
       )
       surrogateFallbacks = fallbacks
+
+      // 0.2.6 P0：直传 params_list 的行可能仍无 motor_type（非 buildParamMatrix 产物）。
+      // 缺省行已被 detectMotorType 统一判 induction（与生成默认一致），但必须让调用方看见数量。
+      const assumedTypeRows = paramsList.filter(
+        (r) => resolveMotorType(r?.motor_type).assumed
+      ).length
 
       for (let i = 0; i < paramsList.length; i++) {
         const row = paramsList[i]
@@ -132,7 +165,7 @@ export function runL0Estimate(rawArgs, config = {}) {
         const pred = predictions[i]
         if (pred.fallback_to_formula || pred.error) {
           // 置信度不足或预测失败，降级公式通道
-          results.push(quickL0Estimate(row, { efficiencyCap, maxTempClamp }))
+          results.push(quickL0Estimate(row, estimateOpts(row)))
         } else {
           // 代理模型预测成功
           results.push(buildSurrogateResult(row, pred))
@@ -167,12 +200,18 @@ export function runL0Estimate(rawArgs, config = {}) {
           failures: failures.length ? failures : undefined,
           returned: topRows.length,
           feasible_count: feasibleCount,
+          returned_feasible_count: topRows.filter((r) => r.feasible === true).length,
+          motor_type_assumed_rows: assumedTypeRows > 0 ? assumedTypeRows : undefined,
           recommended: recommended
             ? { stator_od: recommended.params?.stator_od, poles: recommended.params?.poles, efficiency: recommended.efficiency, verdict: recommended.verdict }
             : null,
           sorted_by: sortBy,
           sort_order: ascending ? 'asc' : 'desc',
           l0_mode: 'surrogate',
+          applicability: applicability.verdict,
+          applicability_reasons: applicability.reasons.length ? applicability.reasons : undefined,
+          applicability_advice: applicability.advice ?? undefined,
+          applicability_note: gateNote,
           surrogate_experimental: model.experimental === true,
           surrogate_warning: model.experimental === true
             ? 'surrogate 通道为实验特性：训练域与真实机座不匹配且 cv_r2 偏低，结果仅供参考，请勿直接用于排序决策'
@@ -203,7 +242,7 @@ export function runL0Estimate(rawArgs, config = {}) {
       continue
     }
     try {
-      results.push(quickL0Estimate(row, { efficiencyCap, maxTempClamp }))
+      results.push(quickL0Estimate(row, estimateOpts(row)))
     } catch (err) {
       failures.push({ index: i, error: String(err?.message ?? err) })
     }
@@ -224,10 +263,17 @@ export function runL0Estimate(rawArgs, config = {}) {
     ranking: ['efficiency', 'torque_density'],
   })
 
+  // ---- v0.2.5 P5 能力门（结论已在函数开头求值，此处复用）----
   const elapsed = Date.now() - started
-
   const feasibleCount = results.filter((r) => r.feasible === true).length
   const recommended = topRows.find((r) => r.feasible === true) ?? null
+
+  // 能力门判定为超出标定域时，「无解」必须归因于工具边界而非设计缺陷 ——
+  //   否则 recommended=null 会被误读成「该工况做不出来」。
+  const rejectAttribution = applicability.verdict === 'reject' && recommended === null
+    ? `feasible_count=0 的原因是**当前工况超出 L0 标定域**（见 applicability），`
+      + `而非「设计上无解」。请按 applicability.advice 调整工况或改走 L1/L2。`
+    : undefined
 
   // v0.2.4：统计触顶比例并据实告知 —— efficiency 是「与 L1 同口径」的钳位显示值，
   // 触顶时它不等于真值；排序已改用 efficiency_raw，但展示值仍为 efficiency。
@@ -246,6 +292,9 @@ export function runL0Estimate(rawArgs, config = {}) {
     failures: failures.length ? failures : undefined,
     returned: topRows.length,
     feasible_count: feasibleCount,
+    // 0.2.6 P1：返回集可能混入 infeasible_thermal 行（温升超限为合法三态），
+    // feasible_count 是全量口径，调用方需要「本次返回里真正可行」的数量来自检。
+    returned_feasible_count: topRows.filter((r) => r.feasible === true).length,
     recommended: recommended
       ? {
         stator_od: recommended.params?.stator_od,
@@ -256,9 +305,25 @@ export function runL0Estimate(rawArgs, config = {}) {
         verdict: recommended.verdict,
       }
       : null,
+    applicability: applicability.verdict,
+    applicability_reasons: applicability.reasons.length ? applicability.reasons : undefined,
+    applicability_advice: applicability.advice ?? undefined,
+    applicability_note: gateNote ?? rejectAttribution,
     efficiency_cap: efficiencyCap,
     efficiency_capped_count: cappedCount,
     efficiency_note: efficiencyNote,
+    // ---- v0.2.5 转矩口径声明（P0）----
+    // L0 不预测转矩。矩阵行的 _physics.estimated_torque 是「按 D²L 几何类比外推的可达转矩」，
+    // 与 target_torque（9550·P/n，用户规格）是不同物理量，差一个 D²L 比例。
+    // 交接给 RMxprt 时必须用 specs[].torque_nm（规格），不得用 estimated_torque 当规格。
+    torque_contract: {
+      basis: 'analogy_d2l',
+      spec_field: 'torque_nm',
+      spec_formula: '9550·P(kW)/n(rpm)',
+      analogy_field: '_physics.estimated_torque',
+      analogy_formula: 'torque_nm × (D²L)/(D²L_base)',
+      warning: 'estimated_torque 是几何类比外推量，不是规格承诺；当作规格使用会导致转矩静默违约',
+    },
     sorted_by: sortBy,
     sort_order: ascending ? 'asc' : 'desc',
     l0_mode: config.l0Mode ?? 'formula',

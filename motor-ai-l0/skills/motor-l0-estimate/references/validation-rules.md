@@ -25,11 +25,28 @@
 | V05 | 极槽配合 | warning | poles / slots_stator / slots_rotor |
 | V06 | 并联支路整除极数且 ≤ q=Qs/(3p) | failed | poles / parallel_circuits / slots_stator |
 | V07 | 齿部磁密 | warning | stator_id / tooth_width / slots_stator / poles |
-| V08 | 轭部磁密 | warning | stator_id / yoke_thickness / poles |
+| V08 | 轭部磁密 | **failed** | stator_id / yoke_thickness / poles |
 | V09 | 槽形几何 | failed | stator_od / stator_id / tooth_width / slots_stator |
 | V10 | 电频率 | warning | speed / poles |
 | V11 | 转子轭厚度 | failed | rotor_od / shaft_dia |
 | V12 | 温升限值 | warning | power_kw 或 torque_nm + cooling |
+| V14 | 反电势**自洽性** | failed | voltage / speed / poles / stator_id / core_length / slots_stator / parallel_circuits / turns_per_coil |
+| V15 | 槽满率可行性 | failed | stator_od / stator_id / slots_stator / poles / peak_current / turns_per_coil / parallel_circuits |
+| V16 | 极数-转速同步一致性 | failed | speed / poles / line_freq_hz |
+| V17 | 匝数整量化可行性 | failed | voltage / speed / poles / stator_id / core_length / slots_stator / parallel_circuits |
+| V18 | 电源频率合法性 | failed | line_freq_hz |
+
+共 **17 条**（V01–V12 + V14~V18；V13 附于 V06）。
+> 注：本文档此前停留在 12 条且把 V08 记为 warning，与代码不符（V08 自 v0.1.7 起为硬门禁 failed）。已按 `RULE_CATALOG` 校正。
+
+### 电源频率（v0.2.5）
+
+`n_sync = 120·f_line/poles`。**60Hz 电网与 VFD 变频工况必须显式传 `line_freq_hz`**：
+
+- 缺省 50Hz（IEC/中国工频），合法区间 20~400Hz，越界或非数值判 **V18 failed**（不静默回落）；
+- V16 随频率变化：4极@1500rpm 在 50Hz 下判死（n_sync=1500 触及同步点），60Hz 下合法（n_sync=1800）；
+- `recommendPoles()` 按 `n_sync > n` 反推档位，1500rpm@50Hz → 2 极（4/6/8 极均超同步）；
+- 行内 `line_freq_hz` 优先于工具入参，便于同一批内混排不同频率。
 
 可升级为 `failed` 的规则（`ESCALATABLE_RULES`）：
 V03 / V04 / V05 / V07 / V08 / V10 / V12。
@@ -74,6 +91,28 @@ V03 / V04 / V05 / V07 / V08 / V10 / V12。
 
 > 初版默认判 `failed`，实测 40/40 全 failed —— 预筛层失去意义。
 > 改为默认 `warning`，需硬剔除时显式传 `escalate: ['V12']`。
+
+> **v0.2.5 修复**：`insulation_class` 此前只从工具入参 `opts` 读取，矩阵行携带的
+> `params.insulation_class` 从未被消费 ⇒ B 级用户一律按 F 级 105K 考核且无告警。
+> 现取值优先级为 **行内字段 > 工具入参 > config > 默认 F**，并输出
+> `insulation_class_valid` / `insulation_class_effective`；非法等级显式标 `valid=false`
+> 而非静默按 F 级放行。B 级比 F 级严 25K，自然冷却场景下差异显著。
+
+## 3.1 转矩口径（P0，勿误用）
+
+| 字段 | 含义 | 公式 |
+|---|---|---|
+| `torque_nm` / `target_torque` | **规格值**（硬约束，交接用这个） | `9550·P(kW)/n(rpm)` |
+| `_physics.estimated_torque` | **几何类比外推量**（可达转矩参考） | `torque_nm × (D²L)/(D²L_base)` |
+
+两者差一个 D²L 比例，**不是同一物理量**。10 万案例压测把 `estimated_torque`
+当作"承诺满足用户转矩的输出"来断言，报出 91.4% 守恒失效 —— 属断言口径错，
+转矩公式本身正确（`native.torque` 与规格偏差 0%）。
+
+为防下游误用，矩阵行已标注 `torque_basis='analogy_d2l'` / `torque_is_spec=false` /
+`torque_ratio_estimated_over_target`，`motor_l0_estimate` 返回体给出 `torque_contract` 声明。
+
+**交接给 RMxprt 时必须用 `specs[].torque_nm`，不得用 `estimated_torque` 当规格。**
 
 ## 4. 批量模式
 

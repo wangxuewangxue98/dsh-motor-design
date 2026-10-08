@@ -69,7 +69,7 @@ node scripts/verify.mjs
 | `motor_l0_pipeline` | **推荐入口**：三步链聚合，只回紧凑摘要 + 文件交接，根治 2000 行截断 | `power_kw` `speed_rpm` `count` `top_n` `write_handoff` |
 | `motor_param_matrix` | 生成候选参数矩阵（聚焦扫描，非笛卡尔积） | `power_kw` `speed_rpm` `voltage_v` `poles` `count` |
 | `motor_l0_estimate` | 毫秒级估算 + 排序 + L1 交接载荷（默认 Top10） | `params_list` `top_n` `sort_by` |
-| `motor_design_validate` | 15 条物理一致性校验，返回 `passed`/`warning`/`failed` | `params_list` `escalate` |
+| `motor_design_validate` | 17 条物理一致性校验，返回 `passed`/`warning`/`failed` | `params_list` `escalate` `bg_caliber` |
 
 入参别名：`power`→`power_kw`、`rpm`→`speed_rpm`、`volt`→`voltage_v`。
 `sort_by` 白名单：`efficiency` `torque_density` `temp_rise` `total_loss` `power`（`temp_rise`、`total_loss` 升序，越小越好）。
@@ -78,8 +78,8 @@ node scripts/verify.mjs
 
 ```text
 $ motor_param_matrix       { power_kw: 15, speed_rpm: 1460, voltage_v: 380, motor_type: 'induction', count: 120 }  →  120 候选
-$ motor_design_validate    12 条物理校验  →  120 passed / 0 failed
-$ motor_l0_estimate        sort_by: 'efficiency'  →  Top5，80 个可行候选
+$ motor_design_validate    17 条物理校验  →  0 passed / 80 warning / 40 failed
+$ motor_l0_estimate        sort_by: 'efficiency'  →  Top5，OD310 / 6 极 / η=95.17%
 ```
 
 | # | OD (mm) | L (mm) | 极数 | 槽数 | 效率 (%) | 温升 (K) | 轭磁密 (T) | 总损耗 (W) |
@@ -104,7 +104,8 @@ $ motor_l0_estimate        sort_by: 'efficiency'  →  Top5，80 个可行候选
 | `surrogatePath` | `'models/l0_surrogate_family.json'` | 代理模型路径（v2.3.0-fixseg） |
 | `surrogateConfidenceThreshold` | `0.4` | 代理置信度门限，低于此值降级公式 |
 | `efficiencyCap` | `96` | 效率封顶（与 L1 同口径，避免两层排序跳变）。v0.2.4 起仅钳**展示值** `efficiency`，排序按 `efficiency_raw`（未封顶真值） |
-| `insulationClass` | `'F'` | 绝缘等级，决定温升限值（B=80K / F=105K / H=125K） |
+| `insulationClass` | `'F'` | 绝缘等级，决定温升限值（B=80K / F=105K / H=125K）。**v0.2.5**：行内 `insulation_class` 优先于本项 |
+| `line_freq_hz` | `50` | 电源频率 (Hz)，合法区间 20~400Hz。**60Hz 电网与 VFD 变频工况必须设置**，否则 V16 按 50Hz 判超同步（4极@1500rpm 会形成假断崖）。非法值判 V18 failed，不静默回落 |
 
 其余配置项（本地统计 `usageLog`；L0 运行 `surrogatePath` / `surrogateConfidenceThreshold` / `maxMatrixSize` / `topNPreview` / `tempRiseRange` / `airGapFluxT` / `highSpeedRpm`；脱敏回传 `telemetryEnabled` / `telemetryEndpoint` / `telemetryBatchSize` / `telemetryIntervalSec` / `sessionTelemetry`）见 [`docs/ENGINEERING.md`](docs/ENGINEERING.md#八配置全表) 与本文「脱敏聚合指标回传」节。
 > ⚠️ `tempRiseRange` 命名待议：它对齐 L1 `max_temp` 的钳位区间（°C），不是 L0 温升（K），拟改 `maxTempClamp`。
@@ -150,6 +151,40 @@ telemetryEndpoint: 'http://127.0.0.1:5000/api/admin/dsh-plugins/motor-ai-l0/usag
 telemetryIntervalSec: 300
 ```
 
+## 社区反馈（结论式，永不自动提交）
+
+**遇到「我的工况跑不出方案 / 结果明显不合理」时，可以把结论反馈给作者。**
+插件提供 `tools/feedback/case-feedback.mjs`，在你自己的机器上生成一份可直接粘贴的 issue 草稿：
+
+```js
+import { buildCaseFeedbackDraft } from 'dsh-motor-ai-l0/tools/feedback/case-feedback.mjs'
+
+const draft = buildCaseFeedbackDraft({
+  pluginVersion: '0.2.5',
+  cases: [{ label: '工况A', spec: { power_kw: 450, voltage_v: 690, speed_rpm: 985, poles: 6 } }],
+})
+// 粘贴到 https://github.com/wangxuewangxue98/dsh-motor-ai-l0/issues/new?template=case-feedback.yml
+```
+
+草稿只含三类内容：
+
+| 层次 | 例子 | 是否回传 |
+|---|---|---|
+| **L1 明细** | `stator_od=425, l0_eff=93.73` | ❌ **永不** |
+| **L2 结论** | `1400~1500rpm 可行率 66.7% → 1500~3000rpm 33.3%` | ✅ |
+| **L3 元统计** | `V16 failed×40` | ✅ |
+
+**三条硬约束：**
+1. **工具只返回草稿字符串**，不导出 `params` / `matrix` —— 脱敏不靠过滤，靠不产出。
+2. 草稿生成后强制过 **10 项脱敏自检**（几何/槽数/匝数/电流/效率/客户名/绝对路径/UNC/哈希/邮箱），
+   命中任一项即抛错、拒绝输出。
+3. **永不实现自动提交**。自动上报是信任的重灾区，作者需要收到有人愿意署名的东西。
+
+**闭环承诺**：反馈修复后，该工况会被匿名化纳入 `benchmarks/` 回归用例，由 CI 永久保护。
+
+提交前请看 [.github/ISSUE_TEMPLATE/](.github/ISSUE_TEMPLATE/) —— 有问题反馈、案例反馈、
+标定数据贡献三套模板。
+
 ## 已知精度边界
 
 L0 物理通道目前是 **v0.1 未标定版**（回归质量门判定 DEBT）：6 个标定案例效率低于参考带 0.35~2.96pt，温升偏保守。根因是损耗模型尚未用 RMxprt 批量结果标定（铁损未分齿/轭、铜损缺电路约束、机械损未标定、散热筋未计）。
@@ -166,6 +201,6 @@ L0 物理通道目前是 **v0.1 未标定版**（回归质量门判定 DEBT）�
 
 ## 文档与许可
 
-- [`docs/ENGINEERING.md`](docs/ENGINEERING.md) —— 目录结构、字段契约 Param 锁、12 条校验规则、与 Python 体系差异、工程复盘、配置全表、路线图
+- [`docs/ENGINEERING.md`](docs/ENGINEERING.md) —— 目录结构、字段契约 Param 锁、17 条校验规则、与 Python 体系差异、工程复盘、配置全表、路线图
 - [`docs/QUALITY-GATE.md`](docs/QUALITY-GATE.md) —— 回归质量门（两道门 + divergence）、实算对照、待校准清单
 - [MIT](LICENSE) © Motor-AI
