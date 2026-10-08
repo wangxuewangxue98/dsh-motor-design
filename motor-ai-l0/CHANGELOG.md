@@ -5,6 +5,53 @@
 
 版本三重一致性：`package.json.version` = `SKILL.md` 的 `metadata.version` = `CHANGELOG.md` 最新条目。
 
+## [0.2.7] - 2026-10-08 — P1 收口（pipeline 计数透传 + 升级注意 + 置信度修正）
+
+本批修复源于 v0.2.6 的 1000 案例 + 10 万案例独立压测复盘（外部测试者），均为 P1 级、不阻塞 0.2.6 集成。
+
+### P1-1：`motor_l0_pipeline` 透传 `returned_feasible_count`（补双通道分叉盲区）
+- **现象**：v0.2.6 在 `l0-estimate` 通道补了 `returned_feasible_count`（返回集 TopN 内真正可行的数量，
+  用于自检「返回集混入 infeasible_thermal 三态行」），但 **`pipeline` 通道（`motor_l0_pipeline`
+  返回体与 handoff）只透传 `feasible_count`、丢弃 `returned_feasible_count`**。MotorAI_Client 的
+  实际入口正是 `motor_l0_pipeline` —— 10 万案例压测中 82,103/82,103 该字段缺失。
+- **根因**：作者门禁（verify.mjs）只断言 `l0-estimate` 通道的 `returned_feasible_count`，
+  未覆盖 `pipeline` 返回体，形成「双通道分叉盲区」；CHANGELOG 0.2.6 称「两个通道均补」与现状不符。
+- **修复**：
+  - `tools/l0/pipeline.mjs` 返回体 summary 与 handoff summary 各补一行
+    `returned_feasible_count: estimate.returned_feasible_count`
+  - `scripts/verify.mjs` 新增门禁断言：运行 `runL0Pipeline` 并校验 `summary` 与 `handoff.summary`
+    的 `returned_feasible_count` 均为 number≥0 且 ≤ `feasible_count`；门禁 95→**96/96**
+  - CHANGELOG 0.2.6 的「两个通道均补」声明已订正为「l0-estimate 携带、pipeline 于 0.2.7 补齐」
+
+### P1-2：损耗标定升级影响文档化 + `--cmp` 第五组 `thermal_recalc`
+- **现象**：v0.2.6 新增分段铜损标定 `COPPER_LOSS_K`（small 0.2629 / medium 0.3949 / large 1.0039）
+  后，同几何铜损 7117→13125W、温升 58.3→107.6K、效率 96→94.5，14 例旧可行变热不可行 ——
+  属**物理修正（可行口径收紧），非回退**（逐例复核确认），但 CHANGELOG 缺「升级注意」，
+  且 `--cmp` 四组分类无法表达这种「校验层两版都可行、估计层热可行收紧」的 case。
+- **升级注意（下游消费方必读）**：升级到 0.2.6/0.2.7 后，预期会出现**更多 `infeasible_thermal`
+  结果**（温升超限被拒），这是损耗标定修正后的正确行为，不是回归；可行率可能下降约 5.97%，
+  ΔT 中位约 67.8K。请勿将此类变化误读为「新版本做不出方案」。
+- **修复**：`scripts/cmp.mjs` 新增第五组 `thermal_recalc` —— 校验层两版都可行、但新版估计层
+  因损耗标定出现 `infeasible_thermal` 而旧版可行的 spec 归入此组，**明确非回退**，不触发 CI 非零退出；
+  估计层判定依赖公式通道 `verdict`，代理可用时保守降级为 `both_ok`（不会误报回退）。
+
+### P1-3：公式通道 `confidence` 不再恒 1 + README 说明
+- **现象**：公式通道（未标定默认通道）结果硬编码 `confidence: 1.0`，会误导下游把未标定公式输出
+  当成高置信标定预测采信绝对值。
+- **修复**：`lib/formula-engine.mjs` 公式通道 `confidence` 改为显式标记值 **0.5**
+  （`FORMULA_CHANNEL_CONFIDENCE`），`buildL0Result` 默认值同步；README「两条通道的分工」补注：
+  代理通道可能离线/覆盖率 0 而静默降级公式通道、公式 `confidence=0.5` 仅代表「未标定可排序不可绝对值采信」、
+  经验回灌 `shadow` 显著更优即视为触发正式重训的信号。
+- 代理通道仍输出逐预测 `confidence`（低于 `surrogateConfidenceThreshold` 自动降级），不受影响。
+
+### 附带：遥测 `plugin_version` 修复 + 回归基线重定
+- `index.mjs`：遥测上报的 `plugin_version` 改读插件自身 `package.json` 的 `version`
+  （`config.pluginVersion` 不在 Config Schema 中，解析后恒 undefined，导致上报版本长期为空，P2 缺陷）；
+  解析失败安全回落空串。
+- `benchmarks/baseline.json`：损耗标定 v3.1 + 效率钳位与排序解耦后，
+  `regression.mjs --update-baseline` 重定 6 案例基线（旧基线为 2026-09-23 口径，
+  差异属预期口径变化而非回归；`small55kw` 的 thermal DEBT 如实保留）。
+
 ## [0.2.6] - 2026-10-08 — P0 motor_type 透传修复 + 经验回灌闭环 + --cmp 跨版本对比进 CI
 
 本批修复源于 v0.2.5 的 1000 案例 + 10 万案例两轮独立压测（外部测试者复核，
@@ -36,8 +83,10 @@ V16 断崖在 1rpm 精度下彻底消除，唯一未修的 P0 在本版闭环。
     `MOTOR_TYPE_ASSUMED` 告警（info/warning 两级）
   - `lib/surrogate-engine.mjs`：`detectMotorType()` **删除 OD 启发式**，
     改走 `resolveMotorType` —— 几何按异步口径生成时，推理端猜 pmsm 是放大错误不是修正错误
-- P1 顺带：两个通道 summary 均补 `returned_feasible_count`（返回集可能混入
-  infeasible_thermal 三态行，调用方需要可自检的口径）
+- P1 顺带：`l0-estimate` 通道 summary 补 `returned_feasible_count`（返回集可能混入
+  infeasible_thermal 三态行，调用方需要可自检的口径）。**`pipeline` 通道透传在 0.2.7 补齐**——
+  0.2.6 仅 `l0-estimate` 携带，MotorAI_Client 实际入口 `motor_l0_pipeline` 的返回体仍丢弃该字段
+  （详见 0.2.7「P1-1」）
 - 门禁 94→**95/95**：新增「P0 motor_type 透传」4 类断言（行级透传/双层告警/别名归一/P1 计数）
 
 ### 经验回灌闭环（tools/feedback/experience-hub.mjs，新增）

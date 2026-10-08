@@ -112,6 +112,7 @@ export function runL0Pipeline(rawArgs, config = {}) {
           feasible_after_filter: feasibleRows.length,
           top_n_returned: estimate.returned,
           feasible_count: estimate.feasible_count,
+          returned_feasible_count: estimate.returned_feasible_count,
           count_ok: countOk,
           sort_by: sortBy,
         },
@@ -144,6 +145,7 @@ export function runL0Pipeline(rawArgs, config = {}) {
       feasible_after_filter: feasibleRows.length,
       top_n_returned: estimate.returned,
       feasible_count: estimate.feasible_count,
+      returned_feasible_count: estimate.returned_feasible_count,
       count_ok: countOk,
       sort_by: sortBy,
       // v0.2.4：整批触顶时 efficiency 是被钳的显示值，真值在结果行的 efficiency_raw

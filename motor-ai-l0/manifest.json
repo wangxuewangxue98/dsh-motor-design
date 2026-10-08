@@ -11,7 +11,7 @@
     {
       "name": "motor-l0-estimate",
       "path": "skills/motor-l0-estimate/SKILL.md",
-      "version": "0.2.6",
+      "version": "0.2.7",
       "description": "电机设计 L0 快速预筛专家技能（毫秒级参数矩阵估算）"
     }
   ],

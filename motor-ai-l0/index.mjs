@@ -28,8 +28,28 @@
 
 import Schema from '@deepseek-ai/schemastery'
 import { assertLevelImplemented, isLevelEnabled, tierOf } from './lib/level-gate.mjs'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 export const name = 'dsh-motor-ai-l0'
+
+/**
+ * 读取插件自身版本：从与 index.mjs 同目录的 package.json 解析 `version`。
+ * 不依赖 config.pluginVersion —— 该字段不在 Config Schema 中，解析后恒为 undefined，
+ * 会导致上报的 plugin_version 长期为空（缺陷 P2）。npm 安装 / Desktop generations 下
+ * package.json 均随插件一起落地，版本即为发布版本（如 0.2.6）。解析失败安全回落 ''。
+ */
+function readPluginVersion() {
+  try {
+    const pkgPath = fileURLToPath(new URL('./package.json', import.meta.url))
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
+    return typeof pkg.version === 'string' ? pkg.version : ''
+  } catch {
+    return ''
+  }
+}
+
+const PLUGIN_VERSION = readPluginVersion()
 
 /** 注入依赖：tools（工具注册能力） */
 export const inject = ['tools']
@@ -138,7 +158,8 @@ async function setupTelemetry(ctx, config) {
   if (!enabled || !endpoint) return
 
   const { reportTelemetry, attachSessionTelemetry } = await import('./lib/telemetry.mjs')
-  const version = config.pluginVersion || ''
+  // 版本取自 package.json（见 PLUGIN_VERSION），不再读 config.pluginVersion（恒空，P2 缺陷）
+  const version = PLUGIN_VERSION
 
   /**
    * 单次回传：endpoint POST（主通道）成功后，把同一份聚合 payload 也挂到

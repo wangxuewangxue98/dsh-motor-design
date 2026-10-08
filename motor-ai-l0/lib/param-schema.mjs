@@ -351,7 +351,7 @@ export function buildHandoff(candidates, opts = {}) {
  * 合并「L0 原生 + L1 镜像」双字段结果（v3 决策②落地）
  * @param {{params: object, native: object, mirror: object, confidence?: number}} input
  */
-export function buildL0Result({ params, native, mirror, confidence = 1.0 }) {
+export function buildL0Result({ params, native, mirror, confidence = 0.5 }) {
   const result = { params }
   for (const f of L0_NATIVE_FIELDS) {
     if (f in native) result[f] = native[f]

@@ -3,12 +3,15 @@
  * ---------------------------------------------------------------------------
  * 背景（2026-10-08 压测复盘教训）：v0.2.5 的 V18 会拦截旧版放行的越界频率，
  * 朴素的「可行率对比」把这类输入的可行率下降误读成「200rpm 回退 80pp」。
- * 本工具因此强制按四组归类，只有 `regression_suspect` 才算真回退：
+ * 本工具因此强制按五组归类，只有 `regression_suspect` 才算真回退：
  *
- *   both_ok                  两版都可行
+ *   both_ok                  两版都可行（校验层）
  *   new_only                 仅新版可行（如 V16 断崖修复 → 改进）
  *   old_only_blocked_by_rule 仅旧版可行，且该 spec 属「旧版放行、新版按规则拦截」
  *                            的域（越界频率 / 同步转速零转差 / 非法极数等）→ 预期行为
+ *   thermal_recalc           校验层两版都可行，但新版因损耗标定（v0.2.6 COPPER_LOSS_K
+ *                            分段）使温升超限 → 估计层 infeasible_thermal，旧版低估温升放行。
+ *                            属物理修正（可行口径收紧），**非回退**，不计入 regression
  *   regression_suspect       仅旧版可行且不在上述拦截域 → 疑似真回退，CI 据此退出非零
  *
  * 用法：
@@ -71,9 +74,11 @@ function loadFace(baseDir) {
   return Promise.all([
     imp('tools/l0/param-matrix.mjs'),
     imp('tools/l0/design-validate.mjs'),
-  ]).then(([pm, dv]) => ({
+    imp('tools/l0/l0-estimate.mjs'),
+  ]).then(([pm, dv, est]) => ({
     buildParamMatrix: pm.buildParamMatrix,
     runDesignValidate: dv.runDesignValidate,
+    runL0Estimate: est.runL0Estimate,
     version: (() => { try { return require(join(baseDir, 'package.json')).version } catch { return '?' } })(),
   }))
 }
@@ -88,6 +93,32 @@ function feasibleRate(face, spec) {
   const est = null // 不做估算对比：效率跨版本口径变化（损耗标定）属预期演化，不是回归判据
   void est
   return { rate: ok / rows.length, total: rows.length, warnCodes: (built.warnings ?? []).map((w) => w.code) }
+}
+
+// ---- 估计层热可行判定（仅用于 thermal_recalc 归类，绝不进入回归判据）----
+// 损耗标定（v0.2.6 COPPER_LOSS_K 分段）只影响「估计层」温升，不改变「校验层」物理规则，
+// 故 feasibleRate() 两版一致而此处可能分叉。本函数取校验后的候选跑估计层，
+// 统计 verdict=feasible 与 verdict=infeasible_thermal 的数量。
+// 注意：代理通道（surrogate）只输出效率、无热判定，故本判定依赖公式通道的 verdict；
+// 代理可用时退化为 both_ok（保守，不会误报回退）。全程 try/catch，估计层异常时降级不阻断 cmp。
+function thermalFeas(face, spec) {
+  try {
+    const built = face.buildParamMatrix(spec, { maxMatrixSize: 2000 })
+    const rows = built.matrix ?? []
+    if (!rows.length) return { feasibleEst: 0, infeasibleThermal: 0, total: 0 }
+    const v = face.runDesignValidate({ params_list: rows }, {})
+    const failedSet = new Set(v.failed_indices ?? [])
+    const feasRows = rows.filter((_, i) => !failedSet.has(i))
+    const est = face.runL0Estimate({ params_list: feasRows, top_n: 9999, sort_by: 'efficiency' }, {})
+    const results = est.results ?? []
+    return {
+      feasibleEst: results.filter((r) => r.verdict === 'feasible').length,
+      infeasibleThermal: results.filter((r) => r.verdict === 'infeasible_thermal').length,
+      total: results.length,
+    }
+  } catch {
+    return { feasibleEst: 0, infeasibleThermal: 0, total: 0, degraded: true }
+  }
 }
 
 // ---- 主流程 ----
@@ -117,14 +148,24 @@ try {
 const newFace = await loadFace(ROOT)
 console.log(`  new = ${newFace.version}（工作树） | old = ${oldFace.version}（npm）\n`)
 
-const groups = { both_ok: 0, new_only: 0, old_only_blocked_by_rule: 0, regression_suspect: 0 }
+const groups = { both_ok: 0, new_only: 0, old_only_blocked_by_rule: 0, thermal_recalc: 0, regression_suspect: 0 }
 const suspects = []
 const specList = buildSpecs()
 for (const spec of specList) {
   const o = feasibleRate(oldFace, spec)
   const n = feasibleRate(newFace, spec)
   const tag = `${spec._g}: ${spec.power_kw}kW/${spec.speed_rpm}rpm${spec.line_freq_hz ? `/f${spec.line_freq_hz}` : ''}${spec.poles ? `/p${spec.poles}` : ''}`
-  if (n.rate > 0 && o.rate > 0) groups.both_ok++
+  if (n.rate > 0 && o.rate > 0) {
+    // 校验层两版都可行：再查估计层热可行是否因损耗标定而收紧
+    const oTh = thermalFeas(oldFace, spec)
+    const nTh = thermalFeas(newFace, spec)
+    if (oTh.feasibleEst > 0 && nTh.feasibleEst === 0 && nTh.infeasibleThermal > 0) {
+      groups.thermal_recalc++
+      console.log(`  [~] thermal_recalc  ${tag}（新版损耗标定使温升超限→infeasible_thermal，物理修正非回退）`)
+    } else {
+      groups.both_ok++
+    }
+  }
   else if (n.rate > 0 && o.rate === 0) { groups.new_only++; console.log(`  [+] new_only  ${tag}（0→${(n.rate * 100).toFixed(0)}%，修复受益）`) } else if (n.rate === 0 && o.rate > 0) {
     if (spec._g === 'oob_rule') { groups.old_only_blocked_by_rule++; console.log(`  [~] old_only  ${tag}（新版按规则拦截越界输入 → 预期，非回退）`) } else {
       groups.regression_suspect++
@@ -139,7 +180,7 @@ for (const spec of specList) {
 
 rmSync(tmp, { recursive: true, force: true })
 console.log(`\n汇总（${specList.length} 用例）: both_ok=${groups.both_ok}  new_only=${groups.new_only}（改进）  ` +
-  `old_only_blocked_by_rule=${groups.old_only_blocked_by_rule}（预期拦截）  regression_suspect=${groups.regression_suspect}`)
+  `old_only_blocked_by_rule=${groups.old_only_blocked_by_rule}（预期拦截）  thermal_recalc=${groups.thermal_recalc}（损耗标定收紧，非回退）  regression_suspect=${groups.regression_suspect}`)
 
 if (groups.regression_suspect > 0) {
   console.error(`\n❌ 存在 ${groups.regression_suspect} 例疑似回退: ${suspects.join(' ; ')}`)

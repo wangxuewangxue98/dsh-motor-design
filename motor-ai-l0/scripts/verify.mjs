@@ -479,6 +479,32 @@ check('matrix: 0.2.6 P0 motor_type 透传 —— 缺省行携带 induction + MOT
   return '行级透传 + 双层告警（warning/info）+ 别名归一 + P1 计数，4 类断言全过'
 })
 
+check('pipeline: 返回体 + handoff 透传 returned_feasible_count（补 0.2.6 双通道分叉盲区）', () => {
+  // 0.2.6 CHANGELOG 声称「两个通道 summary 均补 returned_feasible_count」，但 pipeline
+  // 返回体与 handoff 实际只透传 feasible_count —— MotorAI_Client 实际入口 motor_l0_pipeline
+  // 100% 丢弃该字段。本断言闭环该盲区（门禁只覆盖 l0-estimate 通道，未能发现）。
+  // 注：pipe.handoff 是 L0→L1 交接载荷（estimate.handoff），文件交接载荷在 handoff_path 指向的
+  // latest.json 里，其 summary 才是 pipeline 写入的紧凑摘要，returned_feasible_count 应在此处。
+  const pipe = runL0Pipeline(
+    { power_kw: 15, speed_rpm: 1460, voltage_v: 380, count: 30, top_n: 10 }, {})
+  must(typeof pipe.summary?.returned_feasible_count === 'number' && pipe.summary.returned_feasible_count >= 0,
+    `pipeline.summary.returned_feasible_count 已透传（=${pipe.summary.returned_feasible_count}）`)
+  must(pipe.summary.returned_feasible_count <= pipe.summary.feasible_count,
+    'returned_feasible_count ≤ feasible_count（TopN 内可行数不超全集可行数）')
+  // 文件交接载荷（handoff_path 指向的 latest.json）的 summary 也须携带该字段
+  const hp = pipe.handoff_path
+  must(typeof hp === 'string' && hp.length > 0, 'handoff_path 已写入')
+  const fileJson = JSON.parse(readFileSync(hp, 'utf8'))
+  must(typeof fileJson?.summary?.returned_feasible_count === 'number',
+    `handoff 文件 summary.returned_feasible_count 已透传（=${fileJson?.summary?.returned_feasible_count}）`)
+  // 与 l0-estimate 契约同源：estimate 对象携带该字段，pipeline 现在如实转发
+  const b = buildParamMatrix({ power_kw: 15, speed_rpm: 1460, voltage_v: 380, count: 30 }, { maxMatrixSize: 2000 })
+  const est = runL0Estimate({ params_list: b.matrix, top_n: 10, sort_by: 'efficiency' }, {})
+  must(typeof est.returned_feasible_count === 'number' && est.returned_feasible_count >= 0,
+    'l0-estimate 契约字段仍健全')
+  return 'pipeline 返回体 + handoff 文件均透传 returned_feasible_count，门禁盲区已补'
+})
+
 check('matrix: v0.2.4 显式上限被夹紧时回吐 OD_LIMIT_CLAMPED 告警（且仍严格尊重上限）', () => {
   const built = buildParamMatrix(
     { power_kw: 450, speed_rpm: 985, voltage_v: 690, motor_type: 'async', stator_od_limit: 450, count: 120 },

@@ -27,6 +27,12 @@ import {
 } from './motor-constants.mjs'
 import { buildL0Result } from './param-schema.mjs'
 
+// v0.2.7 P1-3：公式通道是「未标定默认通道」（见 README「已知精度边界」——L0 损耗模型
+// 尚未用 RMxprt 批量结果标定），其输出只能用于排序与相对比较，不能当绝对值采信。
+// 故置信度用显式低于 1 的标记值，与代理通道的逐预测 confidence 区分，
+// 不再恒为 1.0（否则下游误以为公式结果是高置信标定预测）。
+const FORMULA_CHANNEL_CONFIDENCE = 0.5
+
 /** 铜电阻率 Ω·m @ FLUX_TARGET.temperatureC（用户现场口径 150°C） */
 const RHO_CU_20 = 1.72e-8
 const ALPHA_CU = 0.00393
@@ -515,7 +521,7 @@ export function quickL0Estimate(params, opts = {}) {
     l1_temp_proxy: l1MaxTempProxy({ statorOd, speed: params.speed }, maxTempClamp),
   }
 
-  return buildL0Result({ params, native, mirror, confidence: 1.0 })
+  return buildL0Result({ params, native, mirror, confidence: FORMULA_CHANNEL_CONFIDENCE })
 }
 
 export default {
