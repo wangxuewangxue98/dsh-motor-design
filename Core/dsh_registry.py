@@ -95,6 +95,9 @@ CREATE TABLE IF NOT EXISTS dsh_plugin_experience (
   spec           TEXT,
   geo            TEXT,
   out            TEXT,
+  -- verdict 从 out.verdict 提升到列级（2026-10-10）：画像聚合走列，不必逐行解 JSON。
+  -- 空值语义：out 段无 verdict（残缺样本/旧客户端）→ NULL，画像归 "unknown"。
+  verdict        TEXT,
   ts             TEXT NOT NULL,
   reported_at    TEXT NOT NULL,
   PRIMARY KEY (plugin_id, rec_id)
@@ -103,7 +106,7 @@ CREATE TABLE IF NOT EXISTS dsh_plugin_experience (
 CREATE INDEX IF NOT EXISTS idx_exp_plugin_ts
   ON dsh_plugin_experience(plugin_id, ts);
 CREATE INDEX IF NOT EXISTS idx_exp_type_verdict
-  ON dsh_plugin_experience(motor_type, plugin_id);
+  ON dsh_plugin_experience(motor_type, verdict, plugin_id);
 """
 
 # ---------------------------------------------------------------- 约束常量
@@ -173,6 +176,20 @@ def _ensure_migrations(conn: sqlite3.Connection) -> None:
     ).fetchone()
     if not has_exp:
         conn.executescript(SCHEMA_SQL)
+        conn.commit()
+    else:
+        # ①c 补 verdict 列（2026-10-10 提升 out.verdict 到列级）
+        # CREATE TABLE IF NOT EXISTS 对已存在的表不生效，老库必须显式 ALTER。
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(dsh_plugin_experience)")}
+        if "verdict" not in cols:
+            conn.execute("ALTER TABLE dsh_plugin_experience ADD COLUMN verdict TEXT")
+            conn.commit()
+        # 索引含新列，需重建才生效（SQLite 不会自动更新既有索引定义）
+        conn.execute("DROP INDEX IF EXISTS idx_exp_type_verdict")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_exp_type_verdict "
+            "ON dsh_plugin_experience(motor_type, verdict, plugin_id)"
+        )
         conn.commit()
 
     exists = conn.execute(
@@ -688,6 +705,10 @@ def _sanitize_design_exp_record(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
     # motor_type 从 spec 段取（契约位置），残缺时为空
     motor_type = spec_clean.get("motor_type")
+    # verdict 从 out 段提升到列级（画像聚合按列走，不必逐行解 JSON；
+    # 无 verdict → None，画像归 "unknown"）。仅取白名单内的 verdict 键，
+    # 不信任客户端顶层传入的同名字段。
+    verdict = out_clean.get("verdict")
     return {
         "rec_id": rec_id,
         "plugin_version": str(rec.get("plugin_version") or ""),
@@ -696,6 +717,7 @@ def _sanitize_design_exp_record(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]
         "spec": spec_json,
         "geo": geo_json,
         "out": out_json,
+        "verdict": str(verdict) if verdict is not None else None,
     }
 
 
@@ -737,13 +759,14 @@ def ingest_experience(plugin_id: str, payload: Dict[str, Any],
                 """
                 INSERT OR IGNORE INTO dsh_plugin_experience
                   (rec_id, plugin_id, plugin_version, motor_type,
-                   spec_complete, spec, geo, out, ts, reported_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   spec_complete, spec, geo, out, verdict, ts, reported_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     clean["rec_id"], plugin_id, clean["plugin_version"],
                     clean["motor_type"], clean["spec_complete"],
                     clean["spec"], clean["geo"], clean["out"],
+                    clean.get("verdict"),
                     ts_now, ts_now,
                 ),
             )
@@ -782,20 +805,23 @@ def get_experience_stats(plugin_id: str, db_path: Optional[str] = None) -> Dict[
             "SELECT COUNT(*) AS n FROM dsh_plugin_experience "
             "WHERE plugin_id=? AND spec_complete=1", (plugin_id,)).fetchone()["n"]
 
-        # motor_type × verdict 矩阵（out 段存 JSON，verdict 在 out_json 里）
+        # motor_type × verdict 矩阵：优先读列级 verdict（0.2.10 起入库时从
+        # out.verdict 提升），列为空则回退解 out JSON（兼容补列前的历史行）。
         by_type_verdict: Dict[str, Dict[str, int]] = {}
         rows = conn.execute(
-            "SELECT motor_type, out FROM dsh_plugin_experience WHERE plugin_id=?",
+            "SELECT motor_type, verdict, out FROM dsh_plugin_experience WHERE plugin_id=?",
             (plugin_id,)).fetchall()
         for r in rows:
-            verdict = "unknown"
-            try:
-                verdict = (json.loads(r["out"]) or {}).get("verdict", "unknown")
-            except (TypeError, json.JSONDecodeError):
-                pass
+            verdict = r["verdict"]
+            if not verdict:
+                verdict = "unknown"
+                try:
+                    verdict = (json.loads(r["out"]) or {}).get("verdict", "unknown")
+                except (TypeError, json.JSONDecodeError):
+                    pass
             key = r["motor_type"] or "unknown"
             by_type_verdict.setdefault(key, {})
-            by_type_verdict[key][verdict] = by_type_verdict[key].get(verdict, 0) + 1
+            by_type_verdict[key][str(verdict)] = by_type_verdict[key].get(str(verdict), 0) + 1
 
         by_version = {}
         for r in conn.execute(
