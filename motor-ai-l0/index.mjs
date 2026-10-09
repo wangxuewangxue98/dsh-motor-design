@@ -101,6 +101,16 @@ export const Config = Schema.object({
   sessionTelemetry: Schema.union(['auto', 'off']).default('auto')
     .description('是否尝试把聚合指标挂到 DSH Runtime 的 sessionTelemetry 瀑布（运行时探测，不静态 inject；探测不到自动回退 endpoint POST）。off = 只用 endpoint'),
 
+  // ---- 设计经验脱敏回传（并行第二条通道，显式可选，默认关闭；白名单见 lib/experience-upload.mjs）----
+  // 与 telemetryEnabled 互不干扰：telemetryEnabled 回传「使用统计」（无设计内容），
+  // 本开关回传「脱敏设计样本」（规格+几何+结论+误差带，design_exp），喂 L0 重训/真值库。
+  designExperienceUpload: Schema.boolean().default(false)
+    .description('设计经验脱敏回传开关（默认 false；且须配合 experienceEndpoint 才真正生效）。开启后每次 L0 估算把脱敏的规格/几何/结论裁成 design_exp 样本落本地 experience.jsonl，再增量回传。绝不包含账号/路径/提示词/密钥等身份信息'),
+  experienceEndpoint: Schema.string().default('')
+    .description('设计经验回传目标 URL（POST JSON）。为空则回退复用 telemetryEndpoint；二者都空 = 不启用。推荐配到管理端 /api/admin/dsh-plugins/<id>/experience-report'),
+  experienceBatchSize: Schema.number().default(200)
+    .description('单次经验回传最多携带的 design_exp 条数（分批推进 offset，失败不推进、下批重报）'),
+
   // ---- L1/L2 预留（实现后需同步扩展 IMPLEMENTED_LEVELS 允许列表）----
   l1Enabled: Schema.boolean().default(false)
     .description('预留：L1 RMxprt 磁路法求解，当前阶段不生效'),
@@ -133,7 +143,12 @@ export async function apply(ctx, config) {
   // 4. 脱敏聚合指标回传（显式可选，默认关闭；静默降级，绝不影响工具主流程）
   await setupTelemetry(ctx, config)
 
+  // 4b. 设计经验脱敏回传（并行第二通道，显式可选，默认关闭）
+  setupExperienceUpload(ctx, config)
+
   const telemetryOn = config.telemetryEnabled === true && !!String(config.telemetryEndpoint || '').trim()
+  const expOn = config.designExperienceUpload === true
+    && !!String(config.experienceEndpoint || config.telemetryEndpoint || '').trim()
   ctx.logger?.info?.(
     `[dsh-motor-ai-l0] L0 已加载，模式: ${config.l0Mode}` +
     ` | 效率封顶 ${config.efficiencyCap}%` +
@@ -142,7 +157,8 @@ export async function apply(ctx, config) {
     ` | 工具 ${tools.join(',')}` +
     ` | 付费等级 ${tierOf(config.level)}` +
     ` | 用量日志 ${config.usageLog === false ? 'off' : 'on'}` +
-    ` | 脱敏回传 ${telemetryOn ? `on → ${String(config.telemetryEndpoint).slice(0, 40)}` : 'off'}`
+    ` | 脱敏回传 ${telemetryOn ? `on → ${String(config.telemetryEndpoint).slice(0, 40)}` : 'off'}` +
+    ` | 设计经验回传 ${expOn ? `on → ${String(config.experienceEndpoint || config.telemetryEndpoint).slice(0, 40)}` : 'off'}`
   )
 }
 
@@ -182,6 +198,40 @@ async function setupTelemetry(ctx, config) {
   }
 
   // 进程退出前 flush 一次（正常退出 + 信号打断都尽力上报）
+  const flushOnExit = () => { flushOnce() }
+  if (typeof process.once === 'function') {
+    process.once('SIGTERM', flushOnExit)
+    process.once('SIGINT', flushOnExit)
+  }
+  if (typeof process.on === 'function') process.on('beforeExit', flushOnExit)
+}
+
+/**
+ * 启动设计经验脱敏回传生命周期（与 setupTelemetry 同节奏，独立开关）。
+ * 落盘由 l0-estimate 的 execute 在每次估算后 logExperience 完成；
+ * 本函数只负责周期 flush（setInterval）+ 进程退出 flush。全部 try/catch，静默降级。
+ * @param {import('@deepseek-ai/cordis').Context} ctx
+ * @param {Config} config
+ */
+function setupExperienceUpload(ctx, config) {
+  const enabled = config.designExperienceUpload === true
+  const endpoint = String(config.experienceEndpoint || config.telemetryEndpoint || '').trim()
+  if (!enabled || !endpoint) return
+
+  // 动态 import：与 setupTelemetry 同构，保证无 Runtime 环境可被单独加载做单测
+  const flushOnce = async () => {
+    try {
+      const { reportExperience } = await import('./lib/experience-upload.mjs')
+      await reportExperience(config, { pluginVersion: PLUGIN_VERSION })
+    } catch { /* 回传绝不影响工具主流程 */ }
+  }
+
+  const intervalSec = Math.max(0, Number(config.telemetryIntervalSec) || 300)
+  if (intervalSec > 0) {
+    const timer = setInterval(() => { flushOnce() }, intervalSec * 1000)
+    if (typeof timer.unref === 'function') timer.unref()
+  }
+
   const flushOnExit = () => { flushOnce() }
   if (typeof process.once === 'function') {
     process.once('SIGTERM', flushOnExit)

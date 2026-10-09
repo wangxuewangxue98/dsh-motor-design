@@ -28,7 +28,16 @@ export const DEFAULT_CONFIDENCE_THRESHOLD = 0.4
 
 /** 模型 schema 版本校验 */
 const REQUIRED_SCHEMA = ['l0_surrogate_family', 'l0_surrogate_single']
-const SUPPORTED_VERSION_PREFIXES = ['1.', '2.']
+/**
+ * 支持的模型版本前缀（导出以便 verify.mjs 门禁断言）。
+ * N3 (0.2.9 P3)：放行 3.x。
+ *   背景：经验回流触发重训后产物 version=3.1.0-fixseg，而此前只认 1./2.
+ *   ⇒ 重训产物在 loadSurrogateModel 直接抛「模型版本不支持」，回流闭环断在最后一环。
+ *   安全性：3.1.0-fixseg 与现役 2.3.0-fixseg **特征集一致**（实测 133,652 个系数
+ *   逐字节比对 max diff = 0.0，仅 version 字符串不同），放行不改变任何推理行为。
+ *   ⚠ 若未来 3.x 引入新特征集（非 fixseg 口径），须同步扩展本白名单并补推理侧兼容。
+ */
+export const SUPPORTED_VERSION_PREFIXES = ['1.', '2.', '3.']
 
 /**
  * 加载代理模型权重文件

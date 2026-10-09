@@ -14,7 +14,8 @@
  * 用法：
  *   node scripts/verify.mjs
  */
-import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, unlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { readdir, access } from 'node:fs/promises'
 import { join, dirname, resolve, relative } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -43,11 +44,15 @@ import {
   assessApplicability, scenarioFromMatrix, APPLICABILITY,
 } from '../lib/applicability-gate.mjs'
 import { solveYokeAndFrame, yokeThicknessForFlux, resolveMotorType } from '../lib/motor-constants.mjs'
-import { selectFamilySegment } from '../lib/surrogate-engine.mjs'
+import { selectFamilySegment, loadSurrogateModel, SUPPORTED_VERSION_PREFIXES } from '../lib/surrogate-engine.mjs'
 import { evaluateSuite, makeBaseline, compareBaseline } from '../lib/regression-gate.mjs'
 import {
   TELEM_FIELDS, sanitizeTelemetry, aggregateUsage,
 } from '../lib/telemetry.mjs'
+import {
+  buildDesignExp, isSpecComplete, recIdOf, scanForbidden,
+  DESIGN_EXP_FORBIDDEN, DESIGN_EXP_SPEC_CORE,
+} from '../lib/experience-upload.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -1527,8 +1532,121 @@ check('P0 发布物无本机绝对路径泄漏（0.2.4/0.2.5 教训固化）', (
       if (m) bad.push(`${relative(ROOT, f)}: ${[...new Set(m)].join(',')}`)
     }
   }
-  must(bad.length === 0, `发布目录含本机绝对路径：\n     ${bad.join('\n     ')}\n     修法：改用环境变量/占位符，或把该文件移出 package.json files`)
+    must(bad.length === 0, `发布目录含本机绝对路径：\n     ${bad.join('\n     ')}\n     修法：改用环境变量/占位符，或把该文件移出 package.json files`)
   return `扫描 ${dirs.length} 个发布目录，0 处盘符绝对路径`
+})
+
+// ---------- 设计经验脱敏回传（design_exp）门禁 ----------
+// 与「本机绝对路径泄漏」门禁同形态反向验证：红线键注入必被拦截、N1 规格残缺必降级、
+// rec_id 幂等、体量上限成立。全部离线纯函数断言，不触碰网络。
+check('design_exp：规格完整样本带上 spec，残缺样本降级不带 spec（N1 固化）', () => {
+  // 完整样本：L1 矩阵行口径（speed/voltage）裁出的 spec 核心键齐备
+  const fullRow = {
+    params: {
+      power_kw: 30, speed: 1460, voltage: 380, poles: 4,
+      stator_od: 300, stator_id: 180, core_length: 200, air_gap: 0.9,
+      slots_stator: 36, slots_rotor: 40, cooling: 'forced_air', motor_type: 'induction',
+    },
+    line_freq_hz: 50, insulation_class: 'F',
+    efficiency_raw: 91.2, temp_rise: 68, total_loss: 2500,
+    feasible: true, verdict: 'feasible', confidence: 0.5,
+  }
+  const full = buildDesignExp(fullRow, { pluginVersion: '0.2.8' })
+  must(full.spec_complete === true, '完整样本 spec_complete 应为 true')
+  must(full.spec && full.spec.speed_rpm === 1460, 'spec.speed_rpm 应取自 L1 键 speed（N1 修复）')
+  must(full.spec && full.spec.voltage_v === 380, 'spec.voltage_v 应取自 L1 键 voltage（N1 修复）')
+  must(isSpecComplete(full.spec), '完整样本应通过 N1 核心键自检')
+
+  // 残缺样本：缺 speed/voltage（核心键）→ 降级不带 spec
+  const sparseRow = {
+    params: { power_kw: 30, poles: 4, stator_od: 300 },
+    efficiency_raw: 90, feasible: true, verdict: 'feasible',
+  }
+  const sparse = buildDesignExp(sparseRow, {})
+  must(sparse.spec_complete === false, '缺核心键样本 spec_complete 应为 false')
+  must(!('spec' in sparse), '残缺样本不得携带 spec 段（N1 降级红线）')
+  must(sparse.geo && typeof sparse.geo === 'object', '降级后仍保留 geo 段')
+  return `完整样本 spec.speed_rpm=${full.spec.speed_rpm}；残缺样本降级=无 spec、保留 geo`
+})
+
+check('design_exp：红线键注入必被拦截（与绝对路径泄漏门禁同形态）', () => {
+  // 构造一条被注入身份/路径键的样本（模拟误把 usage/路径混进 out/geo）
+  const injected = buildDesignExp({
+    params: { power_kw: 15, speed: 960, voltage: 380, poles: 4, stator_od: 160, slots_stator: 12 },
+    efficiency_raw: 90, feasible: true, verdict: 'feasible',
+  }, { pluginVersion: '0.2.8' })
+  // 人为注入红线键（client_id / 绝对路径式 key）
+  injected.geo.client_id = 'abc123'
+  injected.out.cwd = 'C:\\Users\\15389\\proj'
+  const hits = scanForbidden(injected)
+  must(hits.length >= 2, `红线键未被全部检出（仅 ${hits.length} 处）：${hits.join(', ')}`)
+  must(hits.some((h) => h.includes('client_id')), '未检出 client_id')
+  must(hits.some((h) => h.includes('cwd')), '未检出 cwd')
+  // 正常样本红线扫描应为空
+  const clean = buildDesignExp({
+    params: { power_kw: 15, speed: 960, voltage: 380, poles: 4, stator_od: 160 },
+    efficiency_raw: 90, feasible: true, verdict: 'feasible',
+  }, {})
+  must(scanForbidden(clean).length === 0, '正常样本误报红线键')
+  return `注入 ${hits.length} 处红线键全部检出；正常样本 0 误报；黑名单 ${DESIGN_EXP_FORBIDDEN.length} 项`
+})
+
+check('design_exp：rec_id 幂等（同内容同 hash，字段顺序无关）', () => {
+  const a = { power_kw: 15, speed_rpm: 960, voltage_v: 380, poles: 4 }
+  const b = { poles: 4, voltage_v: 380, speed_rpm: 960, power_kw: 15 } // 字段顺序打乱
+  const geo = { stator_od: 160, stator_id: 100, core_length: 120 }
+  const idA = recIdOf(a, geo)
+  const idB = recIdOf(b, geo)
+  must(idA === idB, `rec_id 应顺序无关，实际 ${idA} vs ${idB}`)
+  must(/^[0-9a-f]{12}$/.test(idA), `rec_id 应为 12 位 hex，实际 ${idA}`)
+  // 内容不同 → id 不同
+  const c = { ...a, poles: 6 }
+  must(recIdOf(c, geo) !== idA, '不同规格应产生不同 rec_id')
+  return `rec_id 顺序无关（${idA}）；12 位 hex；异规格异 id`
+})
+
+check('design_exp：单条体量护栏（~400B 上限成立）', () => {
+  const row = {
+    params: {
+      power_kw: 450, speed: 3000, voltage: 690, poles: 4,
+      stator_od: 703, stator_id: 480, core_length: 620, air_gap: 3.5,
+      slots_stator: 48, slots_rotor: 42, cooling: 'liquid_jacket', motor_type: 'pmsm',
+    },
+    line_freq_hz: 60, insulation_class: 'H',
+    efficiency_raw: 94.8, temp_rise: 110, total_loss: 18000,
+    feasible: true, verdict: 'feasible', confidence: 0.5,
+  }
+  const rec = buildDesignExp(row, { pluginVersion: '0.2.8' })
+  const { _selfcheck, ...clean } = rec
+  const bytes = Buffer.byteLength(JSON.stringify(clean), 'utf8')
+  must(bytes <= 600, `design_exp 单条字节 ${bytes} 超护栏 600B（设计 ~400B）`)
+  return `单条 ${bytes}B（护栏 600B，设计 ~400B）`
+})
+
+// N3 (P3 前置)：经验回流触发重训的产物 version=3.1.0-fixseg 必须能被加载，
+// 否则回流闭环断在最后一环。用临时模型文件走完整 loadSurrogateModel 路径实测，
+// 并反向验证未知版本仍被拒（白名单不得退化成全放行）。
+check('N3 (P3): 模型版本白名单放行 3.x（重训产物可加载），仍拒未知版本', () => {
+  must(SUPPORTED_VERSION_PREFIXES.includes('3.'),
+    '3.x 未放行 — 重训产物 3.1.0-fixseg 会加载失败，回流闭环断在最后一环')
+  must(SUPPORTED_VERSION_PREFIXES.includes('2.') && SUPPORTED_VERSION_PREFIXES.includes('1.'),
+    '放行 3.x 不得丢掉 1./2. 兼容（零回归）')
+
+  const p3 = join(tmpdir(), 'n3_probe_310.json')
+  const p9 = join(tmpdir(), 'n3_probe_999.json')
+  writeFileSync(p3, JSON.stringify({ schema: 'l0_surrogate_family', version: '3.1.0-fixseg' }), 'utf8')
+  writeFileSync(p9, JSON.stringify({ schema: 'l0_surrogate_family', version: '9.9.9-bogus' }), 'utf8')
+
+  let ok3 = false
+  let rejected9 = false
+  try { loadSurrogateModel(p3); ok3 = true } catch { /* 应当成功 */ }
+  try { loadSurrogateModel(p9) } catch (e) { rejected9 = /版本不支持/.test(String(e?.message ?? '')) }
+  try { unlinkSync(p3) } catch { /* 清理失败不影响门禁结论 */ }
+  try { unlinkSync(p9) } catch { /* 同上 */ }
+
+  must(ok3, '3.1.0-fixseg 仍无法加载 —— N3 未真正生效')
+  must(rejected9, '未知版本 9.9.9 应被拒绝（白名单不得退化成全放行）')
+  return `放行 ${SUPPORTED_VERSION_PREFIXES.join('/')}；3.1.0 可加载、9.9.9 仍拒`
 })
 
 // ---------- 输出 ----------

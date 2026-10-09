@@ -369,6 +369,21 @@ export async function registerL0Estimate(ctx, config = {}) {
           success: result?.success, failed: result?.failed,
           sort_by: args?.sort_by, top_n: args?.top_n,
         })
+        // 设计经验脱敏回传（并行第二通道，默认关闭）：
+        //   开启 designExperienceUpload 时，对本次返回的 TopN 结果裁 design_exp
+        //   （规格+几何+结论+误差带，已脱敏白名单）落本地 experience.jsonl，
+        //   由 index.mjs 的 setupExperienceUpload 周期 flush 增量回传。
+        //   开关关 → getExperienceSink 返回 null → logExperience 静默，零副作用。
+        {
+          const { getExperienceSink, logExperience, buildDesignExp } =
+            await import('../../lib/experience-upload.mjs')
+          const sink = getExperienceSink(config)
+          if (sink) {
+            for (const row of result?.results ?? []) {
+              logExperience(sink, buildDesignExp(row, {}))
+            }
+          }
+        }
         return JSON.stringify(result, null, 2)
       } catch (err) {
         logUsage(getUsageSink(config), {

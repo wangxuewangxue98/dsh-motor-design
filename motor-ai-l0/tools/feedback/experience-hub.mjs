@@ -12,16 +12,20 @@
  *            输出 MAE / bias / 覆盖率，按 motor_type × OD 段分组
  *   shadow   用 capture 样本拟合「影子分桶模型」（shadow，不落盘覆盖现役模型），
  *            与现役模型在同一评估集上对比 MAE —— 影子显著更优才建议正式重训
+ *   export   （P3 消费回流）把 capture 样本规整成 Python 重训管线可直接消费的训练集：
+ *            归一化 spec/特征/标签命名 + **N1 spec 完整率自检**（残缺行剔除并告警）
  *
  * 设计红线：
  *  1. capture 只写本地 `models/experience/`，**永不自动出网/上报**（对齐 case-feedback 红线 4）；
  *  2. shadow 只输出评估结论，**不覆盖** `models/l0_surrogate*.json`（影子语义）；
- *  3. 现役模型缺文件/超范围时如实降级为 fallback 统计，不伪造预测值。
+ *  3. 现役模型缺文件/超范围时如实降级为 fallback 统计，不伪造预测值；
+ *  4. export 只做本地文件规整化，**不出网**；完整率 <100% 必须告警而非静默导出。
  *
  * 用法：
  *   node tools/feedback/experience-hub.mjs capture --n 2000
  *   node tools/feedback/experience-hub.mjs pair    --in models/experience/captured-<ts>.jsonl
  *   node tools/feedback/experience-hub.mjs shadow  --in models/experience/captured-<ts>.jsonl
+ *   node tools/feedback/experience-hub.mjs export  --in models/experience/captured-<ts>.jsonl [--out <jsonl>]
  */
 
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs'
@@ -100,11 +104,17 @@ function cmdCapture(args) {
       const p = row.params ?? {}
       // 本地经验样本（models/experience/ 不出网）：存代理模型所需的全部特征
       // （features = stator_od/stator_id/core_length/poles + l0_eff）与结论字段。
+      // N1 修复（0.2.8）：矩阵行是 L1 口径命名（speed/voltage），旧代码误读
+      // speed_rpm/voltage_v（spec 口径）导致两键恒 undefined、JSON.stringify 静默丢弃
+      // ⇒ 样本 0% 带工况、designs.db.l0_residuals spec 覆盖率仅 ~2%。
+      // 现值改从 L1 键取，键名保持 spec 口径（与 design_exp 契约一致）。
       lines.push(JSON.stringify({
         motor_type: p.motor_type ?? 'induction',
         stator_od: p.stator_od, stator_id: p.stator_id,
         core_length: p.core_length, poles: p.poles,
-        power_kw: p.power_kw, speed_rpm: p.speed_rpm, voltage_v: p.voltage_v,
+        power_kw: p.power_kw,
+        speed_rpm: p.speed,          // 矩阵行 L1 键 speed → spec 键 speed_rpm
+        voltage_v: p.voltage,        // 矩阵行 L1 键 voltage → spec 键 voltage_v
         line_freq_hz: p.line_freq_hz ?? 50, cooling: p.cooling,
         efficiency_raw: row.efficiency_raw,
         feasible: row.feasible === true,
@@ -262,6 +272,65 @@ function cmdShadow(args) {
 }
 
 // ---------------------------------------------------------------------------
+// export（P3 消费回流）：把 capture 样本规整成「Python 重训管线可直接消费」的训练集
+// ---------------------------------------------------------------------------
+// 定位：capture 样本是本机公式通道产出（含规格+几何+结论），但字段是 L0 内部命名；
+// 重训管线（Python 侧 M1/M2/M3 + designs.db.l0_residuals）要的是规整化的
+//   spec（power_kw/speed_rpm/voltage_v/poles/line_freq_hz/cooling）
+// + 特征（stator_od/stator_id/core_length/poles/l0_eff）
+// + 标签（efficiency_raw = 公式通道真值，有 l1_eff 时为真值标签）
+// 本命令做归一化 + N1 完整率自检，产出 jsonl 交给重训。
+//
+// ⚠ N1 教训：capture 早期版本因误读字段导致 speed_rpm/voltage_v 恒 undefined，
+//   样本「0% 带工况」—— 那种样本喂进重训等于拿残缺特征拟合，误差无法归因。
+//   故 export **必须先报完整率**，残缺率高的批次要显式告警而不是静默导出。
+function cmdExport(args) {
+  const inPath = args.in
+  if (!inPath) {
+    console.error('export 需要 --in <capture jsonl>（如 models/experience/captured-<ts>.jsonl）')
+    process.exit(1)
+  }
+  const rows = loadRows(inPath)
+  const outPath = args.out ?? resolve(EXPERIENCE_DIR, `trainset-${Date.now()}.jsonl`)
+
+  const SPEC_KEYS = ['power_kw', 'speed_rpm', 'voltage_v', 'poles']
+  const lines = []
+  let incomplete = 0
+  for (const r of rows) {
+    const missing = SPEC_KEYS.filter((k) => r[k] === undefined || r[k] === null)
+    if (missing.length) { incomplete += 1; continue } // 残缺样本不进训练集（N1 红线）
+    lines.push(JSON.stringify({
+      motor_type: r.motor_type ?? 'induction',
+      power_kw: r.power_kw,
+      speed_rpm: r.speed_rpm,
+      voltage_v: r.voltage_v,
+      poles: r.poles,
+      line_freq_hz: r.line_freq_hz ?? 50,
+      cooling: r.cooling ?? 'forced_air',
+      stator_od: r.stator_od,
+      stator_id: r.stator_id,
+      core_length: r.core_length,
+      // 代理模型特征：l0_eff 与 l0-estimate 富化口径一致（未封顶公式效率）
+      l0_eff: r.efficiency_raw,
+      feasible: r.feasible === true,
+      verdict: r.verdict,
+    }))
+  }
+
+  mkdirSync(dirname(outPath), { recursive: true })
+  writeFileSync(outPath, lines.join('\n'), 'utf8')
+
+  const rate = rows.length ? (rows.length - incomplete) / rows.length : 0
+  console.log(`export: ${rows.length} 行 → ${lines.length} 条训练样本 → ${outPath}`)
+  console.log(`  spec 完整率 ${(rate * 100).toFixed(1)}%（残缺剔除 ${incomplete} 条，N1 红线）`)
+  if (rows.length && rate < 1) {
+    console.log(`  ⚠ 完整率 < 100%：说明 capture 批次仍存在字段错位（N1 形态），`
+      + `请用 0.2.8+ 重新 capture 后再 export —— 残缺特征喂重训会让误差无法归因`)
+  }
+  return outPath
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 const [, , cmd, ...rest] = process.argv
@@ -275,8 +344,9 @@ try {
   if (cmd === 'capture') cmdCapture(args)
   else if (cmd === 'pair') cmdPair(args)
   else if (cmd === 'shadow') cmdShadow(args)
+  else if (cmd === 'export') cmdExport(args)
   else {
-    console.log('用法: experience-hub.mjs <capture|pair|shadow> [--n 2000] [--in <jsonl>] [--model <path>]')
+    console.log('用法: experience-hub.mjs <capture|pair|shadow|export> [--n 2000] [--in <jsonl>] [--out <jsonl>] [--model <path>]')
     process.exit(cmd ? 1 : 0)
   }
 } catch (err) {

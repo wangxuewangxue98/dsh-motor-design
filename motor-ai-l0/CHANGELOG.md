@@ -5,6 +5,92 @@
 
 版本三重一致性：`package.json.version` = `SKILL.md` 的 `metadata.version` = `CHANGELOG.md` 最新条目。
 
+## [0.2.9] - 2026-10-10 — P3 消费回流（N3 版本放行 + export 训练集导出）
+
+本批推进「设计样本脱敏回流方案 v1.0」的 **P3 消费回流**（P1 插件侧通道、P2 管理端
+已分别在 0.2.8 与管理端落地）。P3 解决的是「回流样本怎么用起来」的最后一环。
+
+### N3：代理模型版本白名单放行 3.x（P3 前置，回流闭环的最后一环）
+- **阻塞背景**：经验回流触发重训后，产物 `version=3.1.0-fixseg`；而 JS 引擎
+  `SUPPORTED_VERSION_PREFIXES=['1.','2.']` 只认 1./2. ⇒ 重训产物在
+  `loadSurrogateModel` 直接抛「模型版本不支持」，**回流闭环断在最后一环**（N3）。
+- **修复**：`lib/surrogate-engine.mjs` 白名单放行 `['1.','2.','3.']`，并导出常量供门禁断言。
+- **安全性依据**：3.1.0-fixseg 与现役 2.3.0-fixseg **特征集一致**（实测 133,652 个
+  系数逐字节比对 max diff = 0.0，仅 version 字符串不同），放行不改变任何推理行为。
+  ⚠ 未来若引入非 fixseg 口径的 3.x（新特征集），须同步扩展推理侧兼容。
+- `verify.mjs` 新增门禁（用临时模型文件走完整 `loadSurrogateModel` 实测）：
+  3.1.0 可加载 **且** 未知版本 9.9.9 仍被拒（白名单不得退化成全放行）；门禁 **100 → 101/101**。
+
+### 新增：`experience-hub export` 子命令（P3 训练集导出）
+- **定位**：capture 样本是 L0 内部命名，重训管线（Python M1/M2/M3 + designs.db）
+  要的是规整化 spec（power_kw/speed_rpm/voltage_v/poles/line_freq_hz/cooling）
+  + 特征（stator_od/stator_id/core_length/poles/l0_eff）+ 标签（efficiency_raw）。
+  `export` 做归一化，并**先报 N1 spec 完整率**、残缺行剔除且不静默导出。
+- 用法：`node tools/feedback/experience-hub.mjs export --in <captured jsonl> [--out <jsonl>]`
+
+### N1 修复验证（实证，非推断）
+| 批次 | 行数 | 导出训练样本 | spec 完整率 |
+|---|---|---|---|
+| 修复前（0.2.7，10-09 采集） | 80000 | **0** | **0.0%**（全部剔除） |
+| 修复后（0.2.9 重采） | 4000 | 4000 | **100.0%** |
+
+这坐实了 `designs.db.l0_residuals` spec 覆盖率长期只有 ~2% 的根因：
+不是「用户没填规格」，而是 **capture 采集侧字段错位把工况静默丢了**。
+
+### 遗留（如实披露）：designs.db 历史 spec 无法库内回灌
+`l0_residuals` 8634 行中 power_kw 仅 187 (2%)。已验证**三条路径全部不可行**：
+  1. 同 `project_id`/`round_index` 批次内传播 → 可回灌 **0 行**（7 个已知组均不含缺失行）；
+  2. 关联 `designs` 表（161 行含完整 spec）→ **0 行**（其 `project_id` 全为空，无关联键）；
+  3. `signature` 仅含几何 JSON，不含 spec，无法反解工况。
+**结论**：历史 8634 行的 spec 只能靠外部源匹配；而**新采集已 100% 带工况**（见上表），
+即该缺陷自 0.2.9 起不再新增 —— 历史数据的补全留作 P3 后续项，不假装已修复。
+
+## [0.2.8] - 2026-10-09 — 设计经验脱敏回传通道（design_exp）+ N1 采集修复
+
+本批推进「设计样本脱敏回流方案 v1.0」的 **P1 插件侧**（设计定稿见
+`MotorDesign/output/l0-plugin-audit/设计样本脱敏回流方案_v1.0.md`）。
+外部 55 类真实调用只回传「使用统计」、不回传「实际设计了哪些电机」，
+本批补上第二条并行通道，且**默认全关、显式 opt-in、零身份信息**。
+
+### 新增：design_exp 设计经验脱敏回传通道（P1，默认关闭）
+- **动机**：使用遥测健全（55 调用/0 失败），但外部设计分布不回流；本机只有
+  1 份手动 capture 样本（12000 行，10 天未更新）。design_exp 把外部真实设计
+  的「规格+几何+结论+误差带」脱敏回流，喂 L0 代理重训 / 真值库 / 可行性画像。
+- **落地**：
+  - `lib/experience-upload.mjs`（新）：`buildDesignExp` 从 L0 结果行裁剪
+    `design_exp` record（spec/geo/out 三段 + rec_id 幂等键 + spec_complete N1 自检）；
+    独立脱敏白名单 `DESIGN_EXP_*_FIELDS` + 红线黑名单 `DESIGN_EXP_FORBIDDEN`
+    （账号/client_id/路径/提示词/密钥，与「本机绝对路径泄漏」门禁同形态反向验证）；
+    本地 `experience.jsonl` + 字节 offset 增量（复用 telemetry `readPendingRecords`）
+    + 48h 滚动 GC + 单批上限 `experienceBatchSize`(默认 200)；`reportExperience`
+    fire-and-forget，失败不推进 offset、下批重报，**绝不影响工具主流程**。
+  - `index.mjs`：Config 新增三开关 `designExperienceUpload`(默认 false) /
+    `experienceEndpoint`(空则回退 telemetryEndpoint) / `experienceBatchSize`；
+    新增 `setupExperienceUpload` 生命周期（周期 flush + 退出 flush，与 setupTelemetry
+    同节奏、独立开关），启动日志加「设计经验回传 on/off」可见性。
+  - `tools/l0/l0-estimate.mjs`：`execute` 成功分支对返回 TopN 裁 design_exp 落本地
+    （开关关 → `getExperienceSink` 返回 null → 静默，零副作用）。
+- **合规底线**：与 `telemetryEnabled`/`TELEM_FIELDS` 语义完全隔离（使用统计保持
+  「无设计内容」不变）；默认全关（`designExperienceUpload=false` 且端点空 = 不启用）；
+  规格与几何属可公开设计空间，可回流；身份信息经白名单硬编码排除 + 门禁断言双保险。
+
+### N1 修复：experience-hub capture 字段错位（样本 0% 带工况的根因）
+- **现象**：`designs.db.l0_residuals` spec 覆盖率仅 ~2%（真阻塞 v3.1 对齐重训）。
+- **根因**：`cmdCapture` 从矩阵行读 `p.speed_rpm`/`p.voltage_v`（spec 口径），
+  但矩阵行是 L1 口径命名 `speed`/`voltage`（param-matrix.mjs:310-312），
+  两键恒 undefined，`JSON.stringify` 静默丢弃 ⇒ 样本 0% 带工况、无法复现。
+- **修复**：`experience-hub.mjs` 的 `cmdCapture` 改从 `p.speed`/`p.voltage` 取值
+  （键名保持 spec 口径 `speed_rpm`/`voltage_v`，与 design_exp 契约一致），
+  连带修复 `cmdPair`/`cmdShadow` 对 `speed_rpm` 的消费。
+
+### 验证
+- `scripts/verify.mjs` 新增 4 条 design_exp 门禁（N1 完整率+降级 / 红线键注入拦截 /
+  rec_id 幂等 / 单条体量护栏）：门禁 **96 → 100/100**；`node --test` 单测 22/22 无回归。
+- **N3（放行 3.x 版本前缀）未在本批实施**：`surrogate-engine.mjs`
+  `SUPPORTED_VERSION_PREFIXES=['1.','2.']` 仍拒 3.1.0-fixseg。它属行为改动
+  （3.x 模型特征集可能与 2.x 不同），归 P3 消费回流阶段单独验证，本批保持零行为变化。
+- 版本一致性修复：`manifest.json` 自 0.2.6 起漏更（0.2.7 未同步），本批对齐到 0.2.8。
+
 ## [0.2.7] - 2026-10-08 — P1 收口（pipeline 计数透传 + 升级注意 + 置信度修正）
 
 本批修复源于 v0.2.6 的 1000 案例 + 10 万案例独立压测复盘（外部测试者），均为 P1 级、不阻塞 0.2.6 集成。
