@@ -32,9 +32,33 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 
-/** 从 telemetry.mjs 复用字节 offset 增量读取（同一份 usage.jsonl 落盘约定下的通用能力） */
-export { readPendingRecords } from './telemetry.mjs'
+/** 模块自身目录（用于定位随包发布的 package.json 读版本号） */
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+/**
+ * 版本号兜底：调用方未显式传 meta.pluginVersion 时，从随包 package.json 读。
+ * 缺了它服务端 by_version 画像会全部落在 "" 桶里，无法按版本归因。
+ */
+let _fallbackVersion = null
+function fallbackVersion() {
+  if (_fallbackVersion !== null) return _fallbackVersion
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'))
+    _fallbackVersion = String(pkg.version || '')
+  } catch {
+    _fallbackVersion = ''
+  }
+  return _fallbackVersion
+}
+
+// 从 telemetry.mjs 复用字节 offset 增量读取。
+// ⚠️ 必须先 import 进本模块作用域再 re-export：`export { x } from './y.mjs'`
+// 只做转发、不会把 x 绑定到本地作用域，reportExperience 内直接调用会抛
+// ReferenceError（v0.2.9 实测：落盘正常但上报必崩，通道静默失效）。
+import { readPendingRecords } from './telemetry.mjs'
+export { readPendingRecords }
 
 // ═════════════════════════════════════════════════════════════
 // 1. design_exp 脱敏白名单（单一真源，硬编码）
@@ -160,7 +184,11 @@ export function buildDesignExp(row, meta = {}) {
   const record = {
     rec_type: 'design_exp',
     rec_id: recIdOf(specComplete ? spec : {}, geo),
-    plugin_version: meta.pluginVersion || '',
+    plugin_version: meta.pluginVersion || fallbackVersion(),
+    // ⚠️ ts 是 48h 滚动 GC 的唯一判据，缺了它 gcExperience 会把 ts 当 0
+    // ⇒ 距今远超 TTL ⇒ 全批样本被误判过期清空（v0.2.9 实测：落盘后立刻被 GC 抹掉，
+    // 上报恒为 no-pending，通道静默失效）。必须写，且必须是 ISO 串。
+    ts: new Date().toISOString(),
     spec_complete: specComplete,
   }
   if (specComplete) record.spec = spec

@@ -5,6 +5,48 @@
 
 版本三重一致性：`package.json.version` = `SKILL.md` 的 `metadata.version` = `CHANGELOG.md` 最新条目。
 
+## [0.2.10] - 2026-10-10 — 🔴 修复 design_exp 回流通道实际不可用（v0.2.9 双坑）
+
+> **性质：紧急修复。v0.2.9 的 design_exp 脱敏回流通道在真实链路上是坏的，虽门禁 101/101 全绿。**
+> 两个缺陷叠加 ⇒ 样本落盘后既发不出去、也留不住（静默失效，无任何报错）。
+
+### 坑① `readPendingRecords` 未绑定到本地作用域 ⇒ 上报必崩
+- 现象：`reportExperience()` 一执行就抛 `ReferenceError: readPendingRecords is not defined`。
+- 根因：`lib/experience-upload.mjs` 里写的是
+  `export { readPendingRecords } from './telemetry.mjs'` —— **re-export 只做转发，
+  不会把符号绑定到本地作用域**。对外导出是好的（纯函数测试能过），
+  但模块内部 `reportExperience` 直接调用时找不到该绑定。
+- 修法：改为 `import { readPendingRecords } from './telemetry.mjs'` + `export { readPendingRecords }`
+  （本地 import 与 re-export 成对，两边都保）。
+
+### 坑② 样本缺 `ts` ⇒ 48h 滚动 GC 把全批当过期清空
+- 现象：落盘 5 行后 `reportExperience` 恒返回 `{reported:false, reason:'no-pending'}`，
+  且 `experience.jsonl` 被清空。
+- 根因：`buildDesignExp` 未写 `ts`；`gcExperience` 按 `new Date(JSON.parse(l).ts || 0)`
+  判定 ⇒ `ts=0` ⇒ 距今远超 48h ⇒ **全部判为过期删除**。
+- 修法：`buildDesignExp` 产物必写 `ts: new Date().toISOString()`。
+
+### 附带修复：样本 `plugin_version` 恒为空
+- `l0-estimate` 调 `buildDesignExp(row, {})` 未传 meta ⇒ 服务端 `by_version` 画像
+  全部落在 `""` 桶，无法按版本归因。
+- 修法：`buildDesignExp` 增加兜底 —— 未显式传时读随包 `package.json.version`。
+
+### 门禁补强（101 → **103/103**）
+新增 2 条**时序/语义级**门禁，纯函数测试测不出这两类缺陷：
+- `design_exp：样本必带 ts，且 48h GC 不得清空新样本`：真实跑
+  落盘 → `gcExperience` → `readPendingRecords`（校验 kept/dropped/nextOffset）。
+- `design_exp：readPendingRecords 必须在模块内有本地绑定`：**静态断言源码形态**
+  （`import {...} from './telemetry.mjs'` 必存在且与 re-export 成对）——坑① 只能这样钉死。
+另新增独立脚本 `scripts/verify_experience.mjs`（起临时 HTTP server 跑完整
+落盘→GC→上报→收包链路，含脱敏校验），供 CI 单独调用。
+
+**教训（通用，非本项目特有）**：
+> 「每个函数单独测都过」≠「串起来能跑」。涉及**模块作用域绑定**与**时间/TTL 语义**
+> 的缺陷，必须有一条把真实时序串起来的门禁；re-export（`export {x} from`）是
+> ESM 的静默陷阱，对外可见但内部不可调用。
+
+---
+
 ## [0.2.9] - 2026-10-10 — P3 消费回流（N3 版本放行 + export 训练集导出）
 
 本批推进「设计样本脱敏回流方案 v1.0」的 **P3 消费回流**（P1 插件侧通道、P2 管理端

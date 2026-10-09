@@ -14,7 +14,7 @@
  * 用法：
  *   node scripts/verify.mjs
  */
-import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, unlinkSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, unlinkSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { readdir, access } from 'node:fs/promises'
 import { join, dirname, resolve, relative } from 'node:path'
@@ -52,6 +52,7 @@ import {
 import {
   buildDesignExp, isSpecComplete, recIdOf, scanForbidden,
   DESIGN_EXP_FORBIDDEN, DESIGN_EXP_SPEC_CORE,
+  getExperienceSink, logExperience, gcExperience, readPendingRecords,
 } from '../lib/experience-upload.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -1647,6 +1648,74 @@ check('N3 (P3): 模型版本白名单放行 3.x（重训产物可加载），仍
   must(ok3, '3.1.0-fixseg 仍无法加载 —— N3 未真正生效')
   must(rejected9, '未知版本 9.9.9 应被拒绝（白名单不得退化成全放行）')
   return `放行 ${SUPPORTED_VERSION_PREFIXES.join('/')}；3.1.0 可加载、9.9.9 仍拒`
+})
+
+// design_exp 回流链路「时序级」门禁（事故回归闸门）。
+// 纯函数门禁测不出这类缺陷：v0.2.9 曾同时踩两个坑而门禁全绿 ——
+//   ① `export { readPendingRecords } from './telemetry.mjs'` 只转发不绑定，上报必抛
+//      ReferenceError；② 样本缺 ts，48h GC 按 ts||0 判定把全批当过期清空。
+// 两者都只在「落盘 → GC → 增量读 → POST」串起来时才暴露，故走独立异步脚本实跑。
+check('design_exp：样本必带 ts，且 48h GC 不得清空新样本（v0.2.9 坑②回归）', () => {
+  // 事故：buildDesignExp 未写 ts ⇒ gcExperience 按 `ts||0` 判定 ⇒ 距今远超 48h
+  // ⇒ 全批样本被当过期清空 ⇒ 上报恒为 no-pending，通道静默失效。
+  const prevHome = process.env.DSH_HOME
+  const tmpHome = mkdtempSync(join(tmpdir(), 'vexp_gate_'))
+  process.env.DSH_HOME = tmpHome
+  try {
+    const config = { designExperienceUpload: true, experienceEndpoint: 'http://127.0.0.1:1/x' }
+    const sink = getExperienceSink(config)
+    must(sink?.file, 'getExperienceSink 返回 null（开关判定异常）')
+    const row = {
+      params: {
+        power_kw: 15, speed: 1460, voltage: 380, poles: 4,
+        stator_od: 308, stator_id: 186, core_length: 167.4, air_gap: 0.58,
+        slots_stator: 24, slots_rotor: 22, cooling: 'forced_air', motor_type: 'induction',
+      },
+      line_freq_hz: 50, insulation_class: 'F',
+      efficiency_raw: 94.2, temp_rise: 25.5, total_loss: 844.96,
+      feasible: true, verdict: 'feasible', confidence: 0.5,
+    }
+    const rec = buildDesignExp(row, {})
+    must(typeof rec.ts === 'string' && !Number.isNaN(Date.parse(rec.ts)),
+      `样本缺合法 ts（会被 GC 误清空）: ${JSON.stringify(rec.ts)}`)
+    must(String(rec.plugin_version || '') !== '',
+      'plugin_version 为空 — 服务端 by_version 画像无法按版本归因')
+
+    logExperience(sink, rec)
+    logExperience(sink, buildDesignExp({ ...row, params: { ...row.params, poles: 6 } }, {}))
+    const before = readFileSync(sink.file, 'utf8').split('\n').filter(Boolean).length
+    const gc = gcExperience(sink)
+    must(gc && gc.kept === before && gc.dropped === 0,
+      `GC 误清空新样本（kept=${gc?.kept} dropped=${gc?.dropped}，期望 kept=${before} dropped=0）`)
+
+    // 增量读语义：offset 归零后应能重新读到全部待上报样本
+    const pending = readPendingRecords(sink, 200)
+    must(pending && Array.isArray(pending.records) && pending.records.length === before,
+      `增量读错位：读到 ${pending?.records?.length ?? 'null'} 行，期望 ${before} 行`)
+    must(typeof pending.nextOffset === 'number' && pending.nextOffset > 0,
+      `nextOffset 未推进（${pending?.nextOffset}）— offset 增量语义失效会导致重复上报`)
+    return `ts 合法、GC kept=${gc.kept}/dropped=0、增量读 ${pending.records.length} 行、nextOffset=${pending.nextOffset}`
+  } finally {
+    if (prevHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = prevHome
+    try { rmSync(tmpHome, { recursive: true, force: true }) } catch { /* 临时目录清理失败无害 */ }
+  }
+})
+
+check('design_exp：readPendingRecords 必须在模块内有本地绑定（v0.2.9 坑①回归）', () => {
+  // 事故：`export { readPendingRecords } from './telemetry.mjs'` 只做转发、
+  // **不绑定到本地作用域** ⇒ reportExperience 内直接调用抛 ReferenceError，
+  // 上报必崩。纯函数测试测不出来（对外导出是好的），只能静态断言源码形态。
+  const src = readFileSync(join(ROOT, 'lib', 'experience-upload.mjs'), 'utf8')
+  const hasLocalImport = /import\s*\{[^}]*\breadPendingRecords\b[^}]*\}\s*from\s*'\.\/telemetry\.mjs'/.test(src)
+  must(hasLocalImport,
+    "lib/experience-upload.mjs 缺少 `import { readPendingRecords } from './telemetry.mjs' 本地绑定；"
+    + "仅 `export { x } from ...` 转发不会绑定到本地作用域，reportExperience 内调用会抛 ReferenceError")
+  must(/import\s*\{[^}]*\breadPendingRecords\b[^}]*\}\s*from\s*'\.\/telemetry\.mjs'[\s\S]{0,400}?export\s*\{\s*readPendingRecords\s*\}/.test(src),
+    '本地 import 与 re-export 需成对出现（保留对外导出的同时保证内部可调用）')
+  // 运行时侧：re-export 的符号本身仍可被外部消费
+  must(typeof readPendingRecords === 'function', 'readPendingRecords 对外导出丢失')
+  return '本地 import + re-export 成对，对外导出可用'
 })
 
 // ---------- 输出 ----------

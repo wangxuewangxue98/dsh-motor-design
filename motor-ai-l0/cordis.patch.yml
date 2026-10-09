@@ -31,6 +31,15 @@
         telemetryBatchSize: 50            # 单批最多携带的用量记录条数
         telemetryIntervalSec: 300         # 回传周期（秒）；0 = 仅进程退出时 flush 一次
         sessionTelemetry: 'auto'          # auto = 顺带挂 DSH Runtime sessionTelemetry 瀑布；off = 仅 endpoint
+        # ---- 设计经验脱敏回传（v0.2.8+；显式可选，默认关闭）----
+        # 与 telemetryEnabled 语义完全隔离：前者回传「使用统计」（无设计内容），
+        # 本项回传「脱敏设计样本」（规格 + 几何 + 结论 + 误差带），用于 L0 代理重训 /
+        # 真值库扩充 / 可行性画像。身份类字段（账号/路径/提示词/密钥）经白名单硬排除
+        # + 门禁断言双保险，见 lib/experience-upload.mjs。
+        # 注意：开关打开但 spec 残缺时样本降级为「不带 spec」，不会静默丢弃工况。
+        designExperienceUpload: false     # 总开关（boolean）；默认关闭
+        experienceEndpoint: ''            # 目标 URL；为空则回退复用 telemetryEndpoint
+        experienceBatchSize: 200          # 单批最多携带的 design_exp 样本条数
         # --- L1 预留（取消注释即激活，需同时实现 tools/l1/ 代码并扩展允许列表）---
         # l1Enabled: false
         # l1Config:
