@@ -71,6 +71,39 @@ except Exception as e:  # pragma: no cover
     REG_OK = False
     REG_ERR = str(e)
 
+# ---- L2 全自动闭环模块（订单 / 支付 / 发货），缺失时只影响商业化路由，不影响其余功能
+try:
+    import dsh_commerce as com
+    COM_OK = True
+    COM_ERR = ""
+except Exception as e:  # pragma: no cover
+    com = None
+    COM_OK = False
+    COM_ERR = str(e)
+
+try:
+    import dsh_pay as pay
+    PAY_OK = True
+    PAY_ERR = ""
+except Exception as e:  # pragma: no cover
+    pay = None
+    PAY_OK = False
+    PAY_ERR = str(e)
+
+try:
+    import dsh_notify as notify
+    NOTIFY_OK = True
+    NOTIFY_ERR = ""
+except Exception as e:  # pragma: no cover
+    notify = None
+    NOTIFY_OK = False
+    NOTIFY_ERR = str(e)
+
+# 商业化默认绑定的插件台账（付费主体 = full 包）
+COMMERCE_PLUGIN_ID = os.environ.get("DSH_COMMERCE_PLUGIN_ID", "l2/flagship")
+# mock 通道开关：生产环境必须关闭，否则任何人都能「模拟付款」拿到口令
+ALLOW_MOCK_PAY = os.environ.get("DSH_COMMERCE_ALLOW_MOCK", "").lower() in ("1", "true", "yes")
+
 # 由 app.py 注册时置位；dev 模式默认放开
 AUTH_ENFORCE = False
 
@@ -907,3 +940,169 @@ def dsh_commerce_free_call():
     data = request.get_json(force=True) or {}
     return jsonify(reg.free_call(
         data.get("plugin_id") or "dsh-motor-ai-l0", data.get("device_id")))
+
+
+# ================================================================ L2 全自动闭环路由
+def _fulfill(order_id: str, channel_trade_no: str = "", raw: str = "") -> dict:
+    """支付成功后：发码 → 发货 → 回写 delivered_at。
+
+    发货失败**不抛异常**：订单保持「已付款未发货」，由 reconcile 的
+    alert_not_delivered 捕获告警，避免渠道抖动把已收款的订单丢进黑洞。
+    """
+    res = com.mark_paid(order_id, channel_trade_no=channel_trade_no, raw=raw)
+    out = {
+        "order": res["order"],
+        "passcode": res["passcode"],
+        "newly_issued": res["newly_issued"],
+        "already_paid": res["already_paid"],
+        "delivered": False,
+        "delivery": None,
+    }
+    if not res["newly_issued"]:
+        return out  # 幂等重放：不掉用发货，避免重复打扰买家
+    if NOTIFY_OK and notify is not None:
+        d = notify.deliver(res["order"], res["passcode"])
+        out["delivery"] = d
+        if d.get("ok"):
+            com.mark_delivered(order_id)
+            out["delivered"] = True
+    else:
+        out["delivery"] = {"ok": False, "sent": [],
+                           "errors": [{"channel": "notify", "error": NOTIFY_ERR}]}
+    return out
+
+
+@bp_page.route("/api/dsh/order/create", methods=["POST"])
+def dsh_order_create():
+    """下单：建 pending 订单 + 调渠道拿支付码/链接。"""
+    if not (REG_OK and COM_OK):
+        return jsonify({"error": "商业化模块不可用",
+                        "detail": {"reg": REG_ERR, "com": COM_ERR}}), 500
+    data = request.get_json(force=True) or {}
+    plan = data.get("plan") or "monthly"
+    channel = data.get("channel") or "mock"
+    plugin_id = data.get("plugin_id") or COMMERCE_PLUGIN_ID
+    if channel == "mock" and not ALLOW_MOCK_PAY:
+        return jsonify({"error": "mock 通道未开启（设 DSH_COMMERCE_ALLOW_MOCK=1）"}), 403
+    try:
+        order = com.create_order(plugin_id, plan, channel,
+                                 data.get("buyer_contact") or "")
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    if not PAY_OK:
+        return jsonify({"ok": True, "order": order,
+                        "pay": {"ok": False, "error": PAY_ERR}})
+    r = pay.create_payment(channel, order)
+    return jsonify({"ok": bool(r.get("ok")), "order": order, "pay": r})
+
+
+@bp_page.route("/api/dsh/pay/webhook/<channel>", methods=["POST"])
+def dsh_pay_webhook(channel: str):
+    """支付回调：验签 → 金额校验 → 发码 → 发货。
+
+    安全三重：渠道验签（parse_webhook 内）+ 金额与套餐比对 + mark_paid 幂等。
+    """
+    if not (REG_OK and COM_OK and PAY_OK):
+        return jsonify({"error": "商业化模块不可用",
+                        "detail": {"reg": REG_ERR, "com": COM_ERR,
+                                   "pay": PAY_ERR}}), 500
+    raw = request.get_data(as_text=True) or ""
+    parsed = pay.parse_webhook(channel, dict(request.headers), raw,
+                               request.form.to_dict())
+    if not parsed.get("ok"):
+        # 验签失败一律 401，且不带任何订单信息（防探测）
+        return jsonify({"error": parsed.get("error") or "验签失败"}), 401
+    if not parsed.get("paid"):
+        # 非支付成功通知（如退款/关闭）不是错误，记为忽略
+        return jsonify({"ok": True, "ignored": True,
+                        "trade_state": parsed.get("trade_state")})
+    order_id = (parsed.get("out_trade_no") or "").strip()
+    if not order_id:
+        return jsonify({"error": "回调缺少订单号"}), 400
+    try:
+        order = com.get_order(order_id)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+    if parsed.get("amount_fen") is not None and not com.verify_amount(
+            order["plan"], parsed["amount_fen"]):
+        return jsonify({"error": "回调金额与套餐不符",
+                        "expected": com.amount_fen(order["plan"]),
+                        "got": parsed["amount_fen"]}), 400
+    try:
+        out = _fulfill(order_id, parsed.get("channel_trade_no") or "", raw)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"ok": True, **out})
+
+
+@bp_page.route("/api/dsh/order/<order_id>", methods=["GET"])
+def dsh_order_get(order_id: str):
+    """买家自助查码（防邮件丢件）。未付款不返回口令。"""
+    if not (REG_OK and COM_OK):
+        return jsonify({"error": "商业化模块不可用"}), 500
+    try:
+        return jsonify({"order": com.get_order(order_id)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@bp_page.route("/api/dsh/order/<order_id>/resend", methods=["POST"])
+def dsh_order_resend(order_id: str):
+    """重发：**不发新码**，只把已发口令再投递一次。"""
+    if not (REG_OK and COM_OK):
+        return jsonify({"error": "商业化模块不可用"}), 500
+    try:
+        r = com.resend(order_id)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    if NOTIFY_OK and notify is not None:
+        d = notify.deliver(r["order"], r["passcode"])
+    else:
+        d = {"ok": False, "sent": [],
+             "errors": [{"channel": "notify", "error": NOTIFY_ERR}]}
+    return jsonify({"ok": bool(d.get("ok")), "delivery": d, "newly_issued": False})
+
+
+@bp_page.route("/api/dsh/pay/mock-confirm/<order_id>", methods=["GET", "POST"])
+def dsh_pay_mock_confirm(order_id: str):
+    """mock 通道的「模拟付款」入口，仅联调用；生产由 ALLOW_MOCK_PAY 关闭。"""
+    if not ALLOW_MOCK_PAY:
+        return jsonify({"error": "mock 通道未开启（设 DSH_COMMERCE_ALLOW_MOCK=1）"}), 403
+    if not (REG_OK and COM_OK):
+        return jsonify({"error": "商业化模块不可用"}), 500
+    try:
+        order = com.get_order(order_id)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+    if order.get("channel") != "mock":
+        return jsonify({"error": "非 mock 订单，不能模拟付款"}), 400
+    out = _fulfill(order_id, "MOCK", '{"channel":"mock"}')
+    return jsonify({"ok": True, **out})
+
+
+# ---------------------------------------------------------------- 管理端（需鉴权）
+@bp.route("/dsh-plugins/<plugin_id>/orders", methods=["GET"])
+@_wrap
+def list_plugin_orders(plugin_id):
+    if not COM_OK:
+        return jsonify({"error": f"商业化模块不可用: {COM_ERR}"}), 500
+    return jsonify({"orders": com.list_orders(plugin_id, request.args.get("status"))})
+
+
+@bp.route("/dsh-plugins/<plugin_id>/commerce-reconcile", methods=["GET"])
+@_wrap
+def commerce_reconcile(plugin_id):
+    """对账：收入 / 退款 / 净额 + 两类异常告警（收钱没码、有码没发货）。"""
+    if not COM_OK:
+        return jsonify({"error": f"商业化模块不可用: {COM_ERR}"}), 500
+    return jsonify({"reconcile": com.reconcile(plugin_id)})
+
+
+@bp.route("/dsh-plugins/<plugin_id>/expiring-orders", methods=["GET"])
+@_wrap
+def expiring_plugin_orders(plugin_id):
+    """N 天内到期的已激活订单（续费提醒用）。?days=7"""
+    if not COM_OK:
+        return jsonify({"error": f"商业化模块不可用: {COM_ERR}"}), 500
+    days = int(request.args.get("days", 7))
+    return jsonify({"expiring": com.expiring_orders(days, plugin_id)})

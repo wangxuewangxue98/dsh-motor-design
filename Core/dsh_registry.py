@@ -22,8 +22,9 @@ v3 定案①落地：插件注册表载体 = SQLite（取代 v2 的 JSON 文件�
 import hashlib
 import json
 import os
+import secrets
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -107,6 +108,77 @@ CREATE INDEX IF NOT EXISTS idx_exp_plugin_ts
   ON dsh_plugin_experience(plugin_id, ts);
 CREATE INDEX IF NOT EXISTS idx_exp_type_verdict
   ON dsh_plugin_experience(motor_type, verdict, plugin_id);
+
+-- 第一阶段商业化：付费口令台账（一单一码，设备绑定，激活起算到期日）
+CREATE TABLE IF NOT EXISTS dsh_plugin_passcodes (
+  code           TEXT PRIMARY KEY,
+  plugin_id      TEXT NOT NULL REFERENCES dsh_plugin_registry(plugin_id),
+  plan           TEXT NOT NULL CHECK(plan IN ('trial','monthly','quarterly','halfyear','yearly')),
+  status         TEXT NOT NULL CHECK(status IN ('unused','active','expired','revoked')),
+  price          INTEGER NOT NULL DEFAULT 0,
+  issued_at      TEXT NOT NULL,
+  activated_at   TEXT,
+  expires_at     TEXT,
+  device_id      TEXT,
+  order_ref      TEXT,
+  note           TEXT,
+  last_verify_at TEXT,
+  verify_count   INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_passcodes_plugin
+  ON dsh_plugin_passcodes(plugin_id, status);
+
+-- 每日免费额度（插件 × 设备 × 天 计数，服务端配额防重装重置）
+CREATE TABLE IF NOT EXISTS dsh_free_usage (
+  plugin_id  TEXT NOT NULL,
+  device_id  TEXT NOT NULL,
+  day        TEXT NOT NULL,
+  used       INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (plugin_id, device_id, day)
+);
+
+-- L2 全自动闭环：订单主表（付款 → 发码 → 发货 → 对账）
+-- 设计要点：
+--   * amount 单位「分」（PASSCODE_PLANS 的 price 是元），避免浮点误差；
+--   * order_id 同时作为 passcodes.order_ref，订单↔口令天然可 JOIN 对账；
+--   * 回调可能重复：mark_paid 幂等，已 paid 且已发码的订单绝不二次发码。
+CREATE TABLE IF NOT EXISTS dsh_orders (
+  order_id         TEXT PRIMARY KEY,
+  plugin_id        TEXT NOT NULL,
+  plan             TEXT NOT NULL CHECK(plan IN
+                     ('trial','monthly','quarterly','halfyear','yearly')),
+  amount           INTEGER NOT NULL DEFAULT 0,   -- 分
+  currency         TEXT NOT NULL DEFAULT 'CNY',
+  channel          TEXT NOT NULL,                -- wechat|alipay|mock|manual
+  channel_trade_no TEXT,                         -- 渠道流水号，对账用
+  status           TEXT NOT NULL CHECK(status IN
+                     ('pending','paid','failed','refunded')),
+  buyer_contact    TEXT,                         -- 邮箱/手机（发货目标）
+  passcode         TEXT,                         -- 发码后回填
+  paid_at          TEXT,
+  delivered_at     TEXT,
+  created_at       TEXT NOT NULL,
+  raw              TEXT                          -- 渠道回调原文，排障用
+);
+
+CREATE INDEX IF NOT EXISTS idx_orders_status
+  ON dsh_orders(status, paid_at);
+CREATE INDEX IF NOT EXISTS idx_orders_trade
+  ON dsh_orders(channel, channel_trade_no);
+
+-- 续费提醒发送记录（幂等）：同一口令在同一提醒档位只发一次，
+-- 避免定时任务每天重复轰炸买家（重启/重跑/多实例都不重发）。
+CREATE TABLE IF NOT EXISTS dsh_reminder_log (
+  code      TEXT NOT NULL,
+  stage     INTEGER NOT NULL,          -- 7 / 1 / 0 / -1(已过期)
+  sent_at   TEXT NOT NULL,
+  ok        INTEGER NOT NULL DEFAULT 0,
+  channel   TEXT,
+  error     TEXT,
+  PRIMARY KEY (code, stage)
+);
 """
 
 # ---------------------------------------------------------------- 约束常量
@@ -124,6 +196,22 @@ UPDATABLE_PLUGIN_FIELDS = (
 
 # 层级 → 付费等级
 TIER_OF_CHANNEL = {"l0": "free", "l1": "vip", "l2": "flagship"}
+
+# ---------------------------------------------------------------- 商业口令常量（第一阶段商业化）
+# 价格阶梯（商业方案 2.1）：trial 为内测/种子用户免费档
+PASSCODE_PLANS = {
+    "trial":     {"days": 7,   "price": 0,   "label": "内测试用"},
+    "monthly":   {"days": 30,  "price": 99,  "label": "月付"},
+    "quarterly": {"days": 90,  "price": 199, "label": "季付"},
+    "halfyear":  {"days": 180, "price": 399, "label": "半年付"},
+    "yearly":    {"days": 365, "price": 699, "label": "年付"},
+}
+
+# 每日免费调用次数（方案 2.2：每日免费 5 次；可被环境变量 DSH_FREE_DAILY_LIMIT 覆盖）
+FREE_DAILY_LIMIT_DEFAULT = 5
+
+# 口令字符集：去掉易混淆的 0/O/1/I/L
+_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
 
 class RegistryError(Exception):
@@ -190,6 +278,30 @@ def _ensure_migrations(conn: sqlite3.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_exp_type_verdict "
             "ON dsh_plugin_experience(motor_type, verdict, plugin_id)"
         )
+        conn.commit()
+
+    # ①d 补建商业口令 + 每日免费额度表（第一阶段商业化，幂等）
+    has_pc = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dsh_plugin_passcodes'"
+    ).fetchone()
+    if not has_pc:
+        conn.executescript(SCHEMA_SQL)
+        conn.commit()
+
+    # ①e 补建订单主表（L2 全自动闭环，幂等）
+    has_ord = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dsh_orders'"
+    ).fetchone()
+    if not has_ord:
+        conn.executescript(SCHEMA_SQL)
+        conn.commit()
+
+    # ①f 补建续费提醒幂等表（到期提醒定时任务，幂等）
+    has_rmd = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dsh_reminder_log'"
+    ).fetchone()
+    if not has_rmd:
+        conn.executescript(SCHEMA_SQL)
         conn.commit()
 
     exists = conn.execute(
@@ -989,3 +1101,288 @@ def build_install_matrix(clients: Iterable[Dict[str, Any]],
             ),
         })
     return matrix
+
+
+# ---------------------------------------------------------------- 商业口令（第一阶段商业化）
+# 语义（按商业方案）：
+#   - 一单一码：一次性口令，激活时绑定设备并起算到期日（trial 7天 / 月30 / 季90 / 半年180 / 年365）
+#   - 状态机：unused →（verify 激活+绑设备）→ active →（expires_at 到期，惰性判定）→ expired
+#             unused/active →（管理端吊销）→ revoked（终态）
+#   - 设备绑定：1 口令 1 设备；管理端可解绑（unbind），下次 verify 重新绑定
+#   - 每日免费额度：dsh_free_usage 按（插件×设备×天）计数，服务端配额，重装不重置
+def _expire_due_passcodes(conn: sqlite3.Connection) -> None:
+    """惰性到期：active 且 expires_at < now → expired（幂等）。"""
+    conn.execute(
+        "UPDATE dsh_plugin_passcodes SET status='expired' "
+        "WHERE status='active' AND expires_at IS NOT NULL AND expires_at < ?",
+        (_now(),),
+    )
+
+
+def _days_left(expires_at: Optional[str]) -> int:
+    """剩余整天数（向下取整，到期时刻过后为 0）。解析失败返回 0。"""
+    if not expires_at:
+        return 0
+    try:
+        delta = datetime.fromisoformat(expires_at) - datetime.now()
+        return max(0, int(delta.total_seconds() // 86400))
+    except (ValueError, TypeError):
+        return 0
+
+
+def _gen_passcode(conn: sqlite3.Connection) -> str:
+    """生成 DM-XXXX-XXXX 格式口令（去易混淆字符），主键冲突自动重试。"""
+    for _ in range(20):
+        body = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(8))
+        code = f"DM-{body[:4]}-{body[4:]}"
+        if not conn.execute(
+            "SELECT 1 FROM dsh_plugin_passcodes WHERE code = ?", (code,)
+        ).fetchone():
+            return code
+    raise RegistryError("口令生成连续冲突，请重试")
+
+
+def free_daily_limit() -> int:
+    """每日免费调用上限（环境变量 DSH_FREE_DAILY_LIMIT 可覆盖，默认 5）。"""
+    try:
+        return max(0, int(os.getenv("DSH_FREE_DAILY_LIMIT", str(FREE_DAILY_LIMIT_DEFAULT))))
+    except ValueError:
+        return FREE_DAILY_LIMIT_DEFAULT
+
+
+def generate_passcodes(plugin_id: str, plan: str, count: int,
+                       note: str = "", order_ref: str = "",
+                       db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    """批量生成一次性商业口令（status=unused）。count ∈ [1, 500]。"""
+    if plan not in PASSCODE_PLANS:
+        raise RegistryError(f"plan 非法: {plan}（合法: {sorted(PASSCODE_PLANS)}）")
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        raise RegistryError(f"count 非法: {count}")
+    if not 1 <= count <= 500:
+        raise RegistryError("count 超出范围（1~500）")
+    get_plugin(plugin_id, db_path)  # 不存在 → NotFound
+
+    conn = connect(db_path)
+    try:
+        rows = []
+        for _ in range(count):
+            code = _gen_passcode(conn)
+            conn.execute(
+                "INSERT INTO dsh_plugin_passcodes "
+                "(code, plugin_id, plan, status, price, issued_at, note, order_ref) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (code, plugin_id, plan, "unused", PASSCODE_PLANS[plan]["price"],
+                 _now(), (note or "")[:120], (order_ref or "")[:120]),
+            )
+            rows.append({"code": code, "plan": plan, "status": "unused",
+                         "price": PASSCODE_PLANS[plan]["price"]})
+        conn.commit()
+        # 重新取全字段返回
+        out = []
+        for r in rows:
+            row = conn.execute(
+                "SELECT * FROM dsh_plugin_passcodes WHERE code = ?", (r["code"],)
+            ).fetchone()
+            out.append(dict(row))
+        return out
+    finally:
+        conn.close()
+
+
+def list_passcodes(plugin_id: str, status: Optional[str] = None,
+                   db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    """口令列表（最新发行在前）；读取时惰性结算到期。"""
+    conn = connect(db_path)
+    try:
+        _expire_due_passcodes(conn)
+        conn.commit()
+        sql = "SELECT * FROM dsh_plugin_passcodes WHERE plugin_id = ?"
+        args: List[Any] = [plugin_id]
+        if status:
+            sql += " AND status = ?"
+            args.append(status)
+        sql += " ORDER BY issued_at DESC, code"
+        return [dict(r) for r in conn.execute(sql, args).fetchall()]
+    finally:
+        conn.close()
+
+
+def verify_passcode(code: str, device_id: str,
+                    db_path: Optional[str] = None) -> Dict[str, Any]:
+    """插件端授权验证（公开接口语义）。
+
+    返回 {valid, reason?, plan, expires_at?, days_left?, activated?}：
+      - unused → 激活（绑定设备 + 起算到期日）并返回 valid=True (activated=True)
+      - active → 设备一致且未过期 → valid=True；设备不一致 → device_mismatch
+      - expired / revoked / not_found / bad_request → valid=False + reason
+    """
+    code = (code or "").strip().upper()
+    device_id = (device_id or "").strip()
+    if not code or not device_id:
+        return {"valid": False, "reason": "bad_request"}
+    conn = connect(db_path)
+    try:
+        _expire_due_passcodes(conn)
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM dsh_plugin_passcodes WHERE code = ?", (code,)
+        ).fetchone()
+        if row is None:
+            return {"valid": False, "reason": "not_found"}
+        plan = row["plan"]
+        exp = row["expires_at"]
+        if row["status"] == "revoked":
+            return {"valid": False, "reason": "revoked", "plan": plan}
+        if row["status"] == "expired":
+            return {"valid": False, "reason": "expired", "plan": plan,
+                    "expires_at": exp, "days_left": 0}
+        if row["status"] == "unused":
+            days = PASSCODE_PLANS[plan]["days"]
+            exp = (datetime.now() + timedelta(days=days)).isoformat(timespec="seconds")
+            conn.execute(
+                "UPDATE dsh_plugin_passcodes SET status='active', activated_at=?, "
+                "expires_at=?, device_id=?, last_verify_at=?, verify_count=verify_count+1 "
+                "WHERE code=?",
+                (_now(), exp, device_id, _now(), code),
+            )
+            conn.commit()
+            return {"valid": True, "plan": plan, "expires_at": exp,
+                    "days_left": days, "activated": True}
+        # active
+        if row["device_id"] and device_id != row["device_id"]:
+            return {"valid": False, "reason": "device_mismatch", "plan": plan,
+                    "expires_at": exp, "days_left": _days_left(exp)}
+        # 解绑后的重新绑定 + 常规验证心跳
+        conn.execute(
+            "UPDATE dsh_plugin_passcodes SET last_verify_at=?, "
+            "verify_count=verify_count+1, device_id=COALESCE(device_id, ?) WHERE code=?",
+            (_now(), device_id, code),
+        )
+        conn.commit()
+        return {"valid": True, "plan": plan, "expires_at": exp,
+                "days_left": _days_left(exp)}
+    finally:
+        conn.close()
+
+
+def revoke_passcode(code: str, db_path: Optional[str] = None) -> Dict[str, Any]:
+    """吊销口令（管理端）。unused/active/expired 均可吊销。"""
+    code = (code or "").strip().upper()
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT status FROM dsh_plugin_passcodes WHERE code = ?", (code,)
+        ).fetchone()
+        if row is None:
+            raise NotFound(f"口令不存在: {code}")
+        conn.execute(
+            "UPDATE dsh_plugin_passcodes SET status='revoked' WHERE code = ?", (code,)
+        )
+        conn.commit()
+        return dict(conn.execute(
+            "SELECT * FROM dsh_plugin_passcodes WHERE code = ?", (code,)
+        ).fetchone())
+    finally:
+        conn.close()
+
+
+def unbind_passcode(code: str, db_path: Optional[str] = None) -> Dict[str, Any]:
+    """解绑设备（管理端）。状态保持 active，下次 verify 以新设备重新绑定。"""
+    code = (code or "").strip().upper()
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT status FROM dsh_plugin_passcodes WHERE code = ?", (code,)
+        ).fetchone()
+        if row is None:
+            raise NotFound(f"口令不存在: {code}")
+        conn.execute(
+            "UPDATE dsh_plugin_passcodes SET device_id=NULL WHERE code = ?", (code,)
+        )
+        conn.commit()
+        return dict(conn.execute(
+            "SELECT * FROM dsh_plugin_passcodes WHERE code = ?", (code,)
+        ).fetchone())
+    finally:
+        conn.close()
+
+
+def passcode_stats(plugin_id: str, db_path: Optional[str] = None) -> Dict[str, Any]:
+    """商业化统计：各状态计数 / 核销率 / 7 天内到期 / 已实现收入。"""
+    conn = connect(db_path)
+    try:
+        _expire_due_passcodes(conn)
+        conn.commit()
+        rows = conn.execute(
+            "SELECT status, price, expires_at FROM dsh_plugin_passcodes WHERE plugin_id = ?",
+            (plugin_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    by = {"unused": 0, "active": 0, "expired": 0, "revoked": 0}
+    expiring_7d = 0
+    revenue = 0
+    horizon = (datetime.now() + timedelta(days=7)).isoformat(timespec="seconds")
+    for r in rows:
+        st = r["status"]
+        by[st] = by.get(st, 0) + 1
+        if st in ("active", "expired"):
+            revenue += int(r["price"] or 0)
+        if st == "active" and r["expires_at"] and r["expires_at"] <= horizon:
+            expiring_7d += 1
+    total = len(rows)
+    used = total - by["unused"]
+    return {
+        "plugin_id": plugin_id,
+        "total": total,
+        "unused": by["unused"],
+        "active": by["active"],
+        "expired": by["expired"],
+        "revoked": by["revoked"],
+        "expiring_in_7d": expiring_7d,
+        # 核销率 = 已激活（含已过期）/ 全部发行
+        "redeem_rate": round(used * 100.0 / total, 1) if total else 0.0,
+        "revenue_realized": revenue,
+        "free_daily_limit": free_daily_limit(),
+    }
+
+
+def free_call(plugin_id: str, device_id: str,
+              db_path: Optional[str] = None) -> Dict[str, Any]:
+    """每日免费额度检查 + 计数（调用一次计一次）。
+
+    插件在免费模式执行工具前调用：allowed=True 放行（配额内自增），False 拒绝。
+    返回 {allowed, used, remaining, limit, day}。
+    """
+    device_id = (device_id or "").strip()
+    if not device_id:
+        return {"allowed": False, "reason": "bad_request"}
+    limit = free_daily_limit()
+    day = datetime.now().strftime("%Y-%m-%d")
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT used FROM dsh_free_usage "
+            "WHERE plugin_id=? AND device_id=? AND day=?",
+            (plugin_id, device_id, day),
+        ).fetchone()
+        used = int(row["used"]) if row else 0
+        if used >= limit:
+            return {"allowed": False, "used": used, "remaining": 0,
+                    "limit": limit, "day": day}
+        conn.execute(
+            "INSERT INTO dsh_free_usage (plugin_id, device_id, day, used, updated_at) "
+            "VALUES (?,?,?,?,?) "
+            "ON CONFLICT(plugin_id, device_id, day) DO UPDATE SET "
+            "used = used + 1, updated_at = excluded.updated_at",
+            (plugin_id, device_id, day, used + 1, _now()),
+        )
+        conn.commit()
+        used += 1
+        return {"allowed": True, "used": used,
+                "remaining": max(0, limit - used), "limit": limit, "day": day}
+    finally:
+        conn.close()
