@@ -25,11 +25,15 @@ v3 定案①②③落地：管理端新增「DSH 插件管理」，后端数据�
  12  POST   /dsh-plugins/<plugin_id>/usage-report   接收插件端脱敏回传（lib/telemetry.mjs POST 聚合 payload）
   +  GET    /dsh-plugins/install-matrix        安装矩阵（复用 /api/client/register 心跳上报的 plugin_versions）
   +  GET    /admin/dsh-plugins                 自带 HTML 管理页（内联 JS，零改动 app.js）
+  +  GET/POST /dsh-plugins/<id>/passcodes[/generate|/revoke|/unbind]   商业口令（第一阶段商业化）
+  +  GET    /dsh-plugins/<id>/commerce-stats   商业化统计（核销率/7天内到期/已实现收入）
+  +  POST   /api/dsh/verify  /api/dsh/free-call  插件端公开验证与每日免费额度（bp_page，无管理员鉴权）
 
 鉴权：AUTH_ENFORCE 由 app.py 在注册时置为 AUTH_OK；dev 模式（AUTH_OK=False）放开。
 """
 import os
 import sys
+import re
 import json
 import shutil
 import subprocess
@@ -47,6 +51,12 @@ from flask import Blueprint, request, jsonify, g
 WORKTREE = Path(__file__).resolve().parents[1]
 CORE_DIR = WORKTREE / "Core"
 PLUGIN_ROOT = WORKTREE / "motor-ai-l0"
+# 门禁按 plugin_id 定位各自仓库根：l0 走 worktree 镜像，full 走独立仓库
+# （可用环境变量 DSH_FULL_PLUGIN_ROOT 覆盖，默认 D:/dsh-motor-ai）
+PLUGIN_ROOTS = {
+    "motor-ai-l0": PLUGIN_ROOT,
+    "dsh-motor-ai": Path(os.environ.get("DSH_FULL_PLUGIN_ROOT", r"D:/dsh-motor-ai")),
+}
 CLIENT_SETTINGS_FILE = WORKTREE / "data" / "client_settings.json"
 
 if str(CORE_DIR) not in sys.path:
@@ -85,10 +95,12 @@ NPM_COLLECT_HOUR = 9          # 每日采集时刻（本地时区）
 NPM_COLLECT_MINUTE = 0
 NPM_COLLECT_DAYS = 30         # 回溯天数（与外部脚本默认一致）
 
-# 采集目标 (plugin_id, npm package)：真源 npm 包名 dsh-motor-ai-l0。
+# 采集目标 (plugin_id, npm package)：真源 npm 包名 dsh-motor-ai-l0 / dsh-motor-ai。
 # 注意注册表旧名 motor-ai-l0 并非 npm 包名，不可当包名采集（同脚本 PACKAGES 口径）。
+# [2026-10-11] 新增完整版 dsh-motor-ai（台账 channel=l2/tier=flagship）。
 NPM_COLLECT_TARGETS = [
     ("dsh-motor-ai-l0", "dsh-motor-ai-l0"),
+    ("dsh-motor-ai", "dsh-motor-ai"),
 ]
 
 
@@ -315,15 +327,36 @@ def _ensure_seeded():
         pass
 
 
+def _resolve_plugin_root(plugin_id: str):
+    """按 plugin_id 映射到真实仓库根目录。"""
+    return PLUGIN_ROOTS.get(plugin_id)
+
+
 def _run_gate(plugin_id: str) -> dict:
-    """服务端 W6 三重门禁（与 scripts/release.mjs 同语义）。"""
+    """服务端 W6 三重门禁（按 plugin_id 定位仓库根，分 l0 / full 两套判据）。"""
+    root = _resolve_plugin_root(plugin_id)
+    if root is None or not root.exists():
+        return {
+            "triple_ok": False,
+            "plugin_id": plugin_id,
+            "gates": {"g0": {"ok": False,
+                             "detail": f"未配置/不存在仓库根: {plugin_id}（请设 DSH_FULL_PLUGIN_ROOT 指向 full 仓库）"}},
+            "summary": "root-missing",
+        }
+    if plugin_id == "dsh-motor-ai":
+        return _run_gate_full(plugin_id, root)
+    return _run_gate_l0(plugin_id, root)
+
+
+def _run_gate_l0(plugin_id: str, root: Path) -> dict:
+    """l0（motor-ai-l0）三重门禁（含 knowledge-sync 同步漂移检测）。"""
     gates = {}
     # G1 P1 同步漂移
-    sync_py = PLUGIN_ROOT / "knowledge-sync" / "sync-constants.py"
+    sync_py = root / "knowledge-sync" / "sync-constants.py"
     try:
         out = subprocess.run(
             [sys.executable, str(sync_py), "--check", "--json"],
-            cwd=str(PLUGIN_ROOT), capture_output=True, text=True, timeout=120)
+            cwd=str(root), capture_output=True, text=True, timeout=120)
         rep = json.loads(out.stdout)
         gates["g1"] = {
             "ok": (rep.get("drift_count", 1) == 0 and not rep.get("missing")),
@@ -334,25 +367,24 @@ def _run_gate(plugin_id: str) -> dict:
     # G2 构建产物新鲜度
     try:
         subprocess.run([sys.executable, str(sync_py), "--emit", "--json"],
-                       cwd=str(PLUGIN_ROOT), capture_output=True, text=True, timeout=120, check=True)
-        emitted = json.loads((PLUGIN_ROOT / "knowledge-sync" / "constants.json").read_text(encoding="utf-8"))
+                       cwd=str(root), capture_output=True, text=True, timeout=120, check=True)
+        emitted = json.loads((root / "knowledge-sync" / "constants.json").read_text(encoding="utf-8"))
         cur = json.loads(subprocess.run([sys.executable, str(sync_py), "--json"],
-                       cwd=str(PLUGIN_ROOT), capture_output=True, text=True, timeout=120).stdout)
+                       cwd=str(root), capture_output=True, text=True, timeout=120).stdout)
         gates["g2"] = {"ok": emitted.get("fingerprint") == cur.get("fingerprint"),
                        "detail": f"fingerprint {emitted.get('fingerprint')}"}
     except Exception as e:
         gates["g2"] = {"ok": False, "detail": f"新鲜度检测失败: {str(e)[:120]}"}
     # G3 版本三重一致性
     try:
-        pkg = json.loads((PLUGIN_ROOT / "package.json").read_text(encoding="utf-8"))
+        pkg = json.loads((root / "package.json").read_text(encoding="utf-8"))
         v = pkg["version"]
         skill_v = None
-        sp = PLUGIN_ROOT / "skills" / "motor-l0-estimate" / "SKILL.md"
+        sp = root / "skills" / "motor-l0-estimate" / "SKILL.md"
         if sp.exists():
-            import re
             skill_v = re.search(r"version:\s*([\d.]+)", sp.read_text(encoding="utf-8"))
             skill_v = skill_v.group(1) if skill_v else None
-        cl = (PLUGIN_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        cl = (root / "CHANGELOG.md").read_text(encoding="utf-8")
         cl_v = None
         m = re.search(r"##\s*\[([\d.]+)\]", cl)
         if m:
@@ -366,8 +398,8 @@ def _run_gate(plugin_id: str) -> dict:
     log = []
     for script in ("verify.mjs", "regression.mjs"):
         try:
-            subprocess.run([node, str(PLUGIN_ROOT / "scripts" / script)],
-                           cwd=str(PLUGIN_ROOT), capture_output=True, text=True, timeout=300, check=True)
+            subprocess.run([node, str(root / "scripts" / script)],
+                           cwd=str(root), capture_output=True, text=True, timeout=300, check=True)
             log.append(f"{script} ✅")
         except Exception as e:
             log.append(f"{script} ❌: {str(e)[:80]}")
@@ -380,7 +412,63 @@ def _run_gate(plugin_id: str) -> dict:
             reg.set_release_gate(plugin_id, triple_ok, summary)
         except Exception:
             pass
-    return {"triple_ok": triple_ok, "gates": gates, "summary": summary}
+    return {"triple_ok": triple_ok, "gates": gates, "summary": summary, "plugin_id": plugin_id}
+
+
+def _run_gate_full(plugin_id: str, root: Path) -> dict:
+    """full（dsh-motor-ai）三重门禁：仓库结构不同于 l0（无 knowledge-sync / 无 regression.mjs）。"""
+    gates = {}
+    # G1 仓库完整性：根 + package.json + index.mjs + lib/license.mjs + scripts/verify.mjs
+    try:
+        need = ["package.json", "index.mjs", "lib/license.mjs", "scripts/verify.mjs"]
+        missing = [f for f in need if not (root / f).exists()]
+        gates["g1"] = {"ok": len(missing) == 0,
+                       "detail": "OK" if not missing else f"缺失: {missing}"}
+    except Exception as e:
+        gates["g1"] = {"ok": False, "detail": f"检查失败: {str(e)[:120]}"}
+    # G2 版本三重一致：package.json.version == CHANGELOG 顶 == 各 skill SKILL.md
+    try:
+        pkg = json.loads((root / "package.json").read_text(encoding="utf-8"))
+        v = pkg["version"]
+        cl = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+        m = re.search(r"##\s*\[([^\]]+)\]", cl)
+        cl_v = m.group(1) if m else None
+        skill_vs = []
+        if (root / "skills").exists():
+            for sp in (root / "skills").glob("*/SKILL.md"):
+                sm = re.search(r"version:\s*([0-9][\w.\-]*)", sp.read_text(encoding="utf-8"))
+                if sm:
+                    skill_vs.append(sm.group(1))
+        skill_ok = len(skill_vs) > 0 and all(s == v for s in skill_vs)
+        gates["g2"] = {"ok": v == cl_v and skill_ok,
+                       "detail": f"pkg={v} changelog={cl_v} skills={skill_vs}"}
+    except Exception as e:
+        gates["g2"] = {"ok": False, "detail": f"版本比对失败: {str(e)[:120]}"}
+    # G3 双通道激活代码在场（防回归：DM 在线校验函数必须存在）
+    try:
+        lic = (root / "lib" / "license.mjs").read_text(encoding="utf-8")
+        present = all(k in lic for k in ("isOnlinePasscode", "activateOnline", "getDeviceId"))
+        gates["g3"] = {"ok": present,
+                       "detail": "DM 在线激活函数齐备" if present else "缺 isOnlinePasscode/activateOnline/getDeviceId"}
+    except Exception as e:
+        gates["g3"] = {"ok": False, "detail": f"检查失败: {str(e)[:120]}"}
+    # G4 发布前置：scripts/verify.mjs（A–G 全套门禁）exit 0
+    node = _find_node()
+    try:
+        subprocess.run([node, str(root / "scripts" / "verify.mjs")],
+                       cwd=str(root), capture_output=True, text=True, timeout=300, check=True)
+        gates["g4"] = {"ok": True, "detail": "verify.mjs ✅"}
+    except Exception as e:
+        gates["g4"] = {"ok": False, "detail": f"verify.mjs ❌: {str(e)[:120]}"}
+
+    triple_ok = all(g.get("ok") for g in gates.values())
+    summary = " ".join(f"{k}={'OK' if v['ok'] else 'FAIL'}" for k, v in gates.items())
+    if REG_OK:
+        try:
+            reg.set_release_gate(plugin_id, triple_ok, summary)
+        except Exception:
+            pass
+    return {"triple_ok": triple_ok, "gates": gates, "summary": summary, "plugin_id": plugin_id}
 
 
 # ---------------------------------------------------------------- 端点 1/2
@@ -706,3 +794,116 @@ def dsh_plugins_page():
     except Exception as e:
         html = f"<h1>DSH 插件管理页缺失</h1><p>{e}</p>"
     return Response(html, mimetype="text/html")
+
+
+# ============================================================================
+# 商业口令（第一阶段商业化：价格阶梯 + 每日免费额度 + 设备绑定验证）
+# ---------------------------------------------------------------------------
+# 管理端路由（管理员鉴权，走 _wrap，前缀 /api/admin/dsh-plugins/*）：
+#   GET  /dsh-plugins/<id>/passcodes           口令列表 (?status=)
+#   POST /dsh-plugins/<id>/passcodes/generate  批量生成 {plan, count, note, order_ref}
+#   POST /dsh-plugins/<id>/passcodes/revoke    吊销 {code}
+#   POST /dsh-plugins/<id>/passcodes/unbind    解绑设备 {code}
+#   GET  /dsh-plugins/<id>/commerce-stats      商业化统计（核销率/7天内到期/已实现收入）
+# 插件端公开路由（无管理员鉴权，挂 bp_page，供 DSH 插件运行时调用）：
+#   POST /api/dsh/verify      {code, device_id} → {valid, plan, expires_at, days_left}
+#   POST /api/dsh/free-call   {plugin_id, device_id} → {allowed, used, remaining, limit}
+# 说明：授权验证只判「是否已付费、是否过期、是否本机」，不验证功能；
+#       每日免费 5 次为服务端配额（DSH_FREE_DAILY_LIMIT 可覆盖），重装不重置。
+#       接口契约与商业方案中 Cloudflare Workers 版 /api/verify 对齐，后续可平移上云。
+# ============================================================================
+@bp.route("/dsh-plugins/<plugin_id>/passcodes", methods=["GET"])
+@_wrap
+def list_passcodes(plugin_id):
+    if not REG_OK:
+        return jsonify({"error": f"注册表不可用: {REG_ERR}"}), 500
+    try:
+        return jsonify({"passcodes": reg.list_passcodes(plugin_id, request.args.get("status"))})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@bp.route("/dsh-plugins/<plugin_id>/passcodes/generate", methods=["POST"])
+@_wrap
+def generate_passcodes(plugin_id):
+    if not REG_OK:
+        return jsonify({"error": f"注册表不可用: {REG_ERR}"}), 500
+    data = request.get_json(force=True) or {}
+    try:
+        rows = reg.generate_passcodes(
+            plugin_id,
+            data.get("plan", ""),
+            data.get("count", 0),
+            note=data.get("note") or "",
+            order_ref=data.get("order_ref") or "",
+        )
+        return jsonify({"passcodes": rows, "generated": len(rows)}), 201
+    except reg.RegistryError as e:
+        return jsonify({"error": str(e)}), 400
+    except reg.NotFound as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@bp.route("/dsh-plugins/<plugin_id>/passcodes/revoke", methods=["POST"])
+@_wrap
+def revoke_passcode(plugin_id):
+    if not REG_OK:
+        return jsonify({"error": f"注册表不可用: {REG_ERR}"}), 500
+    data = request.get_json(force=True) or {}
+    code = data.get("code")
+    if not code:
+        return jsonify({"error": "code 必填"}), 400
+    try:
+        return jsonify({"passcode": reg.revoke_passcode(code)})
+    except reg.RegistryError as e:
+        return jsonify({"error": str(e)}), 400
+    except reg.NotFound as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@bp.route("/dsh-plugins/<plugin_id>/passcodes/unbind", methods=["POST"])
+@_wrap
+def unbind_passcode(plugin_id):
+    if not REG_OK:
+        return jsonify({"error": f"注册表不可用: {REG_ERR}"}), 500
+    data = request.get_json(force=True) or {}
+    code = data.get("code")
+    if not code:
+        return jsonify({"error": "code 必填"}), 400
+    try:
+        return jsonify({"passcode": reg.unbind_passcode(code)})
+    except reg.RegistryError as e:
+        return jsonify({"error": str(e)}), 400
+    except reg.NotFound as e:
+        return jsonify({"error": str(e)}), 404
+
+
+@bp.route("/dsh-plugins/<plugin_id>/commerce-stats", methods=["GET"])
+@_wrap
+def commerce_stats(plugin_id):
+    if not REG_OK:
+        return jsonify({"error": f"注册表不可用: {REG_ERR}"}), 500
+    try:
+        return jsonify({"commerce_stats": reg.passcode_stats(plugin_id)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------- 插件端公开路由（无管理员鉴权）
+@bp_page.route("/api/dsh/verify", methods=["POST"])
+def dsh_commerce_verify():
+    """口令授权验证：激活即绑定设备并起算到期日。契约同商业方案 /api/verify。"""
+    if not REG_OK:
+        return jsonify({"error": f"注册表不可用: {REG_ERR}"}), 500
+    data = request.get_json(force=True) or {}
+    return jsonify(reg.verify_passcode(data.get("code"), data.get("device_id")))
+
+
+@bp_page.route("/api/dsh/free-call", methods=["POST"])
+def dsh_commerce_free_call():
+    """每日免费额度检查+计数：allowed=False 时插件应拒绝执行并提示升级付费。"""
+    if not REG_OK:
+        return jsonify({"error": f"注册表不可用: {REG_ERR}"}), 500
+    data = request.get_json(force=True) or {}
+    return jsonify(reg.free_call(
+        data.get("plugin_id") or "dsh-motor-ai-l0", data.get("device_id")))
