@@ -5,6 +5,14 @@
 
 版本三重一致性：`package.json.version` = `SKILL.md` 的 `metadata.version` = `CHANGELOG.md` 最新条目。
 
+## [0.4.2] - 2026-10-13 — 🔧 包络字段补齐（矩阵行补 `torque_margin_rated`）
+
+> **性质：字段补齐，无行为变更。**
+
+### Fixed
+- 矩阵行 `_physics` 此前漏带 `torque_margin_rated`（额定提供/需求），与 native 结果字段集不一致。
+  现已补齐并加断言 `torque_margin_rated = 额定提供 / 需求`。verify **117/117 全绿**。
+
 ## [0.4.1] - 2026-10-13 — 🎯 转矩三档包络：需求 / 额定提供 / 最大提供 + 可行性判据
 
 > **性质：新增判据字段 + 接线 + 清残留。默认行为零回归（过滤开关默认 OFF）。**

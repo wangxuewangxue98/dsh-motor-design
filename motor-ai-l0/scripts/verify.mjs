@@ -1506,6 +1506,8 @@ check('转矩口径: 三档包络（需求/额定提供/最大提供）+ 旧类�
     `最大提供应=额定提供×K，实际 ${ph.torque_capability_max} vs ${ph.torque_capability}×${ph.overload_factor}`)
   must(Math.abs(ph.torque_margin - ph.torque_capability_max / ph.target_torque) < 0.01,
     `torque_margin 应=最大提供/需求，实际 ${ph.torque_margin}`)
+  must(Math.abs(ph.torque_margin_rated - ph.torque_capability / ph.target_torque) < 0.01,
+    `torque_margin_rated 应=额定提供/需求，实际 ${ph.torque_margin_rated}`)
   must(Math.abs(ph.target_torque - 400 * 9550 / 750) < 0.01,
     `target_torque 应等于规格 9550P/n=${(400 * 9550 / 750).toFixed(2)}，实际 ${ph.target_torque}`)
   // ③ 转矩公式本身正确：native.torque 与规格逐位吻合（偏差 0%）

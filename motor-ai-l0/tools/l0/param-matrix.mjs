@@ -212,6 +212,7 @@ function torqueEnvelopeFor({ demandNm, statorId, coreLength, motorType, cooling 
     torque_capability_max: env.torque_capability_max,
     overload_factor: env.overload_factor,
     torque_margin: env.torque_margin,
+    torque_margin_rated: env.torque_margin_rated,
     torque_feasibility: env.torque_feasibility,
   }
 }
