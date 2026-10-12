@@ -21,17 +21,18 @@
 
 import {
   normalizeSpec, assertMatrixShape, buildHandoff, L0_NATIVE_FIELDS, L1_MIRROR_FIELDS,
-} from '../../lib/param-schema.mjs'
-import { quickL0Estimate } from '../../lib/formula-engine.mjs'
-import { resolveMotorType } from '../../lib/motor-constants.mjs'
+} from '@wangxue98/dsh-motor-ai-core'
+import { quickL0Estimate } from '@wangxue98/dsh-motor-ai-core'
+import { resolveMotorType } from '@wangxue98/dsh-motor-ai-core'
 import {
   loadSurrogateModel,
   predictBatch,
   buildSurrogateResult,
   DEFAULT_CONFIDENCE_THRESHOLD,
-} from '../../lib/surrogate-engine.mjs'
-import { getUsageSink, logUsage } from '../../lib/usage-log.mjs'
-import { assessApplicability, scenarioFromMatrix } from '../../lib/applicability-gate.mjs'
+} from '@wangxue98/dsh-motor-ai-core'
+import { getUsageSink, logUsage } from '@wangxue98/dsh-motor-ai-core'
+import { enforceQuota } from '../../lib/quota.mjs'
+import { assessApplicability, scenarioFromMatrix } from '@wangxue98/dsh-motor-ai-core'
 
 /** 工具入参声明 */
 export const TOOL_PARAMS = {
@@ -362,6 +363,8 @@ export async function registerL0Estimate(ctx, config = {}) {
     async execute(args) {
       const t0 = Date.now()
       try {
+        const quotaErr = await enforceQuota(config)
+        if (quotaErr) return quotaErr.error
         const result = runL0Estimate(args, config)
         logUsage(getUsageSink(config), {
           tool: 'motor_l0_estimate', ok: true, elapsed_ms: Date.now() - t0,
@@ -376,7 +379,7 @@ export async function registerL0Estimate(ctx, config = {}) {
         //   开关关 → getExperienceSink 返回 null → logExperience 静默，零副作用。
         {
           const { getExperienceSink, logExperience, buildDesignExp } =
-            await import('../../lib/experience-upload.mjs')
+            await import('@wangxue98/dsh-motor-ai-core')
           const sink = getExperienceSink(config)
           if (sink) {
             for (const row of result?.results ?? []) {

@@ -5,6 +5,64 @@
 
 版本三重一致性：`package.json.version` = `SKILL.md` 的 `metadata.version` = `CHANGELOG.md` 最新条目。
 
+## [0.3.2] - 2026-10-12 — 🚦 免费额度闸门（L2 商业闭环 · 免费层落地）
+
+### Added
+- **每日免费额度闸门（G1）**：新增 `lib/quota.mjs`（`checkFreeQuota` / `enforceQuota` /
+  `buildQuotaExceededMessage` / `getDeviceId`），四个 L0 工具
+  （`motor_param_matrix` / `motor_l0_estimate` / `motor_design_validate` / `motor_l0_pipeline`）
+  `execute` 首行接入。默认上限 5 次/天（后端 `DSH_FREE_DAILY_LIMIT` 可调）。
+- **`lib/` 进入 files 白名单**：此前 `lib/` 不在 `package.json.files` 中，lib 模块不会进包——
+  本次新增的 `lib/quota.mjs` 依赖其入包（否则四工具 import 必崩 `ERR_MODULE_NOT_FOUND`，
+  与 0.3.0 事故同形态）。入包后 lib/ 共 12 个文件。
+- **verify.mjs 新增 2 项门禁**：静态契约（导出 + 四工具接入 + device-id 算法锚定）+
+  运行时行为（fail-open / 开关绕过 / `allowed===false` 拦截 / 算法一致 / 引导文案），
+  后者走 ESM 顶层 await 预跑（check() 为同步收集器，async fn 会静默假绿灯；
+  且不依赖子进程 spawn）。
+
+### 设计约定（改动前必读）
+- **断网 fail-open**：后端不可达一律放行，宁可少限一次不可错杀免费用户。
+- **只有显式 `allowed===false` 才拦截**：后端任何异常/非预期响应按放行处理。
+- **getDeviceId 算法与完整版 `lib/license.mjs:86` 逐字节一致**
+  （`sha256(hostname|platform|arch).slice(0,16)`）——同一设备上 l0 与完整版
+  必须是同一 device_id，否则后端免费额度账分裂成两本。改此处属事故级改动。
+- 运维开关：`config.freeQuotaEnabled === false` 直接绕过闸门。
+- 引导文案不含 `activate` 工具（l0 未提供），改为引导安装完整版 `dsh-motor-ai`。
+
+## [0.3.1] - 2026-10-10 — 🐛 修复：DSH 启动时加载崩溃（缺 `lib/` 模块）
+
+> **性质：缺陷修复 + 发布门禁补强。0.3.0 在 DSH Desktop 中激活即崩，导致 harness 无法启动。**
+
+### 根因
+- `index.mjs` 与 `tools/l0/l0-estimate.mjs` 残留 **3 处动态 `await import('./lib/...')`**（telemetry / experience-upload），指向本地 `lib/`。
+- 抽 core 重构时静态 import 已改指 `@wangxue98/dsh-motor-ai-core`，但**动态 import 漏改**；而 `lib/` 不在 `files` 白名单 ⇒ 发布物不含 `lib/` ⇒ DSH 一加载即 `ERR_MODULE_NOT_FOUND`，required 插件激活失败。
+- 放大器：`npm run verify` 在本地源跑（本地有 `lib/`），动态 import 可解析 ⇒ **103/103 假绿**；上一轮解包核验又只查 P0/版本/激活模块，漏了「入口引用的每个文件是否在包内」的完整性检查。
+
+### 修复
+- 3 处动态 import 全部 repoint 到 `@wangxue98/dsh-motor-ai-core`（单一真源，符合抽 core 初衷）。
+- 补 core `index.mjs` 漏导出的 `reportTelemetry` / `reportExperience`（core 升至 `1.0.1`）。
+- **新增发布门禁**：解包后校验「`index.mjs` 静态/动态 import 的每个相对路径文件必须存在于包内」，杜绝「发布面缺文件」类缺陷再次漏网。
+
+### 影响
+- 0.3.0 用户升级到 0.3.1 后 DSH 可正常激活；无功能/接口变更。
+
+## [0.3.0] - 2026-10-10 — 📦 架构重构：抽取共享核心包 `@wangxue98/dsh-motor-ai-core`
+
+> **性质：架构改进。为 L1/L2 插件扩展做准备，实现 L0/L1/L2 三层共享业务逻辑。**
+
+### 变更内容
+- 新建 `D:\dsh-motor-ai-core` 包，包含所有 lib/*.mjs 共享模块
+- `dsh-motor-ai-l0` 改为依赖 core 包（`file:../dsh-motor-ai-core`）
+- 迁移 14 个 .mjs 文件的 import 路径从相对路径改为 `@wangxue98/dsh-motor-ai-core`
+- 版本升至 0.3.0
+
+### 目标架构（两层次）
+```
+dsh-motor-ai-core     ← 共享核心库（L0/L1/L2 共用）
+├── dsh-motor-ai-l0   ← 免费版（当前 L0 毫秒级预筛）
+└── dsh-motor-ai      ← 完整版（未来：L1 RMxprt + L2 Motor-CAD）
+```
+
 ## [0.2.10] - 2026-10-10 — 🔴 修复 design_exp 回流通道实际不可用（v0.2.9 双坑）
 
 > **性质：紧急修复。v0.2.9 的 design_exp 脱敏回流通道在真实链路上是坏的，虽门禁 101/101 全绿。**

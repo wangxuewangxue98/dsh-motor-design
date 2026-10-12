@@ -28,8 +28,8 @@ import { fileURLToPath } from 'node:url'
 import {
   estimateCoreMassKg, estimateIronLoss, estimateCopperLoss,
   estimateMechanicalLoss, deriveElectricalClosure,
-} from '../lib/formula-engine.mjs'
-import { STEINMETZ, AIR_GAP_FLUX_DEFAULT } from '../lib/motor-constants.mjs'
+} from '@wangxue98/dsh-motor-ai-core'
+import { STEINMETZ, AIR_GAP_FLUX_DEFAULT } from '@wangxue98/dsh-motor-ai-core'
 
 /** 气隙缺省，与 quickL0Estimate 的 `params.air_gap ?? 0.6` 保持同源 */
 const AIR_GAP_DEFAULT = 0.6

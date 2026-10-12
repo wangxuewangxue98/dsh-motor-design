@@ -23,7 +23,7 @@ import {
   selectFamilySegment,
   predictGBR,
   DEFAULT_CONFIDENCE_THRESHOLD,
-} from '../lib/surrogate-engine.mjs'
+} from '@wangxue98/dsh-motor-ai-core'
 
 describe('Surrogate Engine', () => {
   describe('loadSurrogateModel', () => {

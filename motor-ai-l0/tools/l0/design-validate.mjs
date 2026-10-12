@@ -18,10 +18,11 @@
  */
 
 import { validateDesign, validateDesignBatch, RULE_CATALOG, ESCALATABLE_RULES }
-  from '../../lib/design-rules.mjs'
-import { normalizeSpec } from '../../lib/param-schema.mjs'
-import { DEFAULT_LINE_FREQ_HZ } from '../../lib/motor-constants.mjs'
-import { getUsageSink, logUsage } from '../../lib/usage-log.mjs'
+  from '@wangxue98/dsh-motor-ai-core'
+import { normalizeSpec } from '@wangxue98/dsh-motor-ai-core'
+import { DEFAULT_LINE_FREQ_HZ } from '@wangxue98/dsh-motor-ai-core'
+import { getUsageSink, logUsage } from '@wangxue98/dsh-motor-ai-core'
+import { enforceQuota } from '../../lib/quota.mjs'
 
 /** 工具入参声明 */
 export const TOOL_PARAMS = {
@@ -151,6 +152,8 @@ export async function registerDesignValidate(ctx, config = {}) {
     async execute(args) {
       const t0 = Date.now()
       try {
+        const quotaErr = await enforceQuota(config)
+        if (quotaErr) return quotaErr.error
         const result = runDesignValidate(args, config)
         logUsage(getUsageSink(config), {
           tool: 'motor_design_validate', ok: true, elapsed_ms: Date.now() - t0,

@@ -27,7 +27,7 @@
  */
 
 import Schema from '@deepseek-ai/schemastery'
-import { assertLevelImplemented, isLevelEnabled, tierOf } from './lib/level-gate.mjs'
+import { assertLevelImplemented, isLevelEnabled, tierOf } from '@wangxue98/dsh-motor-ai-core'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
@@ -173,7 +173,7 @@ async function setupTelemetry(ctx, config) {
   const endpoint = String(config.telemetryEndpoint || '').trim()
   if (!enabled || !endpoint) return
 
-  const { reportTelemetry, attachSessionTelemetry } = await import('./lib/telemetry.mjs')
+  const { reportTelemetry, attachSessionTelemetry } = await import('@wangxue98/dsh-motor-ai-core')
   // 版本取自 package.json（见 PLUGIN_VERSION），不再读 config.pluginVersion（恒空，P2 缺陷）
   const version = PLUGIN_VERSION
 
@@ -221,7 +221,7 @@ function setupExperienceUpload(ctx, config) {
   // 动态 import：与 setupTelemetry 同构，保证无 Runtime 环境可被单独加载做单测
   const flushOnce = async () => {
     try {
-      const { reportExperience } = await import('./lib/experience-upload.mjs')
+      const { reportExperience } = await import('@wangxue98/dsh-motor-ai-core')
       await reportExperience(config, { pluginVersion: PLUGIN_VERSION })
     } catch { /* 回传绝不影响工具主流程 */ }
   }

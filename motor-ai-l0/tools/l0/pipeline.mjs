@@ -17,11 +17,12 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { normalizeSpec } from '../../lib/param-schema.mjs'
+import { normalizeSpec } from '@wangxue98/dsh-motor-ai-core'
 import { buildParamMatrix } from './param-matrix.mjs'
 import { runDesignValidate } from './design-validate.mjs'
 import { runL0Estimate } from './l0-estimate.mjs'
-import { getUsageSink, logUsage } from '../../lib/usage-log.mjs'
+import { getUsageSink, logUsage } from '@wangxue98/dsh-motor-ai-core'
+import { enforceQuota } from '../../lib/quota.mjs'
 
 /** 工具入参声明（矩阵生成参数 + 聚合控制） */
 export const TOOL_PARAMS = {
@@ -193,6 +194,8 @@ export async function registerL0Pipeline(ctx, config = {}) {
     async execute(args) {
       const t0 = Date.now()
       try {
+        const quotaErr = await enforceQuota(config)
+        if (quotaErr) return quotaErr.error
         const result = runL0Pipeline(args, config)
         logUsage(getUsageSink(config), {
           tool: 'motor_l0_pipeline', ok: true, elapsed_ms: Date.now() - t0,

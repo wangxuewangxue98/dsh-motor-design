@@ -22,7 +22,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { evaluateSuite, makeBaseline, compareBaseline } from '../lib/regression-gate.mjs'
+import { evaluateSuite, makeBaseline, compareBaseline } from '@wangxue98/dsh-motor-ai-core'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const BENCH_PATH = join(ROOT, 'benchmarks', 'l0-benchmarks.json')

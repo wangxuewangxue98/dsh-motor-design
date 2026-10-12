@@ -1,9 +1,9 @@
 {
   "name": "dsh-motor-ai-l0",
-  "version": "0.2.10",
+  "version": "0.3.2",
   "type": "module",
   "main": "./index.mjs",
-  "description": "电机AI辅助设计软件插件 · 覆盖电机设计全流程（需求解析 → 候选矩阵 → L0/L1/L2 解算 → Top10 校验）；L0 毫秒级广筛，纯 JS 零求解器依赖",
+  "description": "电机AI辅助设计软件插件 · L0 层（毫秒级广筛）；共享核心逻辑 @wangxue98/dsh-motor-ai-core",
   "files": [
     "index.mjs",
     "cordis.patch.yml",
@@ -39,6 +39,9 @@
       "dsh": ">=0.1.2 <0.2.0",
       "node": ">=22.0.0"
     }
+  },
+  "dependencies": {
+    "@wangxue98/dsh-motor-ai-core": "^1.0.0"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh": ">=0.1.2 <0.2.0"

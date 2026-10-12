@@ -33,7 +33,7 @@ import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildParamMatrix } from '../l0/param-matrix.mjs'
 import { runL0Estimate } from '../l0/l0-estimate.mjs'
-import { predictSurrogate, loadSurrogateModel } from '../../lib/surrogate-engine.mjs'
+import { predictSurrogate, loadSurrogateModel } from '@wangxue98/dsh-motor-ai-core'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const EXPERIENCE_DIR = resolve(ROOT, 'models', 'experience')

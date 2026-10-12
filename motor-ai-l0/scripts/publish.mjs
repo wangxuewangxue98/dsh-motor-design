@@ -53,8 +53,18 @@ async function ensureManifest() {
   const m = skillMd.match(/^---\n.*?version:\s*(.+?)\n.*?---/s)
   const skillVersion = m ? m[1].trim() : PKG.version
   const manifest = {
+    // ── dshhub 口令市场 v2 必需字段（缺失会导致 GitHub 导入时仓库被隐藏）──
+    manifestVersion: 2,
+    id: 'cn.motorai.dsh-motor-ai-l0',
+    kind: 'plugin',
+    entry: {},
+    permissions: [],
+    license: 'MIT',
+    displayName: PKG.description.split(' · ')[0].trim(),
+    summary: PKG.description,
+    // ── 传统台账字段 ──
     plugin_id: PLUGIN_ID,
-    name: PKG.description.split(' · ')[0].trim(),
+    name: PLUGIN_ID,
     version: PKG.version,
     skill_version: skillVersion,
     description: PKG.description,

@@ -17,43 +17,43 @@
 import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, unlinkSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { readdir, access } from 'node:fs/promises'
-import { join, dirname, resolve, relative } from 'node:path'
+import { join, dirname, resolve, relative, sep } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 import {
   LEVEL_ORDER, IMPLEMENTED_LEVELS,
   normalizeLevel, isLevelEnabled, assertLevelImplemented, tierOf,
-} from '../lib/level-gate.mjs'
+} from '@wangxue98/dsh-motor-ai-core'
 import {
   L1_STRICT_REQUIRED, L1_MATRIX_FIELDS, PARAM_SCHEMA, L0_NATIVE_FIELDS,
   L1_MIRROR_FIELDS, normalizeSpec, assertMatrixShape, pickL1Payload,
-} from '../lib/param-schema.mjs'
+} from '@wangxue98/dsh-motor-ai-core'
 import {
   computeTorque, computeD2L, computeLambda, validateLambda, quickL0Estimate,
   deriveElectricalClosure,
-} from '../lib/formula-engine.mjs'
+} from '@wangxue98/dsh-motor-ai-core'
 import { buildParamMatrix, recommendPoles, poleCandidates } from '../tools/l0/param-matrix.mjs'
 import { runL0Estimate } from '../tools/l0/l0-estimate.mjs'
 import { runDesignValidate } from '../tools/l0/design-validate.mjs'
 import {
   RULE_CATALOG, validateDesign, validateDesignBatch,
   toothFluxDensity, yokeFluxDensity, airGapFluxActual,
-} from '../lib/design-rules.mjs'
+} from '@wangxue98/dsh-motor-ai-core'
 import {
   assessApplicability, scenarioFromMatrix, APPLICABILITY,
-} from '../lib/applicability-gate.mjs'
-import { solveYokeAndFrame, yokeThicknessForFlux, resolveMotorType } from '../lib/motor-constants.mjs'
-import { selectFamilySegment, loadSurrogateModel, SUPPORTED_VERSION_PREFIXES } from '../lib/surrogate-engine.mjs'
-import { evaluateSuite, makeBaseline, compareBaseline } from '../lib/regression-gate.mjs'
+} from '@wangxue98/dsh-motor-ai-core'
+import { solveYokeAndFrame, yokeThicknessForFlux, resolveMotorType } from '@wangxue98/dsh-motor-ai-core'
+import { selectFamilySegment, loadSurrogateModel, SUPPORTED_VERSION_PREFIXES } from '@wangxue98/dsh-motor-ai-core'
+import { evaluateSuite, makeBaseline, compareBaseline } from '@wangxue98/dsh-motor-ai-core'
 import {
   TELEM_FIELDS, sanitizeTelemetry, aggregateUsage,
-} from '../lib/telemetry.mjs'
+} from '@wangxue98/dsh-motor-ai-core'
 import {
   buildDesignExp, isSpecComplete, recIdOf, scanForbidden,
   DESIGN_EXP_FORBIDDEN, DESIGN_EXP_SPEC_CORE,
   getExperienceSink, logExperience, gcExperience, readPendingRecords,
-} from '../lib/experience-upload.mjs'
+} from '@wangxue98/dsh-motor-ai-core'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -90,6 +90,16 @@ function check(name, fn) {
 
 function must(cond, msg) {
   if (!cond) throw new Error(msg)
+}
+
+// 免费额度闸门运行时自检：顶层 await 预跑（check() 是同步收集器，async fn 会假绿灯；
+// 且本机 node spawn 持续 EBUSY，子进程通道不可用 —— 顶层 await 是唯一可靠通道）
+import { runQuotaSelfTest } from './_selftest_quota.mjs'
+let QUOTA_SELF
+try {
+  QUOTA_SELF = await runQuotaSelfTest()
+} catch (err) {
+  QUOTA_SELF = { ok: false, fails: ['selftest-crashed'], lines: [String(err && err.stack || err)] }
 }
 
 // ---------- 1~4. 包与配置一致性 ----------
@@ -1537,6 +1547,39 @@ check('P0 发布物无本机绝对路径泄漏（0.2.4/0.2.5 教训固化）', (
   return `扫描 ${dirs.length} 个发布目录，0 处盘符绝对路径`
 })
 
+// 发布门禁：0.3.0 在 DSH 启动即崩——入口残留对本地 lib 的动态 import，
+// 但 lib 不在 files 白名单 ⇒ 发布物缺该模块 ⇒ ERR_MODULE_NOT_FOUND ⇒ required 插件激活失败。
+// 固化：解包后断言「所有进包 .mjs 的相对 import 必须命中包内文件」；漏网必报红。
+check('发布门禁：进包 .mjs 的相对 import 必须命中包内文件（0.3.0 崩溃根因固化）', () => {
+  // 取发布清单（npm pack --dry-run --json）；shell:true 兼容 Windows 的 npm.cmd
+  const packOut = execFileSync('npm', ['pack', '--dry-run', '--json'], { cwd: ROOT, encoding: 'utf8', shell: true })
+  const packInfo = JSON.parse(packOut)
+  const packed = (packInfo[0] && packInfo[0].files ? packInfo[0].files : []).map(f => f.path)
+  const packedSet = new Set(packed)
+  let count = 0
+  const missing = []
+  for (const pf of packed) {
+    if (!pf.endsWith('.mjs')) continue
+    const abs = join(ROOT, pf)
+    if (!existsSync(abs)) continue
+    let src = readFileSync(abs, 'utf8')
+    // 剥 // 行注释与 /* */ 块注释，避免注释里的字面 import 触发误报
+    src = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+    const re = /(?:import|await\s+import|require)\s*\(?\s*['"]([^'"]+)['"]\s*\)?/g
+    let m
+    while ((m = re.exec(src))) {
+      const spec = m[1]
+      if (!spec.startsWith('.')) continue
+      const rr = relative(ROOT, resolve(ROOT, dirname(pf), spec)).split(sep).join('/')
+      count++
+      if (!packedSet.has(rr)) missing.push(`${pf} -> ${spec} (解析为 ${rr})`)
+    }
+  }
+  must(missing.length === 0,
+    `进包文件引用但未进包的相对模块（必导致 DSH 加载崩溃）：\n     ${missing.join('\n     ')}\n     修法：把该文件加入 package.json files，或把 import 改为依赖包路径`)
+  return `扫描 ${packed.filter(p => p.endsWith('.mjs')).length} 个进包 .mjs 共 ${count} 处相对 import，0 处缺包`
+})
+
 // ---------- 设计经验脱敏回传（design_exp）门禁 ----------
 // 与「本机绝对路径泄漏」门禁同形态反向验证：红线键注入必被拦截、N1 规格残缺必降级、
 // rec_id 幂等、体量上限成立。全部离线纯函数断言，不触碰网络。
@@ -1716,6 +1759,33 @@ check('design_exp：readPendingRecords 必须在模块内有本地绑定（v0.2.
   // 运行时侧：re-export 的符号本身仍可被外部消费
   must(typeof readPendingRecords === 'function', 'readPendingRecords 对外导出丢失')
   return '本地 import + re-export 成对，对外导出可用'
+})
+
+// ---------- 50~51. 免费额度闸门（G1，v0.3.2 新增） ----------
+check('quota: lib/quota.mjs 导出契约 + 四 L0 工具接入（静态）', () => {
+  const p = join(ROOT, 'lib', 'quota.mjs')
+  must(existsSync(p), 'lib/quota.mjs 不存在（l0 免费档配额闸门缺失）')
+  const src = readFileSync(p, 'utf8')
+  must(/export\s+(async\s+)?function\s+checkFreeQuota/.test(src), '缺少 export checkFreeQuota')
+  must(/export\s+(async\s+)?function\s+enforceQuota/.test(src), '缺少 export enforceQuota')
+  must(/export\s+(async\s+)?function\s+getDeviceId/.test(src), '缺少 export getDeviceId')
+  // 设备指纹算法锚定：与完整版 lib/license.mjs:86 必须逐字节一致，改这里 = 两端额度账分裂
+  must(/createHash\('sha256'\)[\s\S]{0,200}slice\(0,\s*16\)/.test(src),
+    'getDeviceId 算法被改（应为 sha256(...).slice(0,16)）')
+  for (const t of ['param-matrix', 'l0-estimate', 'design-validate', 'pipeline']) {
+    const s = readFileSync(join(ROOT, 'tools', 'l0', `${t}.mjs`), 'utf8')
+    must(/import\s*\{\s*enforceQuota\s*\}\s*from\s*'\.\.\/\.\.\/lib\/quota\.mjs'/.test(s),
+      `${t}.mjs 缺少 quota.mjs import`)
+    must(/await\s+enforceQuota\(config\)/.test(s), `${t}.mjs execute 未接入 enforceQuota`)
+  }
+  return '契约齐备 + 四工具 import/调用齐备 + device-id 算法锚定'
+})
+
+check('quota: 运行时行为（fail-open/开关/拦截/算法一致）—— 顶层 await 预跑', () => {
+  must(QUOTA_SELF && QUOTA_SELF.ok === true,
+    `配额运行时自检失败: ${((QUOTA_SELF && QUOTA_SELF.fails) || ['unknown']).join(', ')}`)
+  const passed = QUOTA_SELF.lines.filter(l => l.startsWith('✅')).length
+  return `${passed} 项行为全过（${QUOTA_SELF.lines.map(l => l.split(' | ')[0].replace(/^[✅❌]\s*/, '')).join('; ')}）`
 })
 
 // ---------- 输出 ----------

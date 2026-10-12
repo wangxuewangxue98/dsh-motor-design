@@ -37,8 +37,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   estimateCoreMassKg, estimateIronLoss, estimateCopperLoss, estimateMechanicalLoss,
-} from '../lib/formula-engine.mjs'
-import { STEINMETZ } from '../lib/motor-constants.mjs'
+} from '@wangxue98/dsh-motor-ai-core'
+import { STEINMETZ } from '@wangxue98/dsh-motor-ai-core'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')

@@ -1,6 +1,6 @@
 import { buildParamMatrix } from '../tools/l0/param-matrix.mjs'
 import { runL0Estimate } from '../tools/l0/l0-estimate.mjs'
-import { loadSurrogateModel } from '../lib/surrogate-engine.mjs'
+import { loadSurrogateModel } from '@wangxue98/dsh-motor-ai-core'
 
 const model = loadSurrogateModel('models/l0_surrogate_family.json')
 console.log('=== model version:', model.version, '===')

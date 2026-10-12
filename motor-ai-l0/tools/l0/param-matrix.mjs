@@ -30,12 +30,13 @@ import {
   PMSM_DEFAULT_POLE_ARC, PMSM_DEFAULT_PM_THICK_MM,
   DEFAULT_LINE_FREQ_HZ, DEFAULT_INSULATION_CLASS,
   round1, round2, clamp,
-} from '../../lib/motor-constants.mjs'
+} from '@wangxue98/dsh-motor-ai-core'
 import {
   normalizeSpec, assertMatrixShape, COOLING_ALLOWED, buildHandoff,
-} from '../../lib/param-schema.mjs'
-import { computeTorque, computeD2L, computeLambda, validateLambda, deriveElectricalClosure } from '../../lib/formula-engine.mjs'
-import { getUsageSink, logUsage } from '../../lib/usage-log.mjs'
+} from '@wangxue98/dsh-motor-ai-core'
+import { computeTorque, computeD2L, computeLambda, validateLambda, deriveElectricalClosure } from '@wangxue98/dsh-motor-ai-core'
+import { getUsageSink, logUsage } from '@wangxue98/dsh-motor-ai-core'
+import { enforceQuota } from '../../lib/quota.mjs'
 
 /** 工具入参声明（与 defineTool.parameters 保持一对一，避免两边漂移） */
 export const TOOL_PARAMS = {
@@ -492,6 +493,8 @@ export async function registerParamMatrix(ctx, config = {}) {
     async execute(args) {
       const t0 = Date.now()
       try {
+        const quotaErr = await enforceQuota(config)
+        if (quotaErr) return quotaErr.error
         const result = buildParamMatrix(args, config)
         logUsage(getUsageSink(config), {
           tool: 'motor_param_matrix', ok: true, elapsed_ms: Date.now() - t0,
