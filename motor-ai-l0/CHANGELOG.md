@@ -5,6 +5,29 @@
 
 版本三重一致性：`package.json.version` = `SKILL.md` 的 `metadata.version` = `CHANGELOG.md` 最新条目。
 
+## [0.3.3] - 2026-10-12 — 🔧 发布自检脚本 EBUSY 免疫（无功能变化）
+
+### Fixed
+- **`scripts/verify.mjs` 全面摆脱子进程 spawn 依赖**（本机 node 进程内 spawn 持续
+  `EBUSY`，曾导致两项门禁无法执行）：
+  1. 「进包 .mjs 相对 import 命中」门禁：由 `execFileSync('npm', ['pack','--dry-run','--json'], {shell:true})`
+     改为**纯 Node 的 `package.json files` 白名单展开**（含 `!` 排除与 `*` glob）。
+     语义等价——npm 在存在 `files` 时严格按白名单打包、`.npmignore` 不生效（见该文件首行注释），
+     已用真实 `npm pack` 交叉验证展开结果一致（53 个进包文件）。
+     顺带修复该门禁实现的两个 bug：`files` 项带尾斜杠（`tools/`）时路径拼出
+     `tools//l0//x.mjs` 双斜杠、与 import 解析结果不匹配 ⇒ 误报缺包。
+  2. 「配额闸门运行时行为」门禁：由 execFileSync 子进程改为 **ESM 顶层 await 预跑**
+     （`_selftest_quota.mjs` 导出 `runQuotaSelfTest()`，verify.mjs 顶层 await 后同步读结果）。
+     原因：verify 的 `check()` 是同步收集器（`const detail = fn()`），传 async fn 会静默假绿灯；
+     子进程通道又受 EBUSY 影响。顶层 await 是既不骗人也不依赖 spawn 的唯一通道。
+- `scripts/_selftest_quota.mjs` 重构为「导出函数 + 仅主模块自跑」双通道
+  （`import.meta.url` 主模块判定），保留独立 CLI 能力（退出码 0/1）。
+
+### 说明
+- **无运行时功能变化**：0.3.2 的配额闸门功能完整；本版仅让发布自检脚本在
+  spawn 受限环境（CI/本机故障态）下仍可执行，且消除一次真实误报风险。
+- 版本三重：`package.json` = `SKILL.md metadata.version` = `CHANGELOG` 最新条目 = 0.3.3。
+
 ## [0.3.2] - 2026-10-12 — 🚦 免费额度闸门（L2 商业闭环 · 免费层落地）
 
 ### Added
