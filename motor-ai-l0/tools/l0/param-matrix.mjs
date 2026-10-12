@@ -35,6 +35,7 @@ import {
   normalizeSpec, assertMatrixShape, COOLING_ALLOWED, buildHandoff,
 } from '@wangxue98/dsh-motor-ai-core'
 import { computeTorque, computeD2L, computeLambda, validateLambda, deriveElectricalClosure } from '@wangxue98/dsh-motor-ai-core'
+import { computeTorqueD2L, deriveTorqueEnvelope, queryTorqueOverloadFactor } from '@wangxue98/dsh-motor-ai-core'
 import { getUsageSink, logUsage } from '@wangxue98/dsh-motor-ai-core'
 import { enforceQuota } from '../../lib/quota.mjs'
 
@@ -47,6 +48,7 @@ export const TOOL_PARAMS = {
   pole_span: { type: 'number', description: 'v0.4.0：极数候选扩展跨度（偶数档），默认 2（主极 ±2）。传 4 则生成主极 ±2/±4。仅当未显式传 pole_candidates 时生效' },
   pole_candidates: { type: 'array', description: 'v0.4.0：极数候选显式列表（如 [4,6,8]），优先级高于 pole_span，过滤非法极数（须 2~24 偶数）' },
   poles_strict: { type: 'boolean', description: 'v0.4.0：锁定极数，只生成用户指定 poles，不扩展候选（用于「只验证该极数」）' },
+  filter_undersized: { type: 'boolean', description: 'v0.4.1：剔除「需求扭矩 > 最大提供转矩」的几何偏小候选行，默认 false（env DSH_L0_FILTER_UNDERSIZED 亦可开）。判据基于未标定的典型负荷代理值，属量级判断' },
   motor_type: {
     type: 'string',
     description:
@@ -182,6 +184,38 @@ export function defaultOdLimit(baseD, scanRange, poleList, ratioOf) {
   return Math.ceil((need * 1.05) / 50) * 50
 }
 
+/**
+ * v0.4.1：env 开关 —— 是否剔除「几何偏小（需求 > 最大提供）」的候选行。
+ * 默认 OFF（零回归）：该判据基于典型电磁负荷代理值，属量级判断，未经真值标定；
+ * 打开后可能整批被滤空，故仅保留非空兜底。单变量对照用，toggle 证零回归。
+ */
+const ENV_FILTER_UNDERSIZED = 'DSH_L0_FILTER_UNDERSIZED'
+function isFilterUndersizedEnabled(spec = {}) {
+  if (spec?.filter_undersized !== undefined) return spec.filter_undersized === true || spec.filter_undersized === 'true'
+  const v = (typeof process !== 'undefined' && process.env) ? process.env[ENV_FILTER_UNDERSIZED] : undefined
+  return v === '1' || v === 'true' || v === 'on' || v === 'yes'
+}
+
+/**
+ * 单行转矩包络：需求 vs 额定提供 vs 最大提供 → 可行性判据。
+ * 取代旧版 estTorque = torqueNm × D²L/D²L_base 线性类比（同几何多转矩点误差 max 523%）。
+ */
+function torqueEnvelopeFor({ demandNm, statorId, coreLength, motorType, cooling }) {
+  const cap = computeTorqueD2L(
+    { stator_id: statorId, core_length: coreLength, motor_type: motorType, cooling },
+    { cooling, motorType },
+  )
+  const env = deriveTorqueEnvelope(demandNm, cap.torque, motorType)
+  return {
+    torque_capability: cap.torque,
+    capability_source: cap.torque > 0 ? 'd2l' : 'unavailable',
+    torque_capability_max: env.torque_capability_max,
+    overload_factor: env.overload_factor,
+    torque_margin: env.torque_margin,
+    torque_feasibility: env.torque_feasibility,
+  }
+}
+
 export function buildParamMatrix(rawSpec, config = {}) {
   const { spec, applied } = normalizeSpec(rawSpec)
   // v0.4.0 P0-4：maxMatrixSize 钳到硬上限，防止网格爆炸；越界时记 warning
@@ -253,7 +287,7 @@ export function buildParamMatrix(rawSpec, config = {}) {
   const odLimitNeeded = defaultOdLimit(baseD, scanRange, poleList, ratioOf)
   const odLimit = odLimitExplicit ?? odLimitNeeded
 
-  const matrix = []
+  let matrix = []
   const seenKeys = new Set()
   let comboIndex = 0
 
@@ -322,8 +356,8 @@ export function buildParamMatrix(rawSpec, config = {}) {
         const coreLength = fitLambdaWithinRange(dEff, l, pole)
         const lamCheck = validateLambda(coreLength, dEff, pole)
         const d2l = computeD2L(dEff, coreLength)
-        const baseD2l = computeD2L(baseD, baseL)
-        const estTorque = baseD2l > 0 ? round2((torqueNm * d2l) / baseD2l) : torqueNm
+        // 注：旧版 estTorque = torqueNm × D²L/D²L_base 线性类比已于 v0.4.1 删除
+        // （同几何多转矩点误差 max 523%）。现统一走物理公式包络（见下方 torque_* 字段）。
 
         // ---- 电气闭环（v0.1.6 核心修复）----
         // 由电压/转速/极数/几何反推自洽的 peak_current 与 turns_per_coil，
@@ -386,21 +420,21 @@ export function buildParamMatrix(rawSpec, config = {}) {
             ...(frame.grown || yokeLimitedByOdCap
               ? { stator_od_requested: od, stator_od_after_growth: odFinal }
               : {}),
-            estimated_torque: estTorque,
-            ref_model: 'L0-类比估算',
+            // ---- v0.4.1 转矩包络：需求 vs 提供（替代旧的 estimated_torque 类比）----
+            //   需求   torque_nm = 9550·P/n（规格，硬约束）
+            //   额定提供 = (π/2)·Bδ·A·D²·L·kw·kFe（典型电磁负荷，长期可输出）
+            //   最大提供 = 额定提供 × K（induction 2.0 / pmsm 1.8，规范经验值非标定）
+            //   判据 torque_feasibility: ample / overload_only / undersized / unknown
+            ...torqueEnvelopeFor({
+              demandNm: torqueNm,
+              statorId: round1(dEff),
+              coreLength,
+              motorType: motorResolved.type,
+              cooling,
+            }),
+            ref_model: 'L0-物理公式估算',
             scenario: 'analogy',
             target_torque: torqueNm,
-            // ---- v0.2.5 转矩口径契约（P0）----
-            // 10 万案例压测把 estimated_torque 当"承诺满足用户转矩的输出"断言，
-            // 报出 91.4% 守恒失效。复核结论：两者本就是不同物理量——
-            //   target_torque  = 9550·P/n  = 用户规格（硬约束）
-            //   estimated_torque = target·(D²L/D²L_base) = 按几何类比外推的可达转矩
-            // 同一几何下二者必然不同（差 D²L 比例），不是计算错误，而是口径未标注。
-            // 但该字段进了交接白名单（param-schema L1_DIAG_FIELDS），下游若当规格用即静默违约，
-            // 故显式给出 basis 标记与偏差，让消费方无法误用。
-            torque_basis: 'analogy_d2l',
-            torque_is_spec: false,
-            torque_ratio_estimated_over_target: baseD2l > 0 ? round2(d2l / baseD2l) : 1,
             // v0.1.6：电气闭环派生量 + PMSM 几何种子（项目基准 极弧0.688 / PM厚12mm）
             electrical_frequency_hz: closure?.freq_hz ?? round1((speedRpm * pole) / 120),
             back_emf_v: closure?.back_emf_v ?? null,
@@ -418,6 +452,17 @@ export function buildParamMatrix(rawSpec, config = {}) {
         if (matrix.length >= count) break outer
       }
     }
+  }
+
+  // ---- v0.4.1 需求 vs 提供判据过滤（env 默认 OFF，单变量对照）----
+  // 剔除 undersized（需求 > 最大提供 ⇒ 几何偏小，必须放大机座）。
+  // 全滤空则保留原矩阵并告警 —— 判据基于未标定的典型负荷代理值，不可让广筛静默归零。
+  let undersizedFiltered = 0
+  if (isFilterUndersizedEnabled(spec)) {
+    const kept = matrix.filter((r) => r._physics?.torque_feasibility !== 'undersized')
+    undersizedFiltered = matrix.length - kept.length
+    if (kept.length > 0) matrix = kept
+    else undersizedFiltered = 0
   }
 
   // ---- 按 D²L 与目标转矩的匹配度排序（physics_kernel.py:689-694）----
@@ -524,6 +569,21 @@ export function buildParamMatrix(rawSpec, config = {}) {
         `若主极被 V16 判超同步，候选集中其余极数即替代方案，请对照查看。`,
   })
 
+  // v0.4.1：需求 vs 提供判据过滤结果必须可见（否则「少了几行」无从察觉）
+  if (undersizedFiltered > 0) {
+    warnings.push({
+      code: 'UNDERSIZED_FILTERED',
+      level: 'info',
+      filtered_rows: undersizedFiltered,
+      returned_rows: returned.length,
+      criterion: '需求扭矩 > 最大提供转矩（额定提供 × 过载倍数）⇒ 几何偏小',
+      message:
+        `已剔除 ${undersizedFiltered} 行 undersized 候选（需求扭矩 > 最大提供转矩）。` +
+        `判据基于典型电磁负荷代理值 × 未标定的过载倍数，属量级判断，` +
+        `如需保守广筛请关闭 DSH_L0_FILTER_UNDERSIZED。`,
+    })
+  }
+
   return {
     warnings,
     od_limit: odLimitMeta,
@@ -532,6 +592,7 @@ export function buildParamMatrix(rawSpec, config = {}) {
     returned: returned.length,
     requested: requestedCount,
     truncated,
+    undersized_filtered: undersizedFiltered,
     spec: {
       power_kw: powerKw, speed_rpm: speedRpm, voltage_v: voltage, poles,
       motor_type: motorResolved.type,

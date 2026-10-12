@@ -422,13 +422,36 @@ export function runL0Estimate(rawArgs, config = {}) {
       capability_output: {
         fields: ['torque_capability', 'capability_source', 'capability_confidence'],
         methods: ['surrogate(T1, env DSH_L0_SURROGATE_TORQUE 默认 OFF)', 'd2l(T2, 方法2 电磁负荷)', 'stress(T2b, 方法3 切向应力)'],
-        note: '可达能力代理估算，绝不当作额定转矩规格使用',
+        note: '额定可提供转矩（典型电磁负荷，长期可输出）代理估算，绝不当作额定转矩规格使用',
+      },
+      // v0.4.1：需求 vs 提供 —— 三档语义（用户口径：需求扭矩 / 最大提供扭矩）
+      envelope_output: {
+        demand_field: 'torque',
+        rated_field: 'torque_capability',
+        max_field: 'torque_capability_max',
+        max_formula: 'torque_capability × overload_factor',
+        overload_factor: { induction: 2.0, pmsm: 1.8 },
+        overload_factor_calibrated: false,
+        overload_factor_note:
+          '过载倍数为规范下限/经验分档值（异步 GB/T 下限 2.0；PMSM 受逆变器限流与去磁约束取 1.8），' +
+          '**非本项目真值标定**：case_motors.max_torque / max_torque_ratio 全表仅 1 行且 NULL。' +
+          '真值积累后可整体替换（单一旋钮）。',
+        feasibility_field: 'torque_feasibility',
+        feasibility_levels: {
+          ample: '需求 ≤ 额定提供：充裕，几何还有缩小空间',
+          overload_only: '额定提供 < 需求 ≤ 最大提供：仅短时过载可行，长期不行',
+          undersized: '需求 > 最大提供：几何偏小，必须放大机座',
+          unknown: '需求或提供缺数据，不作判定（不伪造）',
+        },
+        margin_fields: ['torque_margin', 'torque_margin_rated'],
+        filter_env_switch: 'DSH_L0_FILTER_UNDERSIZED',
+        note: '需求 vs 提供是 L0 广筛最有价值的几何可行性信号；过滤开关默认 OFF（判据未标定，属量级判断）',
       },
       deprecated_analogy: {
         field: '_physics.estimated_torque',
         formula: 'torque_nm × (D²L)/(D²L_base)',
-        status: '已弃用',
-        reason: '线性类比对同几何多转矩点误差 max 523%，已被方法2/3 物理公式取代',
+        status: '已删除（v0.4.1）',
+        reason: '线性类比对同几何多转矩点误差 max 523%，已被方法2/3 物理公式 + 三档包络取代；字段不再产出',
       },
       surrogate_env_switch: 'DSH_L0_SURROGATE_TORQUE',
       warning: 'torque_capability 是广筛可行性代理（低置信），交接 RMxprt 必须用 specs[].torque_nm（规格），不得用能力值当规格',

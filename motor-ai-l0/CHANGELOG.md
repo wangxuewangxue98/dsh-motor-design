@@ -5,6 +5,28 @@
 
 版本三重一致性：`package.json.version` = `SKILL.md` 的 `metadata.version` = `CHANGELOG.md` 最新条目。
 
+## [0.4.1] - 2026-10-13 — 🎯 转矩三档包络：需求 / 额定提供 / 最大提供 + 可行性判据
+
+> **性质：新增判据字段 + 接线 + 清残留。默认行为零回归（过滤开关默认 OFF）。**
+
+### Added
+- **转矩包络**：矩阵每行 `_physics` 新增 `torque_capability`（额定提供）/ `torque_capability_max`（最大提供 = 额定 × K）/
+  `overload_factor` / `torque_margin` / `torque_feasibility`，取代旧 `estimated_torque` 类比。
+- **三档可行性判据** `torque_feasibility`：`ample` / `overload_only` / `undersized` / `unknown`。
+- **过滤开关** `filter_undersized`（等价 env `DSH_L0_FILTER_UNDERSIZED`，**默认 OFF**）：
+  开启后剔除「需求 > 最大提供」的几何偏小候选；全滤空则保留原矩阵并告警（不允许广筛静默归零）。
+  过滤数量经 `undersized_filtered` 回吐，并产生 `UNDERSIZED_FILTERED` 显式告警。
+- `torque_contract` 新增 `envelope_output` 段（三档语义、过载倍数取值与**未标定**声明、过滤开关名）。
+- verify 新增 2 项（三档边界含等号 + 缺数据 unknown / 过滤开关 OFF 零回归 + ON 生效 + env 一致），**117/117 全绿**。
+
+### Changed
+- 核心依赖 `@wangxue98/dsh-motor-ai-core` `^1.1.0 → ^1.2.0`（包络常量与派生函数的真源）。
+
+### Removed
+- **旧 D²L 线性类比 `estimated_torque` 已删除**（`torque_nm × D²L/D²L_base`，同几何多转矩点误差 max 523%），
+  连带移除 `torque_basis` / `torque_is_spec` / `torque_ratio_estimated_over_target` 三字段。
+  此前「契约声明弃用但代码仍在产出」的两套口径并存隐患已消除。
+
 ## [0.4.0] - 2026-10-12 — 🛠 P0/P1/P2 广筛质量修复 + MC/CI 水位线
 
 ### Fixed

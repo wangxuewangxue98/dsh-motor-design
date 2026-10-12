@@ -22,7 +22,7 @@ whenToUse: >
 user-invocable: true
 metadata:
   author: Motor-AI
-  version: 0.4.0
+  version: 0.4.1
   level: l0
   tier: free
 ---
@@ -109,7 +109,11 @@ L0 的几何/磁密/反电势模型按**工频中压异步电机**标定。超�
 ### Phase 2 · 参数矩阵生成
 
 调用 `motor_param_matrix`。产出每一行含 16 个 L1 矩阵字段 +
-`_physics` 派生量（`d_squared_l` / `lambda` / `lambda_valid` / `estimated_torque`）。
+`_physics` 派生量（`d_squared_l` / `lambda` / `lambda_valid` / **转矩包络**
+`torque_capability` 额定提供 / `torque_capability_max` 最大提供 / `overload_factor` /
+`torque_margin` / `torque_feasibility`）。
+
+> v0.4.1：旧 `estimated_torque`（D²L 线性类比，误差 max 523%）已删除，改由物理公式包络承担。
 
 生成策略是**聚焦扫描**（复刻 `physics_kernel.focused_scan`），不是笛卡尔积：
 内径 D 分档 → 反算外径 → 极数候选 → 槽配合轮询 → 匝数扰动 → λ 夹紧。
@@ -134,10 +138,14 @@ L0 的几何/磁密/反电势模型按**工频中压异步电机**标定。超�
 调用 `motor_l0_estimate`（或在上游直接用聚合工具 `motor_l0_pipeline` 一步拿结果），对剔除后的组合做毫秒级估算。
 注意 `motor_l0_estimate` 输出**默认封顶 Top10**（`top_n:0` 才取全量），避免回吐全量矩阵触发 DSH 截断。
 输出含原生字段（`efficiency` / `torque` / `temp_rise` / `total_loss` /
-`torque_density` / `prediction_source`）+ **转矩双字段**（v0.4.0）：
-期望输出 `torque_source`/`torque_confidence`（spec 9550·P/n 精确值，排序口径）与
-可达能力 `torque_capability`/`capability_source`/`capability_confidence`
-（d2l/stress 物理代理，低置信，**绝不当作规格**）+ L1 镜像字段。
+`torque_density` / `prediction_source`）+ **转矩三档包络**（v0.4.1）：
+①需求 `torque` = 9550·P/n（规格，conf 1.0）；②额定提供 `torque_capability`
+（d2l/stress 物理代理，长期可输出，低置信，**绝不当作规格**）；③最大提供
+`torque_capability_max` = 额定提供 × `overload_factor`（异步 2.0 / PMSM 1.8，**未标定**）。
+三者合成 `torque_feasibility`：`ample` / `overload_only` / `undersized` / `unknown`
+—— 这是 L0 广筛最有价值的几何可行性信号（需求 > 最大提供 ⇒ 几何偏小，须放大机座）。
+可选 `filter_undersized`（env `DSH_L0_FILTER_UNDERSIZED`）剔除 undersized 行，**默认 OFF**。
++ L1 镜像字段。
 
 **排序口径**：默认按 `efficiency` 降序；`temp_rise` / `total_loss` 为升序
 （越小越好）。可用 `sort_by` 切换。

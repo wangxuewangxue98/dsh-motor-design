@@ -34,6 +34,7 @@ import {
   deriveElectricalClosure,
   computeTorqueD2L, computeTorqueStress, l0TorqueEstimate, isSurrogateTorqueEnabled,
   queryTypicalBLoading, buildSurrogateResult, WINDING_FACTOR, STACKING_FACTOR,
+  deriveTorqueEnvelope, queryTorqueOverloadFactor, TORQUE_OVERLOAD_FACTOR,
 } from '@wangxue98/dsh-motor-ai-core'
 import { buildParamMatrix, recommendPoles, poleCandidates } from '../tools/l0/param-matrix.mjs'
 import { runL0Estimate } from '../tools/l0/l0-estimate.mjs'
@@ -1488,26 +1489,38 @@ check('绝缘等级: params.insulation_class 透传到温升判据（B 级 80K �
   return `params/opts/矩阵三路一致（B=80K、F=105K、Z→valid=false）；B级比F级严 25K`
 })
 
-check('转矩口径: estimated_torque 类比已弃用，契约升级 dual_field_resolver', () => {
+check('转矩口径: 三档包络（需求/额定提供/最大提供）+ 旧类比已删除', () => {
   // 压测把 _physics.estimated_torque 当规格断言 → 报 91.4% 守恒失效。
-  // 复核：它是 D²L 类比外推量，与 target_torque(9550P/n) 本就不同物理量。
+  // v0.4.1：旧 D²L 线性类比字段已删除，改为需求 vs 提供三档包络。
   const { matrix } = buildParamMatrix({ power_kw: 400, speed_rpm: 750, poles: 4, count: 3 })
   const row = matrix[0]
   const ph = row._physics
-  must(ph.torque_basis === 'analogy_d2l', '必须标注 torque_basis=analogy_d2l')
-  must(ph.torque_is_spec === false, '必须显式声明 torque_is_spec=false')
-  must(typeof ph.torque_ratio_estimated_over_target === 'number', '必须给出类比比例供核对')
+  // ① 旧类比字段必须不再产出
+  must(!('estimated_torque' in ph), '旧 _physics.estimated_torque 必须已删除（误差 max 523%）')
+  must(!('torque_basis' in ph) && !('torque_is_spec' in ph), '旧类比契约字段必须一并移除')
+  // ② 新包络字段齐全且自洽
+  must(['ample', 'overload_only', 'undersized', 'unknown'].includes(ph.torque_feasibility),
+    `必须给出三档判据，实际 ${ph.torque_feasibility}`)
+  must(ph.overload_factor > 0, '必须给出过载倍数')
+  must(Math.abs(ph.torque_capability_max - ph.torque_capability * ph.overload_factor) < 0.02,
+    `最大提供应=额定提供×K，实际 ${ph.torque_capability_max} vs ${ph.torque_capability}×${ph.overload_factor}`)
+  must(Math.abs(ph.torque_margin - ph.torque_capability_max / ph.target_torque) < 0.01,
+    `torque_margin 应=最大提供/需求，实际 ${ph.torque_margin}`)
   must(Math.abs(ph.target_torque - 400 * 9550 / 750) < 0.01,
     `target_torque 应等于规格 9550P/n=${(400 * 9550 / 750).toFixed(2)}，实际 ${ph.target_torque}`)
-  // 转矩公式本身正确：native.torque 与规格逐位吻合（偏差 0%）
+  // ③ 转矩公式本身正确：native.torque 与规格逐位吻合（偏差 0%）
   const est = quickL0Estimate(row)
   must(Math.abs(est.torque - ph.target_torque) < 0.01, `native.torque 应等于规格值，实际 ${est.torque} vs ${ph.target_torque}`)
-  // 交接面必须暴露契约声明
+  must(Math.abs(est.torque_capability_max - est.torque_capability * est.overload_factor) < 0.02,
+    '公式通道必须透传最大提供字段且自洽')
+  // ④ 交接面必须暴露契约声明
   const out = runL0Estimate({ params_list: matrix.slice(0, 2) }, {})
   must(out.torque_contract?.basis === 'dual_field_resolver', '返回体必须给出 torque_contract 声明（dual_field_resolver）')
   must(out.torque_contract?.spec_field === 'torque_nm', '必须指明规格字段为 torque_nm')
-  must(out.torque_contract?.deprecated_analogy?.status === '已弃用', '旧 D²L 线性类比必须在契约中显式弃用')
-  return `target=规格(9550P/n) / 能力=物理代理(d2l)，比例=${ph.torque_ratio_estimated_over_target}；native.torque 与规格偏差 0%`
+  must(out.torque_contract?.envelope_output?.max_field === 'torque_capability_max', '契约必须声明最大提供字段')
+  must(out.torque_contract?.envelope_output?.overload_factor_calibrated === false, '过载倍数必须诚实标注「未标定」')
+  must(out.torque_contract?.deprecated_analogy?.status?.includes('已删除'), '旧 D²L 线性类比必须在契约中标注已删除')
+  return `需求=${ph.target_torque} / 额定提供=${ph.torque_capability} / 最大提供=${ph.torque_capability_max}(K=${ph.overload_factor}) ⇒ ${ph.torque_feasibility}`
 })
 
 check('V06: 极数奇偶合法性（3/5/7/9 极物理不存在）', () => {
@@ -1965,10 +1978,66 @@ check('P5: 公式/代理通道双字段接线 + 契约诚实声明', () => {
   const tc = est.torque_contract
   must(tc && tc.basis === 'dual_field_resolver', `契约 basis 应为 dual_field_resolver，实得 ${tc && tc.basis}`)
   must(tc.surrogate_env_switch === 'DSH_L0_SURROGATE_TORQUE', '契约应声明 T1 env 开关名')
-  must(tc.deprecated_analogy && tc.deprecated_analogy.status === '已弃用', '契约应显式弃用旧 D²L 线性类比')
+  must(tc.deprecated_analogy && tc.deprecated_analogy.status.includes('已删除'), '契约应标注旧 D²L 线性类比已删除')
   must(L0_NATIVE_FIELDS.includes('torque_capability') && L0_NATIVE_FIELDS.includes('capability_source'),
     'L0_NATIVE_FIELDS 应含能力字段白名单（防 buildL0Result 过滤）')
   return '公式通道 spec+d2l / 代理通道去硬置0 / 契约 dual_field_resolver 全过'
+})
+
+check('v0.4.1 三档判据: 过载倍数表 + ample/overload_only/undersized 边界', () => {
+  // ① 过载倍数取值（异步 GB/T 下限 2.0；PMSM 受逆变器限流+去磁约束取 1.8）
+  must(queryTorqueOverloadFactor('induction') === 2.0, `异步机过载倍数应为 2.0，实得 ${queryTorqueOverloadFactor('induction')}`)
+  must(queryTorqueOverloadFactor('pmsm') === 1.8, `PMSM 过载倍数应为 1.8，实得 ${queryTorqueOverloadFactor('pmsm')}`)
+  must(queryTorqueOverloadFactor('不存在的机型') === 2.0, '非法机型应安全回退缺省 2.0')
+  // ② 三档边界（rated=100, K=2.0 ⇒ max=200）
+  const e1 = deriveTorqueEnvelope(80, 100, 'induction')
+  must(e1.torque_feasibility === 'ample' && e1.torque_margin_rated > 1, `需求80<额定100 ⇒ ample，实得 ${e1.torque_feasibility}`)
+  const e2 = deriveTorqueEnvelope(150, 100, 'induction')
+  must(e2.torque_feasibility === 'overload_only' && e2.torque_margin > 1, `需求150∈(100,200] ⇒ overload_only，实得 ${e2.torque_feasibility}`)
+  const e3 = deriveTorqueEnvelope(250, 100, 'induction')
+  must(e3.torque_feasibility === 'undersized' && e3.torque_margin < 1, `需求250>最大200 ⇒ undersized，实得 ${e3.torque_feasibility}`)
+  // ③ 边界等号：需求=额定 ⇒ ample；需求=最大 ⇒ overload_only（不得判 undersized）
+  must(deriveTorqueEnvelope(100, 100, 'induction').torque_feasibility === 'ample', '需求=额定 ⇒ ample')
+  must(deriveTorqueEnvelope(200, 100, 'induction').torque_feasibility === 'overload_only', '需求=最大 ⇒ overload_only')
+  // ④ 数据不足不伪造
+  const e4 = deriveTorqueEnvelope(0, 100, 'induction')
+  must(e4.torque_feasibility === 'unknown' && e4.torque_margin === 0, '需求缺失必须 unknown，不得伪造判据')
+  const e5 = deriveTorqueEnvelope(100, 0, 'induction')
+  must(e5.torque_feasibility === 'unknown' && e5.torque_capability_max === 0, '提供缺失必须 unknown 且最大提供=0')
+  // ⑤ PMSM 走自己的倍率
+  const e6 = deriveTorqueEnvelope(190, 100, 'pmsm')
+  must(e6.torque_capability_max === 180 && e6.torque_feasibility === 'undersized',
+    `PMSM 最大提供应为 180（100×1.8）⇒ 需求190 undersized，实得 max=${e6.torque_capability_max} ${e6.torque_feasibility}`)
+  return 'K: 异步2.0/PMSM1.8；三档边界含等号正确；缺数据 unknown 不伪造'
+})
+
+check('v0.4.1 过滤开关: DSH_L0_FILTER_UNDERSIZED 默认 OFF 零回归，ON 生效且空集兜底', () => {
+  const spec = { power_kw: 400, speed_rpm: 250, poles: 6, count: 12 }
+  const saved = process.env.DSH_L0_FILTER_UNDERSIZED
+  try {
+    // ① 默认 OFF：行数与过滤前一致（零回归）
+    delete process.env.DSH_L0_FILTER_UNDERSIZED
+    const off = buildParamMatrix(spec, { maxMatrixSize: 200 })
+    must(off.undersized_filtered === 0, `默认 OFF 时不得过滤任何行，实得 ${off.undersized_filtered}`)
+    must(!off.warnings.some((w) => w.code === 'UNDERSIZED_FILTERED'), 'OFF 时不得产生过滤告警')
+    // ② 显式传 true：生效，且剔除数与告警一致
+    const on = buildParamMatrix({ ...spec, filter_undersized: true }, { maxMatrixSize: 200 })
+    must(on.undersized_filtered >= 0 && on.returned > 0, 'ON 时过滤后仍须有候选（空集兜底）')
+    must(!on.matrix.some((r) => r._physics?.torque_feasibility === 'undersized'),
+      'ON 时不得残留 undersized 行')
+    if (on.undersized_filtered > 0) {
+      const w = on.warnings.find((x) => x.code === 'UNDERSIZED_FILTERED')
+      must(w && w.filtered_rows === on.undersized_filtered, '过滤必须有显式告警且数量一致')
+    }
+    // ③ env 通道同样生效
+    process.env.DSH_L0_FILTER_UNDERSIZED = '1'
+    const byEnv = buildParamMatrix(spec, { maxMatrixSize: 200 })
+    must(byEnv.undersized_filtered === on.undersized_filtered, 'env=1 与显式 true 行为必须一致')
+    return `OFF 零回归(${off.returned}行) / ON 剔除${on.undersized_filtered}行剩${on.returned}行 / env 通道一致`
+  } finally {
+    if (saved === undefined) delete process.env.DSH_L0_FILTER_UNDERSIZED
+    else process.env.DSH_L0_FILTER_UNDERSIZED = saved
+  }
 })
 
 // ---------- 输出 ----------
