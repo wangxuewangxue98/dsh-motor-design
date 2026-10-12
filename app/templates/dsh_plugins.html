@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DSH 插件管理 · Motor-AI</title>
+<style>
+  :root { --bg:#0f1420; --card:#1a2130; --line:#2a3346; --txt:#e6ebf2; --sub:#9aa7bd;
+          --ok:#3ad17f; --warn:#f5b942; --bad:#ef5b6b; --acc:#4c8dff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+         font:14px/1.5 -apple-system,"Segoe UI",Roboto,"Microsoft YaHei",sans-serif; }
+  header { padding:16px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; }
+  header h1 { font-size:18px; margin:0; }
+  .wrap { padding:20px 24px; display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .card h2 { margin:0 0 12px; font-size:15px; color:var(--sub); font-weight:600; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--sub); font-weight:600; }
+  button { background:var(--acc); color:#fff; border:0; border-radius:6px; padding:7px 12px;
+           cursor:pointer; font-size:13px; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--txt); }
+  button.danger { background:var(--bad); }
+  input,select { background:#0c111b; border:1px solid var(--line); color:var(--txt);
+                 border-radius:6px; padding:6px 8px; width:100%; margin:4px 0 10px; }
+  label { color:var(--sub); font-size:12px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:20px; font-size:12px; }
+  .b-ok { background:rgba(58,209,127,.15); color:var(--ok); }
+  .b-warn { background:rgba(245,185,66,.15); color:var(--warn); }
+  .b-bad { background:rgba(239,91,107,.15); color:var(--bad); }
+  .b-free { background:rgba(76,141,255,.15); color:var(--acc); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  pre { background:#0c111b; border:1px solid var(--line); border-radius:6px; padding:10px;
+        max-height:240px; overflow:auto; font-size:12px; }
+  .muted { color:var(--sub); font-size:12px; }
+  .full { grid-column:1 / -1; }
+  .pill { cursor:pointer; }
+  .pill:hover { outline:1px solid var(--acc); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔌 DSH 插件管理</h1>
+  <span class="muted">后端数据层：Core/dsh_registry.py（SQLite）· 复用客户端心跳 plugin_versions</span>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <h2>插件台账</h2>
+    <div class="row" style="margin-bottom:10px">
+      <button onclick="loadList()">刷新</button>
+      <button class="ghost" onclick="showGate()">跑发布门禁</button>
+      <button class="ghost" onclick="loadMatrix()">安装矩阵</button>
+    </div>
+    <table id="tbl"><thead><tr>
+      <th>plugin_id</th><th>channel</th><th>version</th><th>status</th><th>triple</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+
+  <div class="card">
+    <h2>注册插件</h2>
+    <label>plugin_id</label><input id="r_id" value="motor-ai-l0" />
+    <label>name</label><input id="r_name" value="电机设计专家 L0" />
+    <label>channel</label>
+    <select id="r_channel"><option>l0</option><option>l1</option><option>l2</option></select>
+    <label>tier</label>
+    <select id="r_tier"><option>free</option><option>vip</option><option>flagship</option></select>
+    <label>version</label><input id="r_ver" value="0.1.0" />
+    <button onclick="doRegister()">注册（draft）</button>
+    <p class="muted" id="r_msg"></p>
+  </div>
+
+  <div class="card">
+    <h2>插件使用情况（脱敏聚合指标）</h2>
+    <div class="row" style="margin-bottom:10px">
+      <input id="u_pid" value="motor-ai-l0" style="margin:0" />
+      <button onclick="loadUsage()">刷新</button>
+    </div>
+    <table id="u_tbl"><thead><tr>
+      <th>工具</th><th>调用</th><th>成功</th><th>失败</th><th>成功率</th><th>规模Σ</th><th>耗时(ms)</th>
+    </tr></thead><tbody></tbody></table>
+    <pre id="u_body" class="muted" style="margin-top:10px">暂无上报数据（等待插件端 telemetry 回传，或点「刷新」拉取）</pre>
+    <p class="muted">仅展示「按工具聚合的调用次数/成败/耗时/规模」脱敏指标；不含设计参数、结果明细、提示词、工作目录、密钥。</p>
+  </div>
+
+  <div class="card full" id="detail" style="display:none">
+    <h2>详情 · <span id="d_id"></span></h2>
+    <div class="row" style="margin-bottom:10px">
+      <button onclick="doGate()">发布门禁</button>
+      <button class="ghost" onclick="doLock()">锁版</button>
+      <button class="ghost" onclick="doRollback()">回滚</button>
+      <button class="ghost" onclick="showTokens()">口令列表</button>
+    </div>
+    <pre id="d_body"></pre>
+  </div>
+
+  <div class="card full">
+    <h2>口令发放 / 吊销</h2>
+    <div class="row">
+      <div style="flex:1"><label>plugin_id</label><input id="t_pid" value="motor-ai-l0" /></div>
+      <div style="flex:1"><label>token_id</label><input id="t_id" placeholder="tok_xxxx" /></div>
+    </div>
+    <div class="row">
+      <div style="flex:1"><label>类型</label>
+        <select id="t_type"><option>one_time</option><option>limited</option></select></div>
+      <div style="flex:1"><label>过期(可选)</label><input id="t_exp" placeholder="2026-12-31T00:00" /></div>
+    </div>
+    <div class="row">
+      <button onclick="doIssue()">发出口令</button>
+      <button class="danger" onclick="doRevoke()">吊销口令</button>
+    </div>
+    <pre id="t_body" class="muted">—</pre>
+  </div>
+
+  <div class="card full">
+    <h2>安装矩阵（复用客户端心跳）</h2>
+    <pre id="m_body" class="muted">点「安装矩阵」加载（依赖 /api/client/register 上报的 plugin_versions）</pre>
+  </div>
+</div>
+
+<script>
+const API = "/api/admin/dsh-plugins";
+const stBadge = (s) => {
+  const m = { published:["b-ok","已发布"], draft:["b-warn","草稿"], locked:["b-bad","已锁"],
+              rolled_back:["b-warn","已回滚"], offline:["b-bad","下线"] };
+  const [c,t] = m[s] || ["b-warn", s];
+  return `<span class="badge ${c}">${t}</span>`;
+};
+const tripleBadge = (ok) => ok == null
+  ? `<span class="badge b-warn">未跑</span>`
+  : (ok ? `<span class="badge b-ok">✓</span>` : `<span class="badge b-bad">✗</span>`);
+
+async function api(path, opt) {
+  const r = await fetch(API + path, opt);
+  let j = null; try { j = await r.json(); } catch (e) {}
+  return { ok: r.ok, status: r.status, body: j };
+}
+
+async function loadList() {
+  const { body } = await api("");
+  const tb = document.querySelector("#tbl tbody");
+  tb.innerHTML = "";
+  (body.plugins || []).forEach(p => {
+    const triple = p.release_gate && p.release_gate.triple_ok;
+    const tr = document.createElement("tr");
+    tr.className = "pill";
+    tr.innerHTML = `<td>${p.plugin_id}</td><td><span class="badge b-free">${p.channel}</span></td>
+      <td>${p.version}</td><td>${stBadge(p.status)}</td><td>${tripleBadge(triple)}</td>`;
+    tr.onclick = () => showDetail(p.plugin_id);
+    tb.appendChild(tr);
+  });
+}
+
+async function doRegister() {
+  const data = { plugin_id: r_id.value, name: r_name.value, channel: r_channel.value,
+                 tier: r_tier.value, version: r_ver.value };
+  const { ok, body } = await api("", { method:"POST", headers:{"Content-Type":"application/json"},
+                                       body: JSON.stringify(data) });
+  r_msg.textContent = ok ? "✅ 已注册" : "❌ " + (body && body.error);
+  if (ok) loadList();
+}
+
+async function showDetail(pid) {
+  const { body } = await api("/" + pid);
+  if (!body.plugin) { alert(body.error); return; }
+  document.getElementById("detail").style.display = "block";
+  d_id.textContent = pid;
+  d_body.textContent = JSON.stringify(body.plugin, null, 2);
+}
+
+async function doGate() {
+  const pid = d_id.textContent;
+  const { body } = await api("/" + pid + "/release-gate", { method:"POST" });
+  d_body.textContent = JSON.stringify(body, null, 2);
+  loadList();
+}
+async function doLock() {
+  const { body } = await api("/" + d_id.textContent + "/lock", { method:"POST" });
+  d_body.textContent = JSON.stringify(body, null, 2); loadList();
+}
+async function doRollback() {
+  const { body } = await api("/" + d_id.textContent + "/rollback", { method:"POST" });
+  d_body.textContent = JSON.stringify(body, null, 2); loadList();
+}
+async function showTokens() {
+  const { body } = await api("/" + d_id.textContent + "/tokens");
+  d_body.textContent = JSON.stringify(body.tokens || body, null, 2);
+}
+
+async function doIssue() {
+  const data = { token_id: t_id.value, type: t_type.value, expires_at: t_exp.value || null };
+  const { ok, body } = await api("/" + t_pid.value + "/tokens/issue",
+    { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(data) });
+  t_body.textContent = ok ? JSON.stringify(body.token, null, 2) : "❌ " + (body && body.error);
+}
+async function doRevoke() {
+  const data = { token_id: t_id.value };
+  const { ok, body } = await api("/" + t_pid.value + "/tokens/revoke",
+    { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(data) });
+  t_body.textContent = ok ? JSON.stringify(body.token, null, 2) : "❌ " + (body && body.error);
+}
+
+async function loadMatrix() {
+  const { body } = await api("/install-matrix");
+  m_body.textContent = JSON.stringify(body.matrix || body, null, 2);
+}
+
+async function loadUsage() {
+  const pid = u_pid.value.trim();
+  const { body } = await api("/" + pid + "/usage-stats");
+  const s = (body && body.usage_stats) || {};
+  const tb = document.querySelector("#u_tbl tbody");
+  tb.innerHTML = "";
+  const byTool = s.by_tool || {};
+  Object.keys(byTool).forEach(t => {
+    const b = byTool[t];
+    const el = document.createElement("tr");
+    const e1 = b.elapsed_min_ms ?? b.avg_elapsed_ms;
+    const e2 = b.elapsed_max_ms ?? b.avg_elapsed_ms;
+    el.innerHTML = `<td>${t}</td><td>${b.calls ?? 0}</td><td>${b.ok ?? 0}</td>
+      <td>${b.failed ?? 0}</td><td>${b.success_rate ?? 0}%</td>
+      <td>${b.sum_n ?? 0}</td><td>${e1}${e1 !== e2 ? " ~ " + e2 : ""}</td>`;
+    tb.appendChild(el);
+  });
+  if (!body || !s.reported) {
+    u_body.textContent = "暂无上报数据（等待插件端 telemetry 回传，或点「刷新」拉取）";
+    return;
+  }
+  u_body.textContent =
+    "【累计汇总】调用 " + (s.calls_total ?? 0) +
+    " | 成功率 " + (s.overall_success_rate ?? 0) + "%" +
+    " | 规模Σ " + (s.sum_n ?? 0) +
+    " | 耗时 " + (s.elapsed_min_ms ?? 0) + "~" + (s.elapsed_max_ms ?? 0) + "ms\n" +
+    "【最新】上报于 " + (s.last_report ?? "-") +
+    " · 版本 " + (s.plugin_version ?? "-") +
+    " · 平台 " + (s.platform ?? "-") +
+    " · 累计上报 " + (s.report_count ?? 0) + " 次";
+}
+
+async function showGate() {
+  const pid = (document.querySelector("#tbl tbody").firstChild
+    && document.querySelector("#tbl tbody").firstChild.children[0].textContent) || "motor-ai-l0";
+  const { body } = await api("/" + pid + "/release-gate", { method:"POST" });
+  m_body.textContent = "【发布门禁】\n" + JSON.stringify(body, null, 2);
+}
+
+loadList();
+loadUsage();
+</script>
+</body>
+</html>

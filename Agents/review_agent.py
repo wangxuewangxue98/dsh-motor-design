@@ -1,3 +1,6 @@
+import logging
+logger = logging.getLogger(__name__)
+
 # -*- coding: utf-8 -*-
 """
 评审推荐师智能体 v2.04 — 物理逻辑解释 + 分层对比
@@ -13,17 +16,29 @@
 import json
 import os
 import sys
+import time
+import concurrent.futures as _cf
 from typing import Optional
 from dotenv import load_dotenv
 from langchain_ollama import ChatOllama
 
-load_dotenv(r"D:\MotorDesign\.env", override=True)
+load_dotenv(r"D:\MotorDesign\.env", override=False)
 
 sys.path.insert(0, r"D:\MotorDesign\Scripts")
 sys.path.insert(0, r"D:\MotorDesign\Core")
 
-from base_agent import BaseAgent
+from base_agent import BaseAgent, extract_ollama_usage
+try:
+    from workflow_config import get_agent_model, get_point_review_timeout
+except Exception:
+    get_agent_model = lambda name: os.getenv("LOCAL_MODEL_NAME", "qwen2.5:3b-instruct-q4_K_M")
 from ai_tools import check_desensitize, auto_desensitize
+# v4.01.037 (P0-1): 结构化评审回灌 — 强制 LLM 追加 review_feedback JSON
+try:
+    from review_feedback_schema import FEEDBACK_OUTPUT_INSTRUCTION as _RF_INSTRUCTION
+except Exception as _rf_err:  # noqa: BLE001
+    _RF_INSTRUCTION = ""
+    print(f"[review_agent] review_feedback_schema 未加载: {_rf_err}")
 from physics_kernel import (
     determine_scenario, find_closest_catalog, analogy_estimate,
     compute_d2l, compute_torque, compute_lambda, validate_lambda,
@@ -49,34 +64,42 @@ def _load_report_structure_rules() -> dict:
 class ReviewAgent(BaseAgent):
     """评审推荐师 - 物理逻辑解释 + 分层对比 + 专家推荐"""
 
+    # v4.00.011: LLM 评审硬超时(秒), 可在测试中覆写
+    #   v4.00.011b (2026-08-19): 300→1000 — 实测 qwen3:4b 逐方案点评(10方案矩阵)正常推理
+    #   即可超过 300s, 300s 会误杀仍在正常工作的长任务。
+    #   v4.00.011c (2026-08-19): 1000→2000 — 用户观察模型仍正常跑, 2000s 作为挂死兜底线。
+    #   v4.02.66: 2000→600 — Ollama 过载时单步实测可拖到 28min, 2000s 兜底过长致用户感知"卡死";
+    #     收口 600s, 既容忍冷启+长推理突刺, 又能在卡死 ~10min 内熔断降级。
+    # v4.06-P2: 该值已收口到 workflow_config.llm_runtime.point_review_timeout_s 统一治理
+    #   (调用级 request_timeout vs 点评级 point_review_timeout_s 语义分层, 见 workflow_config.py)。
+    #   运行态由 get_point_review_timeout() 读取 (环境变量 OLLAMA_REVIEW_TIMEOUT 优先),
+    #   此处保留为静态兜底常量, 容器测试仍可直接覆写。
+    LLM_REVIEW_TIMEOUT_S = 600
+
     def __init__(self):
         super().__init__(
             name="ReviewAgent",
             description="分层类比选型法: 选型路径叙述 + 物理核验 + 分层对比 + 专家推荐"
         )
-        model = os.getenv("LOCAL_MODEL_NAME", "qwen2.5:3b-instruct-q4_K_M")
-        base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-        use_gpu = os.getenv("USE_GPU", "true").lower() == "true"
+        # v4.00.006: 模型改为每次调用时动态读取, 支持运行时切换
+        self.llm = None
+        # v4.02.06 H-3 二期 T4: 云端客户端改走统一工厂 (BaseAgent._get_cloud_client),
+        # 不再硬编码 deepseek OpenAI 构建. cloud_model/cloud_available 由 BaseAgent 工厂辅助解析.
+        # (原实现误置于 _get_llm 的 return 之后成为死代码, 导致 use_cloud=True 时
+        #  self.cloud_available 未定义; 此处修正到 __init__, 行为恢复正确)
+        self.cloud_model = self._resolve_cloud_model()
+        self.cloud_available = self._cloud_usable()
 
-        self.llm = ChatOllama(
-            model=model,
-            temperature=0.3,
-            base_url=base_url,
-            **({"num_gpu": 0} if not use_gpu else {})
-        )
+    def _get_llm(self):
+        """每次调用时动态创建 LLM, 管理端修改模型配置后立即生效 (v5.1 委托 BaseAgent 集中治理 num_ctx/keep_alive)"""
+        try:
+            return super()._get_llm(temperature=0.3)
+        except Exception as e:
+            logger.warning("[ReviewAgent] LLM 创建失败: %s", e)
+            return None
 
-        # 云端客户端（按需）
-        _ds_key = os.getenv("DEEPSEEK_API_KEY", "")
-        _allow_cloud = os.getenv("ALLOW_CLOUD_API", "true") == "true"
-        self.cloud_available = bool(_ds_key) and _ds_key != "sk-your-key-here" and _allow_cloud
-        if self.cloud_available:
-            from openai import OpenAI
-            self.cloud_client = OpenAI(
-                api_key=os.getenv("DEEPSEEK_API_KEY"),
-                base_url=os.getenv("CLOUD_API_BASE", "https://api.deepseek.com")
-            )
-
-    def run(self, results: list, specs: dict, use_cloud: bool = False, **kwargs) -> dict:
+    def run(self, results: list, specs: dict, use_cloud: bool = False,
+            l0_calibration: dict = None, l0_l1_diff: dict = None, **kwargs) -> dict:
         """
         评审方案 (物理逻辑解释 + 分层对比)
 
@@ -92,30 +115,86 @@ class ReviewAgent(BaseAgent):
         if not results:
             return {"review": "无方案可评审", "top_solutions": [], "recommendation": ""}
 
-        top = results[:5]
+        top = results[:10]
 
         # ── Step 1: 物理分析 (不依赖 LLM) ──
         scenario_info = determine_scenario(specs)
         best_design = top[0] if top else None
         physics_analysis = self._build_physics_analysis(specs, scenario_info, top)
 
-        # ── Step 2: 准备 LLM 对比文本 ──
-        comparison_text = self._build_comparison_text(top)
+        # v4.06: 提取案例电机参数 (从 kwargs)
+        case_motor = kwargs.get("case_motor")
+        case_match = kwargs.get("case_match")
 
-        # 脱敏检查
+        # ── Step 2: 准备 LLM 对比文本 ──
+        # v4.02.68 (系列三 Tier A): 传 L0↔L1 差异 + 高残差区域标定, 逐方案渲染
+        #   「[L0预测η → L1实算η, Δ]」与「[RMxprt 故障]」诊断行。
+        l0_calibration = l0_calibration or {}
+        l0_l1_diff = l0_l1_diff or {}
+        comparison_text = self._build_comparison_text(
+            top, case_motor=case_motor,
+            l0_calibration=l0_calibration, l0_l1_diff=l0_l1_diff)
+
+        # 脱敏检查 (v4.00.011c: 内部评审报告 — 命中仅附加提示, 不替换原始对比数据)
+        #   原逻辑命中即把整个 comparison_text 替换为警告, 会丢失全部方案对比数据;
+        #   内部 AI 团队流程非客户交付, 对比数据价值 > 脱敏, 故保留原文 + 一行提示。
         is_safe, warnings = check_desensitize(comparison_text)
+        desensitize_note = ""
         if not is_safe:
-            comparison_text = "[警告: 检测到可能的敏感信息，已过滤]\n" + "\n".join(warnings)
+            _warn = warnings if isinstance(warnings, str) else "; ".join(warnings)
+            desensitize_note = (
+                f"⚠️ 提示: 对比数据含可能敏感信息({_warn}), "
+                "仅供内部 AI 团队评审参考, 请勿外发客户。\n"
+            )
 
         # ── Step 3: LLM 评审 ──
-        llm_review = self._llm_review(specs, comparison_text, physics_analysis, use_cloud)
+        # v4.00.011 (2026-08-19): 硬超时保护 — _llm_review 内 llm.invoke 无超时,
+        #   Ollama worker 挂死时永久阻塞 → quality_gate 永远等不到 review_pro →
+        #   整个 workflow 冻结。与收敛阵营 future.result(timeout=...) 同款降落伞,
+        #   超时/异常时降级返回「物理分析 + 方案对比数据 + LLM 点评跳过」而非冻结。
+        #   v4.00.011b: 超时 300→1000s, 避免误杀正常长推理 (10方案点评 >300s 属正常)。
+        _ts = time.time()
+        _ex = _cf.ThreadPoolExecutor(max_workers=1)
+        _llm_text = ""
+        _llm_ti = 0
+        _llm_to = 0
+        # v4.06-P2: 点评级超时收口到 workflow_config 统一治理 (调用级 vs 点评级语义分层)
+        _to = get_point_review_timeout()
+        try:
+            _llm_text, _llm_ti, _llm_to = _ex.submit(
+                self._llm_review, specs, comparison_text, physics_analysis, use_cloud,
+                case_motor=case_motor, case_match=case_match,
+                l0_calibration=l0_calibration, l0_l1_diff=l0_l1_diff).result(
+                    timeout=_to)
+        except Exception as _e:
+            _dur = int((time.time() - _ts) * 1000)
+            _reason = (f"超时(>{_to}s)" if isinstance(_e, _cf.TimeoutError)
+                       else f"{type(_e).__name__}: {_e}")
+            try:
+                self._log("llm_review_timeout_guard", {"timeout_s": _to},
+                          str(_reason), status="error", duration_ms=_dur)
+            except Exception:
+                pass
+            _llm_text = (
+                f"⚠️ LLM 点评失败/超时 ({_reason}), 本轮已跳过 LLM 逐方案点评。\n\n"
+                f"{desensitize_note}"
+                "以下为方案详细对比数据 (供人工评审参考):\n\n"
+                f"{comparison_text}"
+            )
+            _llm_ti = _llm_to = 0
+        finally:
+            # 不等待挂死线程, 避免评审节点永久阻塞 (同收敛阵营 v4.06 修复)
+            _ex.shutdown(wait=False, cancel_futures=True)
 
         # ── Step 4: 合并报告 ──
-        full_review = physics_analysis + "\n\n---\n\n" + llm_review
+        full_review = physics_analysis + "\n\n---\n\n" + _llm_text
 
         # 提取推荐
         recommendation = ""
-        for line in llm_review.split("\n"):
+        for line in _llm_text.split("\n"):
+            # v4.00.011: 跳过 markdown 标题行, 避免把 "## 推荐方案" 标题误当推荐内容
+            if line.strip().startswith("#"):
+                continue
             if "推荐" in line and "方案" in line:
                 recommendation = line.strip()
                 break
@@ -127,6 +206,9 @@ class ReviewAgent(BaseAgent):
             "recommendation": recommendation,
             "used_cloud": use_cloud and self.cloud_available,
             "desensitize_warnings": warnings if not is_safe else [],
+            # v4.06-P1: 真实 token 计量 (逐方案点评 LLM), 供成本审计全链路真实化
+            "tokens_in": _llm_ti,
+            "tokens_out": _llm_to,
         }
 
     def _build_physics_analysis(self, specs: dict, scenario_info: dict,
@@ -242,9 +324,46 @@ class ReviewAgent(BaseAgent):
 
         return "".join(parts)
 
-    def _build_comparison_text(self, top: list) -> str:
-        """构建方案对比文本 (供 LLM 使用)"""
+    def _build_comparison_text(self, top: list, case_motor: dict = None,
+                               l0_calibration: dict = None,
+                               l0_l1_diff: dict = None) -> str:
+        """构建方案对比文本 (供 LLM 使用)
+        v4.06: 增加 case_motor 参考数据注入
+        v4.02.68 (系列三 Tier A): 逐方案追加 L0↔L1 差异行与 RMxprt 故障行 ——
+          原对比文本只有 L1 实算字段, LLM 对 L0 预测"不可见", 无从评价预筛可靠性;
+          故障方案也只剩 eff=0 表象, 丢失 error_detail 根因。
+          限界: 每方案最多 1 行 Δ 摘要 + 1 行故障摘要 (C4 — 防 prompt/token 膨胀)。
+        """
+        l0_calibration = l0_calibration or {}
+        l0_l1_diff = l0_l1_diff or {}
         lines = []
+        # v4.06: 案例电机参考数据 (放在对比文本最前面, 让 LLM 优先感知)
+        if case_motor and isinstance(case_motor, dict):
+            lines.append("=== 案例电机参考数据 ===")
+            lines.append(f"案例编号: {case_motor.get('case_code', '?')}")
+            lines.append(f"电机型号: {case_motor.get('motor_type', '?')}")
+            ref_lines = []
+            if case_motor.get('efficiency'):
+                ref_lines.append(f"效率{case_motor['efficiency']}%")
+            if case_motor.get('power_factor'):
+                ref_lines.append(f"功率因数{case_motor['power_factor']}")
+            if case_motor.get('stator_od'):
+                ref_lines.append(f"定子外径{case_motor['stator_od']}mm")
+            if case_motor.get('stator_id'):
+                ref_lines.append(f"定子内径{case_motor['stator_id']}mm")
+            if case_motor.get('rotor_od'):
+                ref_lines.append(f"转子外径{case_motor['rotor_od']}mm")
+            if case_motor.get('core_length'):
+                ref_lines.append(f"铁心长{case_motor['core_length']}mm")
+            if case_motor.get('air_gap'):
+                ref_lines.append(f"气隙{case_motor['air_gap']}mm")
+            if case_motor.get('rated_current'):
+                ref_lines.append(f"额定电流{case_motor['rated_current']}A")
+            if ref_lines:
+                lines.append("关键参数: " + ", ".join(ref_lines))
+            lines.append("请将各方案与上述案例电机参数进行对标分析, 指出参数偏差和匹配度。")
+            lines.append("")
+        lines.append("=== 方案详细对比 ===")
         for i, r in enumerate(top):
             line = f"方案{i+1}: 外径{r.get('stator_od', '?')}mm, 极数{r.get('poles', '?')}"
             if r.get('slots_stator'):
@@ -270,16 +389,103 @@ class ReviewAgent(BaseAgent):
             if phys:
                 line += f" [D²L={phys.get('d_squared_l', '?')}, λ={phys.get('lambda', '?')}, 参考={phys.get('ref_model', '?')[:15]}]"
             lines.append(line)
+            # ── v4.02.68 (系列三 Tier A): L0↔L1 差异诊断行 (每方案最多 1 行) ──
+            _l0e = r.get("l0_eff")
+            _de = r.get("delta_eff")
+            if _l0e is not None or isinstance(_de, (int, float)):
+                _d_txt = f"{_de:+.2f}pp" if isinstance(_de, (int, float)) else "n/a"
+                _bias = f" ⚠{r['l0_bias_flag']}" if r.get("l0_bias_flag") else ""
+                lines.append(
+                    f"  [L0-L1] L0预测η={_l0e if _l0e is not None else '?'}% → "
+                    f"L1实算η={r.get('efficiency', 0):.2f}%, Δ={_d_txt}{_bias}")
+            elif r.get("l0_fault_excluded"):
+                lines.append("  [L0-L1] 该方案 RMxprt 故障, 已排除出 L0 残差统计")
+            # ── v4.02.68 (系列一): RMxprt 故障诊断行 (每方案最多 1 行) ──
+            _et = str(r.get("error_detail") or r.get("error") or "").strip()
+            if _et:
+                _lic = " (License)" if r.get("licence_error") else ""
+                lines.append(f"  [RMxprt 故障{_lic}] {_et[:160]}")
+            elif r.get("solve_failed"):
+                lines.append("  [RMxprt 故障] 求解失败 (无 error_detail), 性能量已置 0")
+        # ── v4.02.68 (系列三 Tier A/B): 预筛可靠性与高残差区域提示 (限界, 全局 1 段) ──
+        _hint = self._build_l0_hint_section(l0_l1_diff, l0_calibration)
+        if _hint:
+            lines.append("")
+            lines.append(_hint)
         return "\n".join(lines)
 
-    def _llm_review(self, specs: dict, comparison_text: str,
-                    physics_analysis: str, use_cloud: bool) -> str:
-        """调用 LLM 生成评审报告"""
+    def _build_l0_hint_section(self, l0_l1_diff: dict, l0_calibration: dict) -> str:
+        """构建 L0 预筛可靠性 + 高残差区域提示 (供 LLM 作为诊断轴, 而非改 L0 系数)。"""
+        out = []
+        diff = l0_l1_diff if isinstance(l0_l1_diff, dict) else {}
+        if diff.get("enabled") and int(diff.get("joins") or 0) > 0:
+            out.append("=== L0 预筛可靠性 (L0预测 vs L1实算) ===")
+            out.append(
+                f"JOIN={diff.get('joins')} 组, 平均|Δη|={diff.get('avg_abs_delta_pp')}pp, "
+                f"L0显著偏差={diff.get('bias_count')} 组 (阈值{diff.get('threshold_pp')}pp)")
+            if diff.get("fault_excluded"):
+                out.append(f"注: {diff.get('fault_excluded')} 组故障方案已排除出残差统计。")
+        cal = l0_calibration if isinstance(l0_calibration, dict) else {}
+        _regions = cal.get("high_residual_regions") or []
+        if cal.get("total_samples"):
+            out.append("=== L0 离线标定 (跨轮残差累积, 飞轮) ===")
+            out.append(f"累计残差样本={cal.get('total_samples')} 条, "
+                       f"全局偏置={float(cal.get('global_bias_pp', 0) or 0):+.2f}pp "
+                       f"(正=L0低估 / 负=L0高估)")
+            if _regions:
+                out.append("高残差设计区域 (L0 估算薄弱, 需谨慎):")
+                for _rg in _regions[:5]:
+                    out.append(f"  - {_rg}")
+        return "\n".join(out)
 
-        if use_cloud and self.cloud_available:
-            response = self.cloud_client.chat.completions.create(
-                model=os.getenv("CLOUD_MODEL_NAME", "deepseek-chat"),
-                messages=[
+    def _llm_review(self, specs: dict, comparison_text: str,
+                    physics_analysis: str, use_cloud: bool,
+                    case_motor: dict = None, case_match: list = None,
+                    l0_calibration: dict = None, l0_l1_diff: dict = None):
+        """调用 LLM 生成评审报告
+        v4.06: 增加 case_motor/case_match 参数, 注入 LLM prompt
+        v4.06-P1: 返回值由 str 改为 (content:str, tokens_in:int, tokens_out:int),
+                  供成本审计全链路真实化
+        """
+        # v4.06: 构建案例电机对标指令
+        case_instruction = ""
+        if case_motor and isinstance(case_motor, dict):
+            case_code = case_motor.get('case_code', '')
+            case_instruction = (
+                f"\n\n=== 案例电机对标指令 ===\n"
+                f"当前设计方案参考了案例电机 {case_code} ({case_motor.get('motor_type', '')})。\n"
+                f"请逐方案分析与案例电机关键参数的匹配度, 指出主要偏差。\n"
+            )
+            if case_match:
+                match_summary = []
+                for m in case_match[:5]:
+                    mi = m.get('solution_index', 0)
+                    ms = m.get('match_score', 0)
+                    match_summary.append(f"方案{mi+1}: 匹配度{ms:.1f}%")
+                case_instruction += "预计算匹配度: " + " | ".join(match_summary) + "\n"
+
+        # v4.02.68 (系列三 Tier A/B): L0↔L1 差异 + RMxprt 故障 解读指令
+        #   限界: 明确"每方案限 1 行" + 禁止 LLM 自行发明 L0 系数修正 (报告 3.2/6 结论:
+        #   top-10 属幸存者偏差样本, 据 10 个偏差样本改 L0 系数统计无效)。
+        _l0_diff_on = bool(isinstance(l0_l1_diff, dict) and l0_l1_diff.get("enabled"))
+        _l0_cal_on = bool(isinstance(l0_calibration, dict)
+                          and l0_calibration.get("total_samples"))
+        l0_instruction = ""
+        if _l0_diff_on or _l0_cal_on:
+            l0_instruction = (
+                "\n\n=== 补充诊断要求 (L0 预筛 / RMxprt 故障) ===\n"
+                "1) 逐方案解读 [L0-L1] 行 (L0 预测 vs L1 实算的 Δη): 指出偏差方向与可能成因"
+                "(如 L0 对高槽满率 / 大外径 / 低极数设计偏乐观)。\n"
+                "2) 对出现 [RMxprt 故障] 的方案: 解释故障根因并给出改进方向 (几何/线规/网格), "
+                "不得把它当作正常性能结果点评。\n"
+                "3) 若给出『高残差设计区域』: 仅需标注其为 L0 估算薄弱区并提示复核, "
+                "严禁自行提出 L0 公式或系数的修改方案。\n"
+                "4) 上述 (1)(2) 每方案限 1 行, 保持简洁, 不展开长段落。\n")
+
+        # v4.02.07 H-3 二期 T1: 经系统级网关路由 (云端优先, 失败自动降级本地, 对调用方透明)
+        llm = self._get_llm_or_cloud(temperature=0.3) if (use_cloud and self.cloud_available) else None
+        if llm is not None:
+            response = llm.invoke([
                     {"role": "system", "content": """你是一位资深电机设计评审专家。你将收到一批经过脱敏处理的电机方案性能数据（含结构参数、电磁参数、损耗和热参数），以及基于D²L物理内核的选型路径分析。
 
 重要声明：
@@ -296,6 +502,7 @@ class ReviewAgent(BaseAgent):
 - 热性能: 温升是否可接受(<100K)、发热因数评估
 - 损耗: 铜耗/铁耗比例分析
 - 物理核验: D²L匹配度、长径比合理性
+- 案例对标: 与案例电机参数的偏差和匹配度评估
 - 总结: 优缺点综述
 
 ## 方案2
@@ -305,18 +512,19 @@ class ReviewAgent(BaseAgent):
 推荐方案X，因为...
 
 ## 风险提示
-- 列出关键风险点"""},
+- 列出关键风险点
+""" + _RF_INSTRUCTION + l0_instruction},
                     {"role": "user", "content": f"""需求规格：{specs.get('motor_type', '异步电动机')}, 功率{specs.get('power_kw')}kW, 电压{specs.get('voltage_v')}V, 冷却{specs.get('cooling')}, 效率目标{specs.get('efficiency_target')}%
 
 === D²L 物理内核分析 ===
 {physics_analysis}
 
 === 方案详细对比（含结构/电磁/损耗/热参数/物理核验）===
-{comparison_text}"""}
-                ],
-                temperature=0.3
-            )
-            return response.choices[0].message.content
+{comparison_text}{case_instruction}"""}
+            ])
+            # v4.06-P1: 捕获真实 token 用量 (云端 _CloudAIMessage / 本地 ChatOllama usage_metadata, 云/地通用)
+            _ti, _to = extract_ollama_usage(response)
+            return response.content, _ti, _to
         else:
             # 本地点评
             prompt = f"""你是电机设计评审专家。以下是基于规格"{specs.get('motor_type', '异步电动机')}/{specs.get('power_kw')}kW/{specs.get('voltage_v')}V/{specs.get('cooling')}"生成的Top5方案，已包含D²L物理内核分析。
@@ -325,7 +533,7 @@ class ReviewAgent(BaseAgent):
 {physics_analysis}
 
 === 方案详细对比 ===
-{comparison_text}
+{comparison_text}{case_instruction}
 
 请逐方案做详细技术点评，每个方案包含：
 1. 结构特点（槽配合合理性、匝数是否适当、内外径比例、铁心长度、长径比）
@@ -333,7 +541,8 @@ class ReviewAgent(BaseAgent):
 3. 热性能（温升是否可接受<100K、发热因数）
 4. 损耗分析（铜耗/铁耗比例）
 5. 物理核验（D²L匹配度、长径比是否在最优区间）
-6. 优缺点总结
+6. 案例对标（与案例电机参数的偏差和匹配度评估）
+7. 优缺点总结
 
 格式：
 ## 方案1
@@ -342,6 +551,7 @@ class ReviewAgent(BaseAgent):
 - 热性能: ...
 - 损耗: ...
 - 物理核验: ...
+- 案例对标: ...
 - 总结: ...
 
 ## 方案2
@@ -351,7 +561,14 @@ class ReviewAgent(BaseAgent):
 推荐方案X，因为...
 
 ## 风险提示
-- ..."""
+- ...
+""" + _RF_INSTRUCTION + l0_instruction
 
-            response = self.llm.invoke(prompt)
-            return response.content
+            # v4.00.006: 每次调用时动态获取 LLM (支持管理端运行时切换模型)
+            llm = self._get_llm()
+            if llm is None:
+                return "LLM 不可用", 0, 0
+            response = llm.invoke(prompt)
+            # v4.06-P1: 捕获本地真实 token 用量 (ChatOllama usage_metadata)
+            _ti, _to = extract_ollama_usage(response, prompt)
+            return response.content, _ti, _to

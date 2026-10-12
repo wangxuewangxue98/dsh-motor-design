@@ -8,13 +8,20 @@
 哲学: 真正的危险不是你看不到的风险, 而是你不愿相信的风险。
       让 AI 假装这个方案已经死了, 用"事后诸葛亮"的口吻逼你看清盲点。
 """
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import json
 from dotenv import load_dotenv
 
-load_dotenv(r"D:\MotorDesign\.env", override=True)
+load_dotenv(r"D:\MotorDesign\.env", override=False)
 
-from base_agent import BaseAgent
+from base_agent import BaseAgent, extract_ollama_usage
+try:
+    from workflow_config import get_agent_model
+except Exception:
+    get_agent_model = lambda name: os.getenv("LOCAL_MODEL_NAME", "qwen2.5:3b-instruct-q4_K_M")
 
 # v2.05.02: 加载飞轮报告结构优化规则 (魔鬼代言人提示词增强)
 _DEVILS_RULES_PATH = r"D:\MotorDesign\Knowledge\report_structure_rules.json"
@@ -48,17 +55,18 @@ class DevilsAdvocate(BaseAgent):
             name="DevilsAdvocate",
             description="用刻薄失败者口吻写遗书, 挑战一厢情愿的假设"
         )
+        # v4.00.006: 模型改为每次调用时动态读取, 支持运行时切换
         self.llm = None
-        if HAS_LANGCHAIN:
-            model = os.getenv("LOCAL_MODEL_NAME", "qwen2.5:3b-instruct-q4_K_M")
-            base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-            use_gpu = os.getenv("USE_GPU", "true").lower() == "true"
-            self.llm = ChatOllama(
-                model=model,
-                temperature=0.8,
-                base_url=base_url,
-                **({"num_gpu": 0} if not use_gpu else {})
-            )
+
+    def _get_llm(self):
+        """每次调用时动态创建 LLM, 管理端修改模型配置后立即生效 (v5.1 委托 BaseAgent 集中治理 num_ctx/keep_alive)"""
+        if not HAS_LANGCHAIN:
+            return None
+        try:
+            return super()._get_llm(temperature=0.8)
+        except Exception as e:
+            logger.warning("[DevilsAdvocate] LLM 创建失败: %s", e)
+            return None
 
     def run(self, results: list, specs: dict, top_n: int = 3,
             convergence_findings: dict = None, **kwargs) -> dict:
@@ -89,7 +97,10 @@ class DevilsAdvocate(BaseAgent):
             postmortems.append({"solution_index": i, "postmortem": pm})
 
         # 汇总报告
-        if self.llm:
+        # v4.00.006: 每次调用时动态获取 LLM (支持管理端运行时切换模型)
+        llm = self._get_llm_or_cloud(temperature=0.8)
+        _tok_in, _tok_out = 0, 0
+        if llm:
             sol_summary = "\n".join(
                 f"方案{i+1}: 外径{sol.get('stator_od','?')}mm/{sol.get('poles','?')}极, "
                 f"效率{sol.get('efficiency',0):.1f}%, 温升{sol.get('max_temp',0):.1f}K, "
@@ -114,16 +125,20 @@ class DevilsAdvocate(BaseAgent):
 语气: 刻薄、不留情面、像在追悼会上揭短。但每句话都要指向真实的技术风险, 不是空骂。
 用中文, 400 字以内。{_get_devils_prompt_boost()}"""
             try:
-                resp = self.llm.invoke(prompt)
+                resp = llm.invoke(prompt)
                 report = resp.content
+                _tok_in, _tok_out = extract_ollama_usage(resp, prompt)
             except Exception:
                 report = self._template_report(top, specs, postmortems)
+                _tok_in, _tok_out = 0, 0
         else:
             report = self._template_report(top, specs, postmortems)
 
         return {
             "con_report": report,
             "postmortems": postmortems,
+            "tokens_in": _tok_in,
+            "tokens_out": _tok_out,
         }
 
     def _write_postmortem(self, sol, specs, idx, evidence) -> str:

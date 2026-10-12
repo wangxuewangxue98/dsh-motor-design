@@ -5,12 +5,19 @@
 大脑: 本地 Qwen2.5-3B (全本地, 零上云)
 收敛阵营: 秩序护盾
 """
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 from dotenv import load_dotenv
 
-load_dotenv(r"D:\MotorDesign\.env", override=True)
+load_dotenv(r"D:\MotorDesign\.env", override=False)
 
-from base_agent import BaseAgent
+from base_agent import BaseAgent, extract_ollama_usage
+try:
+    from workflow_config import get_agent_model
+except Exception:
+    get_agent_model = lambda name: os.getenv("LOCAL_MODEL_NAME", "qwen2.5:3b-instruct-q4_K_M")
 
 try:
     from langchain_ollama import ChatOllama
@@ -65,16 +72,18 @@ class RealityChecker(BaseAgent):
             description="评估新技术的量产可行性, 防止远见变好高骛远"
         )
         self.llm = None
-        if HAS_LANGCHAIN:
-            model = os.getenv("LOCAL_MODEL_NAME", "qwen2.5:3b-instruct-q4_K_M")
-            base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-            use_gpu = os.getenv("USE_GPU", "true").lower() == "true"
-            self.llm = ChatOllama(
-                model=model,
-                temperature=0.3,
-                base_url=base_url,
-                **({"num_gpu": 0} if not use_gpu else {})
-            )
+        # v4.00.006: 模型改为每次调用时动态读取, 支持运行时切换
+
+    def _get_llm(self):
+        """每次调用时动态创建 LLM, 管理端修改模型配置后立即生效 (v5.1 委托 BaseAgent 集中治理 num_ctx/keep_alive)"""
+        if not HAS_LANGCHAIN:
+            return None
+        try:
+            return super()._get_llm(temperature=0.3)
+        except Exception as e:
+            logger.warning("[RealityChecker] LLM 创建失败: %s", e)
+            return None
+            return None
 
     def run(self, results: list, specs: dict, top_n: int = 5, **kwargs) -> dict:
         """
@@ -108,7 +117,10 @@ class RealityChecker(BaseAgent):
             })
 
         # 生成报告
-        if self.llm:
+        # v4.00.006: 每次调用时动态获取 LLM (支持管理端运行时切换模型)
+        llm = self._get_llm_or_cloud(temperature=0.3)
+        _tok_in, _tok_out = 0, 0
+        if llm:
             feas_text = "\n".join(
                 f"方案{i+1} (外径{f['stator_od']}mm/{f['poles']}极, 效率{f['efficiency']}%): "
                 + "; ".join(f"{a['label']} TRL{a['trl']}({a['risk_level']}风险 - {a['note']})" for a in f["tech_assessments"])
@@ -128,16 +140,20 @@ Top{top_n} 方案的技术成熟度评估 (TRL 1-9, 9为已量产):
 
 用中文, 300 字以内, 直接结论。"""
             try:
-                resp = self.llm.invoke(prompt)
+                resp = llm.invoke(prompt)
                 report = resp.content
+                _tok_in, _tok_out = extract_ollama_usage(resp, prompt)
             except Exception:
                 report = self._template_report(feasibility)
+                _tok_in, _tok_out = 0, 0
         else:
             report = self._template_report(feasibility)
 
         return {
             "con_report": report,
             "feasibility": feasibility,
+            "tokens_in": _tok_in,
+            "tokens_out": _tok_out,
         }
 
     def _template_report(self, feasibility) -> str:

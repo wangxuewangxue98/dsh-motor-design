@@ -16,7 +16,10 @@ os.makedirs(LOG_DIR, exist_ok=True)
 
 
 def _get_conn():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS audit_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,14 +66,18 @@ def log(agent_name: str, action: str, parameters: Any = None,
     finally:
         conn.close()
 
-    # 同时写入文本日志
-    log_line = f"[{ts}] [{agent_name}] [{status}] {action}"
-    if params_str:
-        log_line += f" | params={params_str[:200]}"
-    if result_str:
-        log_line += f" | result={result_str[:200]}"
-    with open(TEXT_LOG_PATH, "a", encoding="utf-8") as f:
-        f.write(log_line + "\n")
+    # 同时写入文本日志（失败不阻断主流程：audit.db 已是审计溯源真源）
+    try:
+        log_line = f"[{ts}] [{agent_name}] [{status}] {action}"
+        if params_str:
+            log_line += f" | params={params_str[:200]}"
+        if result_str:
+            log_line += f" | result={result_str[:200]}"
+        with open(TEXT_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(log_line + "\n")
+    except Exception as _e:
+        # 文本镜像写入失败（如权限不足/文件被占用）仅告警，不影响工作流继续执行
+        print(f"[audit_logger][WARN] 文本日志写入失败（已忽略）: {_e}")
 
 
 def get_recent_logs(limit: int = 50, offset: int = 0, agent: str = "",

@@ -5,14 +5,21 @@
 大脑: 本地 Qwen2.5-3B 解读推演结果 (全本地, 零上云)
 收敛阵营: 秩序护盾
 """
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import sys
 from dotenv import load_dotenv
 
-load_dotenv(r"D:\MotorDesign\.env", override=True)
+load_dotenv(r"D:\MotorDesign\.env", override=False)
 
-from base_agent import BaseAgent
+from base_agent import BaseAgent, extract_ollama_usage
 sys.path.insert(0, r"D:\MotorDesign\Core")
+try:
+    from workflow_config import get_agent_model
+except Exception:
+    get_agent_model = lambda name: os.getenv("LOCAL_MODEL_NAME", "qwen2.5:3b-instruct-q4_K_M")
 from monte_carlo import run_batch, FAILURE_MODES
 
 try:
@@ -31,16 +38,17 @@ class SandboxSimulator(BaseAgent):
             description="蒙特卡洛 1000 次推演, 用最惨失败情形防止信念变固执"
         )
         self.llm = None
-        if HAS_LANGCHAIN:
-            model = os.getenv("LOCAL_MODEL_NAME", "qwen2.5:3b-instruct-q4_K_M")
-            base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-            use_gpu = os.getenv("USE_GPU", "true").lower() == "true"
-            self.llm = ChatOllama(
-                model=model,
-                temperature=0.4,
-                base_url=base_url,
-                **({"num_gpu": 0} if not use_gpu else {})
-            )
+        # v4.00.006: 模型改为每次调用时动态读取, 支持运行时切换
+
+    def _get_llm(self):
+        """每次调用时动态创建 LLM, 管理端修改模型配置后立即生效 (v5.1 委托 BaseAgent 集中治理 num_ctx/keep_alive)"""
+        if not HAS_LANGCHAIN:
+            return None
+        try:
+            return super()._get_llm(temperature=0.4)
+        except Exception as e:
+            logger.warning("[SandboxSimulator] LLM 创建失败: %s", e)
+            return None
 
     def run(self, results: list, specs: dict, top_n: int = 5,
             n_trials: int = 1000, **kwargs) -> dict:
@@ -64,7 +72,10 @@ class SandboxSimulator(BaseAgent):
             for sim in sims
         )
 
-        if self.llm:
+        # v4.00.006: 每次调用时动态获取 LLM (支持管理端运行时切换模型)
+        llm = self._get_llm_or_cloud(temperature=0.4)
+        _tok_in, _tok_out = 0, 0
+        if llm:
             prompt = f"""你是沙盘推演师, 职责是用 1000 次蒙特卡洛推演的最惨情形, 防止设计师的信念变成固执。
 
 需求: {specs.get('power_kw','?')}kW / {specs.get('voltage_v','?')}V / 效率目标{specs.get('efficiency_target','?')}%
@@ -82,10 +93,12 @@ class SandboxSimulator(BaseAgent):
 
 用中文, 300 字以内, 直接给结论, 用数据说话。"""
             try:
-                resp = self.llm.invoke(prompt)
+                resp = llm.invoke(prompt)
                 report = resp.content
+                _tok_in, _tok_out = extract_ollama_usage(resp, prompt)
             except Exception:
                 report = self._template_report(sims)
+                _tok_in, _tok_out = 0, 0
         else:
             report = self._template_report(sims)
 
@@ -93,6 +106,8 @@ class SandboxSimulator(BaseAgent):
             "con_report": report,
             "simulations": sims,
             "n_trials": n_trials,
+            "tokens_in": _tok_in,
+            "tokens_out": _tok_out,
         }
 
     def _template_report(self, sims) -> str:

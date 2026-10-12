@@ -53,19 +53,25 @@ function updateGpuHint() {
     if (!modelInput || !gpuCheckbox || !hint) return;
 
     const val = modelInput.value.toLowerCase();
-    if (val.includes('7b') || val.includes('14b')) {
+    if (val.includes('14b')) {
         gpuCheckbox.checked = false;
         gpuCheckbox.disabled = true;
-        hint.textContent = '7B+ 模型建议关闭（4GB 显存不够）';
+        hint.textContent = '14B 模型需 12GB+ 显存，T600 仅 4GB，请关闭 GPU';
+    } else if (val.includes('7b') || val.includes('8b')) {
+        gpuCheckbox.checked = false;
+        gpuCheckbox.disabled = true;
+        hint.textContent = '7B+ 模型需 6-8GB 显存，T600 仅 4GB，请关闭 GPU';
     } else if (val.includes('4b')) {
         gpuCheckbox.disabled = false;
-        hint.textContent = '4B 模型 GPU 可用但偏紧（3.4GB 显存）';
+        if (!gpuCheckbox.checked) gpuCheckbox.checked = true;
+        hint.textContent = '4B 模型推荐开启 GPU（全层放显存, ~3.0GB, T600 4GB足够）';
     } else if (val.includes('3b') || val.includes('1b')) {
         gpuCheckbox.disabled = false;
-        hint.textContent = '3B 模型推荐开启 GPU（2.5GB 显存）';
+        if (!gpuCheckbox.checked) gpuCheckbox.checked = true;
+        hint.textContent = '3B 模型推荐开启 GPU（全层放显存, ~2.5GB, T600 4GB足够）';
     } else {
         gpuCheckbox.disabled = false;
-        hint.textContent = '根据模型大小决定是否开启 GPU';
+        hint.textContent = '建议开启 GPU（num_gpu=-1, 全层放显存加速推理）';
     }
 }
 
@@ -78,11 +84,22 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // GPU 提示
+    // GPU 提示 + 选择模型后自动保存到后端 + 预加载模型
     const modelInput = document.getElementById('setModelName');
     if (modelInput) {
         modelInput.addEventListener('input', updateGpuHint);
-        modelInput.addEventListener('change', updateGpuHint);
+        modelInput.addEventListener('change', () => {
+            updateGpuHint();
+            saveSettings().then(() => warmUpModel());
+        });
+    }
+
+    // GPU 复选框变化 → 保存 + 预热
+    const gpuCheckbox = document.getElementById('setUseGpu');
+    if (gpuCheckbox) {
+        gpuCheckbox.addEventListener('change', () => {
+            saveSettings().then(() => warmUpModel());
+        });
     }
 
     // 加载初始数据
@@ -110,7 +127,7 @@ function switchTab(tabName) {
     if (tabName === 'dashboard') loadStatus();
     if (tabName === 'history') loadHistory();
     if (tabName === 'compare') loadTopSolutions();
-    if (tabName === 'report') loadReports();
+    if (tabName === 'report') { loadReports(); loadAiTeamReports(); }
     if (tabName === 'evolution') loadEvolutionDashboard();
     if (tabName === 'audit') loadAuditLogs();
     if (tabName === 'radar') loadRadar();
@@ -1055,6 +1072,74 @@ async function loadReports() {
     }
 }
 
+// v2.05.07: 加载AI团队分析报告
+async function loadAiTeamReports() {
+    try {
+        const resp = await fetch('/api/ai_team/results?limit=100');
+        const data = await resp.json();
+        const tbody = document.getElementById('aiTeamReportBody');
+
+        if (!data.success || !data.results || data.results.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="empty-hint">暂无AI团队报告</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = data.results.map(r => {
+            const summary = (r.raw_text || '').substring(0, 40) + '...';
+            const quick = r.quick_solve_count || r.results_count || 0;
+            const fine = r.fine_solve_count || 0;
+            const solveInfo = fine > 0 ? `${quick}+${fine}` : `${quick}`;
+            // v3.00.09: 审核状态
+            const reviewLabels = {approve:'✓批准', reject:'✗反对', redo:'↺重做', end:'⏹结束'};
+            const reviewStatus = r.review_status || '';
+            const reviewText = reviewLabels[reviewStatus] || reviewStatus || '-';
+            const reviewColor = {approve:'#22c55e', reject:'#ef4444', redo:'#f59e0b', end:'#94a3b8'}[reviewStatus] || '#94a3b8';
+            const rec = (r.recommendation || '').substring(0, 30);
+            const licence = r.has_licence_error ? '<span style="color:#ef4444;">是</span>' : '<span style="color:#22c55e;">否</span>';
+            const time = (r.created_time || '').substring(0, 19);
+            return `<tr>
+                <td>${r.id}</td>
+                <td title="${(r.raw_text||'').replace(/"/g,'&quot;')}">${summary}</td>
+                <td title="快速:${quick} 精细:${fine}">${solveInfo}</td>
+                <td><span style="color:${reviewColor};">${reviewText}</span></td>
+                <td>${rec}</td>
+                <td>${licence}</td>
+                <td>${time}</td>
+                <td>
+                    <button class="btn btn-sm btn-secondary" onclick="readAiTeamReport(${r.id})">查看报告</button>
+                </td>
+            </tr>`;
+        }).join('');
+    } catch (e) {
+        console.error('loadAiTeamReports error:', e);
+    }
+}
+
+async function readAiTeamReport(id) {
+    try {
+        const resp = await fetch(`/api/ai_team/results/${id}`);
+        const data = await resp.json();
+        if (data.error) {
+            showToast('读取失败: ' + data.error, 'error');
+            return;
+        }
+        const result = data.result || {};
+        // v3.00.09: 显示快速/精细求解数量和审核状态
+        const quick = result.quick_solve_count || result.results_count || 0;
+        const fine = result.fine_solve_count || 0;
+        const reviewLabels = {approve:'✓批准', reject:'✗反对', redo:'↺重做', end:'⏹结束'};
+        const reviewText = result.review_status ? reviewLabels[result.review_status] || result.review_status : '未审核';
+        const solveHeader = fine > 0
+            ? `> 求解模式: 快速解算 ${quick} 个(RMxprt) + 精细计算 ${fine} 个(Motor-CAD)  |  审核: ${reviewText}`
+            : `> 求解模式: 快速解算 ${quick} 个(RMxprt)  |  审核: ${reviewText}`;
+        let content = solveHeader + '\n\n' + (result.report || result.review || '暂无报告内容');
+        document.getElementById('reportPreview').innerHTML = renderMarkdown(content);
+        showToast('已加载AI团队报告 #' + id, 'success');
+    } catch (e) {
+        showToast('读取失败: ' + e.message, 'error');
+    }
+}
+
 async function readReport(path) {
     try {
         const resp = await fetch(`/api/report/read?path=${encodeURIComponent(path)}`);
@@ -1164,12 +1249,163 @@ async function exportCSV() {
 // ============================================================
 // 设置
 // ============================================================
+
+// 动态加载 Ollama 已安装的模型列表
+async function refreshModelList() {
+    // 先从后端获取当前已保存的模型名称，确保显示的是后端实际使用的模型
+    try {
+        const resp = await fetch('/api/settings', { cache: 'no-store' });
+        const data = await resp.json();
+        await loadOllamaModels(true, data.local_model_name || '');
+        // 刷新后也预加载当前模型到内存
+        warmUpModel();
+    } catch (e) {
+        // 后端不可用时退回使用当前下拉框值
+        await loadOllamaModels(true);
+    }
+}
+
+// 预加载模型到 Ollama 内存（GPU/CPU），切换模型后立即生效
+async function warmUpModel() {
+    const modelName = document.getElementById('setModelName')?.value || '';
+    const useGpu = document.getElementById('setUseGpu')?.checked || false;
+    const hint = document.getElementById('modelListHint');
+    const btn = document.getElementById('btnRefreshModels');
+
+    if (!modelName) return;
+
+    // 显示加载中状态
+    if (btn) { btn.disabled = true; btn.textContent = '加载模型中...'; }
+    if (hint) {
+        hint.innerHTML = `正在加载 <b>${modelName}</b> 到${useGpu ? ' GPU 显存' : ' CPU 内存'}...`;
+        hint.style.color = 'var(--text-muted)';
+    }
+
+    try {
+        const resp = await fetch('/api/ollama/load', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model_name: modelName, use_gpu: useGpu }),
+        });
+        const result = await resp.json();
+
+        if (result.status === 'ok' && result.loaded) {
+            let dev, gpuNote = '';
+            if (result.device === 'GPU') {
+                const pct = result.gpu_pct || 0;
+                dev = `GPU (VRAM: ${result.vram_gb}GB/${result.total_gb}GB, ${pct}%在GPU)`;
+                if (pct < 95 && useGpu) {
+                    gpuNote = ` | ⚡ ${pct}%层在GPU, 部分在CPU (显存限制)`;
+                } else if (useGpu) {
+                    gpuNote = ' | ✅ 全部层在GPU, 推理最快';
+                }
+            } else {
+                dev = `CPU (内存: ${result.total_gb}GB)`;
+                if (useGpu) {
+                    gpuNote = ' | ⚠ GPU 不可用（Ollama未检测到GPU），已降级CPU运行';
+                }
+            }
+            if (hint) {
+                hint.innerHTML = `✓ 当前模型: <b>${modelName}</b> [${dev}] | 已加载到内存，下次推理即时生效${gpuNote}`;
+                hint.style.color = 'var(--success)';
+            }
+            const toastType = (result.device === 'GPU') ? 'success' : (useGpu ? 'warning' : 'success');
+            showToast(`模型已加载到 ${result.device}${gpuNote ? ' (' + gpuNote.replace(' | ', '') + ')' : ''}`, toastType);
+        } else {
+            if (hint) {
+                hint.innerHTML = `⚠ 模型加载失败: ${result.error || '未知错误'}`;
+                hint.style.color = 'var(--danger)';
+            }
+            showToast('模型加载失败: ' + (result.error || '未知错误'), 'error');
+        }
+    } catch (e) {
+        console.error('[warmUpModel] error:', e);
+        if (hint) {
+            hint.innerHTML = `⚠ 预加载请求失败: ${e.message}`;
+            hint.style.color = 'var(--danger)';
+        }
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '刷新模型'; }
+    }
+}
+
+async function loadOllamaModels(manualRefresh, selectedValue) {
+    const select = document.getElementById('setModelName');
+    const hint = document.getElementById('modelListHint');
+    if (!select) {
+        console.error('[loadOllamaModels] select#setModelName not found in DOM');
+        return;
+    }
+
+    const btn = document.getElementById('btnRefreshModels');
+    // 优先使用传入的 selectedValue，否则记住当前选中的值
+    const targetVal = selectedValue || select.value;
+    if (btn) { btn.disabled = true; btn.textContent = '获取中...'; }
+    if (hint) { hint.textContent = '正在获取 Ollama 模型列表...'; hint.style.color = 'var(--text-muted)'; }
+
+    try {
+        const resp = await fetch('/api/ollama/models', { cache: 'no-store' });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        console.log('[loadOllamaModels] API response:', data);
+
+        // 清空旧选项
+        select.innerHTML = '';
+
+        if (data.status === 'ok' && data.models.length > 0) {
+            data.models.forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m.name;
+                opt.textContent = `${m.name}  (${m.description || (m.size_gb > 0 ? m.size_gb + 'GB' : '')})`;
+                opt.title = `${m.name} - ${m.description || ''}`;
+                select.appendChild(opt);
+            });
+            // 恢复之前选中的值
+            let restored = false;
+            for (const opt of select.options) {
+                if (opt.value === targetVal) { opt.selected = true; restored = true; break; }
+            }
+            if (!restored) select.selectedIndex = 0;
+
+            if (hint) {
+                const currentModel = select.value || targetVal;
+                hint.innerHTML = `✓ 当前模型: <b>${currentModel}</b> | 已加载 <b>${data.models.length}</b> 个本地模型（来自 ${data.ollama_url}）`;
+                hint.style.color = 'var(--success)';
+            }
+            if (manualRefresh) showToast(`已加载 ${data.models.length} 个模型`, 'success');
+        } else if (data.status === 'error') {
+            select.innerHTML = '<option value="">-- 获取失败 --</option>';
+            if (hint) {
+                hint.textContent = '✗ ' + (data.error || '无法获取模型列表');
+                hint.style.color = 'var(--error)';
+            }
+            if (manualRefresh) showToast('获取模型失败: ' + (data.error || ''), 'error');
+        } else {
+            select.innerHTML = '<option value="">-- 无已安装模型 --</option>';
+            if (hint) {
+                hint.textContent = '⚠ Ollama 中没有已安装的模型，请先 ollama pull <模型名>';
+                hint.style.color = 'var(--warning)';
+            }
+            if (manualRefresh) showToast('Ollama 中没有已安装的模型', 'warning');
+        }
+    } catch (e) {
+        console.error('[loadOllamaModels] error:', e);
+        select.innerHTML = '<option value="">-- 获取失败 --</option>';
+        if (hint) {
+            hint.textContent = '✗ 获取模型列表失败: ' + e.message;
+            hint.style.color = 'var(--error)';
+        }
+        if (manualRefresh) showToast('获取模型失败: ' + e.message, 'error');
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '刷新模型'; }
+    }
+}
+
 async function loadSettings() {
     try {
         const resp = await fetch('/api/settings');
         const data = await resp.json();
 
-        document.getElementById('setModelName').value = data.local_model_name || 'qwen2.5:7b';
         document.getElementById('setUseGpu').checked = data.use_gpu || false;
         document.getElementById('setApiKey').value = data.deepseek_api_key || '';
         document.getElementById('setCloudModel').value = data.cloud_model_name || 'deepseek-chat';
@@ -1205,6 +1441,9 @@ async function loadSettings() {
 
         // 更新 GPU 提示
         updateGpuHint();
+
+        // 动态加载 Ollama 已安装的模型列表，并选中已保存的模型
+        loadOllamaModels(false, data.local_model_name || '');
     } catch (e) {
         console.error('loadSettings error:', e);
     }
@@ -1540,7 +1779,8 @@ async function runAgentWorkflow() {
     const text = document.getElementById('agentInputText').value.trim();
     if (!text) { showToast('请输入客户需求', 'warn'); return; }
 
-    const solveCount = parseInt(document.getElementById('agentSolveCount').value);
+    const quickCount = parseInt(document.getElementById('agentQuickCount').value);
+    const fineCount = parseInt(document.getElementById('agentFineCount').value);
     const useCloudReview = document.getElementById('agentUseCloudReview').checked;
     const useCloudReport = document.getElementById('agentUseCloudReport').checked;
 
@@ -1549,6 +1789,9 @@ async function runAgentWorkflow() {
      'convergence_review', 'decision_gate', 'generate_report'].forEach(s => {
         updatePipelineStep(s, 'pending', '等待中');
     });
+    // v4.00.08: 重置排队横幅
+    var queueBanner = document.getElementById('queueBanner');
+    if (queueBanner) queueBanner.classList.remove('visible');
     document.getElementById('agentResults').style.display = 'none';
     document.getElementById('decisionGate').style.display = 'none';
 
@@ -1566,7 +1809,9 @@ async function runAgentWorkflow() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                raw_text: text, solve_count: solveCount,
+                raw_text: text,
+                quick_solve_count: quickCount,
+                fine_solve_count: fineCount,
                 use_cloud_review: useCloudReview, use_cloud_report: useCloudReport
             })
         });
@@ -1694,12 +1939,32 @@ function handleWorkflowEvent(data) {
         showToast('步骤错误: ' + data.step, 'warn');
         addMsgBar('error', '步骤[' + data.step + ']错误: ' + (data.error || '未知错误'));
     } else if (data.type === 'progress') {
-        var level = data.level || 'info';
-        var ts = data.timestamp ? data.timestamp + ' ' : '';
-        addMsgBar(level, ts + (data.message || ''));
+        // v4.00.08: 处理排队等待状态
+        if (data.step === 'queue') {
+            var queueBanner = document.getElementById('queueBanner');
+            var queueText = document.getElementById('queueBannerText');
+            if (queueBanner && queueText) {
+                queueBanner.classList.add('visible');
+                queueText.textContent = data.message || '排队等待中...';
+            }
+            var level = data.level || 'info';
+            var ts = data.timestamp ? data.timestamp + ' ' : '';
+            addMsgBar(level, ts + (data.message || ''));
+        } else {
+            var level = data.level || 'info';
+            var ts = data.timestamp ? data.timestamp + ' ' : '';
+            addMsgBar(level, ts + (data.message || ''));
+        }
     } else if (data.type === 'done') {
+        // 工作流完成，隐藏排队横幅
+        var queueBanner = document.getElementById('queueBanner');
+        if (queueBanner) queueBanner.classList.remove('visible');
         showToast('辩证制衡工作流完成', 'success');
         addMsgBar('success', '======= 工作流全部完成 =======');
+        // v4.00.04: 弹出流程时间统计窗口
+        if (data.timing) {
+            showTimingSummary(data.timing);
+        }
     } else if (data.type === 'fatal') {
         showToast('致命错误: ' + data.error, 'error');
         addMsgBar('error', '致命错误: ' + (data.error || '未知'));
@@ -2166,6 +2431,99 @@ async function showMotorcadGuide() {
     }
 }
 
+// v4.00.04: AI流程时间统计弹窗
+function formatDuration(ms) {
+    if (!ms || ms <= 0) return '0.0秒';
+    const totalSec = ms / 1000;
+    if (totalSec < 60) return totalSec.toFixed(1) + '秒';
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec - min * 60;
+    return min + '分' + sec.toFixed(0) + '秒';
+}
+
+function formatTokens(n) {
+    if (!n || n <= 0) return '0';
+    if (n >= 10000) return (n / 10000).toFixed(1) + '万';
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+    return String(n);
+}
+
+function showTimingSummary(timing) {
+    if (!timing) return;
+    const phases = timing.phases || [];
+    const total = timing.total || {};
+
+    let rowsHtml = '';
+    for (const p of phases) {
+        rowsHtml += `
+        <tr>
+            <td style="text-align:left;font-weight:600;padding:10px 8px;">${p.phase || ''}</td>
+            <td style="padding:10px 8px;color:#666;">
+                ${formatDuration(p.system_ms)}
+                <div style="font-size:11px;color:#999;margin-top:2px;">
+                    LLM: ${formatDuration(p.llm_ms)} / 其他: ${formatDuration(p.other_system_ms || 0)}
+                </div>
+            </td>
+            <td style="padding:10px 8px;color:#1a73e8;font-weight:500;">
+                ${formatDuration(p.human_ms)}
+            </td>
+            <td style="padding:10px 8px;font-weight:600;color:#2e7d32;">
+                ${formatDuration(p.subtotal_ms)}
+            </td>
+            <td style="padding:10px 8px;font-size:13px;color:#666;">
+                ${formatTokens(p.tokens_in)}↑ / ${formatTokens(p.tokens_out)}↓
+            </td>
+        </tr>`;
+    }
+
+    const html = `
+        <div style="margin-bottom:12px;color:var(--text-secondary);font-size:13px;">
+            项目编号: <code style="background:var(--bg-secondary);padding:2px 6px;border-radius:4px;">${timing.project_id || '-'}</code>
+            · 阶段小计耗时 = 系统耗时 + 人工交互耗时
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:14px;">
+            <thead>
+                <tr style="background:var(--bg-secondary);">
+                    <th style="text-align:left;padding:10px 8px;border-bottom:2px solid var(--border);">阶段</th>
+                    <th style="text-align:center;padding:10px 8px;border-bottom:2px solid var(--border);">自动系统耗时</th>
+                    <th style="text-align:center;padding:10px 8px;border-bottom:2px solid var(--border);">人工交互耗时</th>
+                    <th style="text-align:center;padding:10px 8px;border-bottom:2px solid var(--border);">阶段小计耗时</th>
+                    <th style="text-align:center;padding:10px 8px;border-bottom:2px solid var(--border);">Token 用量</th>
+                </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+            <tfoot>
+                <tr style="background:var(--bg-secondary);font-weight:600;border-top:2px solid var(--border);">
+                    <td style="text-align:left;padding:12px 8px;">总计</td>
+                    <td style="text-align:center;padding:12px 8px;color:#666;">
+                        ${formatDuration(total.system_ms)}
+                        <div style="font-size:11px;color:#999;margin-top:2px;">
+                            LLM: ${formatDuration(total.llm_ms)} / 其他: ${formatDuration(total.other_system_ms || 0)}
+                        </div>
+                    </td>
+                    <td style="text-align:center;padding:12px 8px;color:#1a73e8;">
+                        ${formatDuration(total.human_ms)}
+                    </td>
+                    <td style="text-align:center;padding:12px 8px;color:#2e7d32;">
+                        ${formatDuration(total.subtotal_ms)}
+                    </td>
+                    <td style="text-align:center;padding:12px 8px;font-size:13px;color:#666;">
+                        ${formatTokens(total.tokens_in)}↑ / ${formatTokens(total.tokens_out)}↓
+                    </td>
+                </tr>
+            </tfoot>
+        </table>
+        <div style="margin-top:16px;padding:12px;background:var(--bg-secondary);border-radius:6px;font-size:12px;color:var(--text-secondary);line-height:1.6;">
+            <strong>说明：</strong><br>
+            • 自动系统耗时 = 大模型耗时 (LLM推理) + 系统其他耗时 (RMxprt求解 / 数据库查询等)<br>
+            • 人工交互耗时 = 各检查点 (需求确认 / 基准参数 / 方案确认 / 决策门 / 报告确认) 的等待+决策时间<br>
+            • 阶段小计耗时 = 自动系统耗时 + 人工交互耗时<br>
+            • Token 用量 = 各阶段 LLM 调用估算 (输入 + 输出)
+        </div>
+    `;
+    showModal('AI 团队流程时间统计', html);
+}
+
 function showModal(title, contentHtml) {
     // 创建或复用 modal
     let modal = document.getElementById('dynamicModal');
@@ -2452,10 +2810,22 @@ function handleProgressHubEvent(data) {
                 addMsgBar('step', '[' + sName + '] ' + (event.message || ''));
                 updatePipelineStep(event.step, 'running', '远程执行中');
             } else if (event.type === 'progress') {
+                // v4.00.08: 远程工作流排队等待
+                if (event.step === 'queue') {
+                    var queueBanner = document.getElementById('queueBanner');
+                    var queueText = document.getElementById('queueBannerText');
+                    if (queueBanner && queueText) {
+                        queueBanner.classList.add('visible');
+                        queueText.textContent = event.message || '排队等待中...';
+                    }
+                }
                 if (event.message) {
                     addMsgBar('info', event.message);
                 }
             } else if (event.type === 'step_done') {
+                // 隐藏排队横幅
+                var queueBanner = document.getElementById('queueBanner');
+                if (queueBanner) queueBanner.classList.remove('visible');
                 var doneNames = {
                     'parse_requirement': '需求解析完成',
                     'generate_designs': '方案生成完成',

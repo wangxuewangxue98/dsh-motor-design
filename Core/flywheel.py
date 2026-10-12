@@ -172,7 +172,10 @@ def on_reject(design_id: int, specs: dict, reason: str = "",
 def _get_design(design_id: int) -> Optional[dict]:
     if not os.path.exists(DB_PATH):
         return None
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     try:
         row = conn.execute(
             "SELECT stator_od, poles, speed, efficiency, max_temp, torque, "

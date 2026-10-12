@@ -66,3 +66,16 @@ Releases/
 
 # 1.4GB 运行期大文件，禁止入仓（2026-10-07 已从历史移除）
 Scripts/control_map.json
+
+# ---- 安全加固 (2026-10-12, 遗留②治理: 防密钥/数据库入仓) ----
+# 根目录运行期数据库（之前未被 KnowledgeBase/*.db 覆盖，会随 git add -A 进仓）
+motorai.db
+*.db-wal
+*.db-shm
+# 含真实密钥的环境文件备份（.env.dev 本身已在上方忽略，但其 .bak 副本未覆盖）
+.env*.bak*
+
+# ---- 提交卫生 (2026-10-12, 遗留②: 提交 Core/Agents/app 时排除运行期/备份产物) ----
+*.bak*
+*.lock
+Core/probe.txt

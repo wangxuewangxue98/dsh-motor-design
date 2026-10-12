@@ -55,7 +55,10 @@ DESIGN_COUNT_TIMEOUT_RATIO = 0.7        # 超时项目方案数量缩减到原�
 
 def _get_conn():
     """获取数据库连接 (自动建表)"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS operation_metrics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,6 +121,49 @@ def _get_conn():
             timestamp TEXT NOT NULL
         )
     """)
+    # v4.02.68 (系列三 Tier B): L0↔L1 残差账本 —— L0(经验快筛) 预测 vs L1(RMxprt) 实算
+    #   的偏差逐轮累积, 供跨轮离线标定 (拟合修正项/训练轻量替代模型), 把 L0 从
+    #   "粗筛" 升级为 "自改进估计器"。故障方案以 fault=1 落库但不参与统计 (防伪残差)。
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS l0_residuals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id TEXT NOT NULL,
+            round_index INTEGER DEFAULT 0,
+            motor_type TEXT,
+            signature TEXT,
+            l0_eff REAL, l1_eff REAL, delta_eff REAL,
+            l0_temp REAL, l1_temp REAL, delta_temp REAL,
+            slot_fill REAL,
+            stator_od REAL, stator_id REAL, core_length REAL, poles REAL,
+            turns_per_coil REAL,
+            wire_dia REAL, n_strands REAL, current_density REAL,
+            l0_score REAL,
+            source_path TEXT,
+            fault INTEGER DEFAULT 0,
+            fault_detail TEXT,
+            -- ── v1.0 温升/损耗标定扩列（Part A2）：让每轮 AI-Team 自动累积损耗真值 ──
+            -- 原表仅有效率与温升标量，无损耗拆分与工况 ⇒ 损耗模型无法标定（见标定规格 §1.1）
+            -- 新增列一律 NULL 容忍：既有 8246 行不受影响，老路径写入不报错（fail-open）
+            max_temp REAL,             -- L1(RMxprt) 温升真值 K，与 l1_temp 同义，冗余便于跨表对齐
+            copper_loss REAL,          -- 铜损 W
+            iron_loss REAL,            -- 铁损 W
+            mechanical_loss REAL,      -- 机械损 W
+            total_loss REAL,           -- 总损耗 W（标定主目标）
+            line_current_a REAL,       -- 线电流 A（大电流域判据）
+            cooling TEXT,              -- 冷却方式 IC411/IC416/液冷...
+            power_kw REAL,             -- 额定功率 kW（反算损耗必需）
+            voltage_v REAL,            -- 额定电压 V
+            -- ── v1.0 标定补列（Part B 执行中发现的缺口）────────────────────
+            -- 铜损公式 P=ρ·I²·Qs·N·l/(a·aWire) 必需槽数 Qs 与并联支路数 a，
+            -- 缺任一则铜损无法独立标定（且不能用真值反推 —— 那会让拟合恒等于真值）。
+            slots_stator REAL,         -- 定子槽数 Qs
+            parallel_circuits REAL,    -- 并联支路数 a
+            speed_rpm REAL,            -- 额定转速 rpm
+            timestamp TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_l0_res_pid ON l0_residuals(project_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_l0_res_ts ON l0_residuals(timestamp)")
     return conn
 
 
@@ -367,6 +413,242 @@ def _get_param_keywords(param: str) -> list:
         "cooling": ["冷却", "水冷", "风冷", "油冷", "cooling", "强制风冷"],
     }
     return keyword_map.get(param, [param])
+
+
+# ═══════════════════════════════════════════════════════════════
+# 2b. v4.02.68 (系列三 Tier B): L0↔L1 残差采集 + 离线标定
+#   设计口径 (报告 6/8 节): 不让 LLM 从 top-10 偏差样本"即时发明" L0 系数修正
+#   (top-10 属"因 L0 评分高而被选中"的幸存者偏差样本), 而是把残差累积入库、
+#   跨多轮离线标定 → 产出「全局偏置」+「高残差设计区域」; AI 每轮角色限于
+#   "标注高残差区域", 而非给出 L0 公式改动。
+# ═══════════════════════════════════════════════════════════════
+
+L0_CAL_MIN_SAMPLES = 20     # 标定最少样本数 (低于此只报全局, 不输出区域结论)
+L0_CAL_WINDOW = 400         # 标定窗口 (最近 N 条; 防久远工况漂移覆盖当前)
+L0_CAL_REGION_MIN_N = 5     # 单区域最少样本数 (低于此不判定该区域)
+L0_CALIBRATION_PATH = r"D:\MotorDesign\Knowledge\l0_calibration.json"
+
+
+def record_l0_residuals(project_id: str, residuals: list, specs: dict = None,
+                        motor_type: str = "", round_index: int = 0) -> dict:
+    """把一轮 L0↔L1 残差样本写入 l0_residuals 账本 (fail-open, 不抛异常)。
+
+    residuals 条目: {signature, l0_eff, l1_eff, delta_eff, l0_temp, l1_temp,
+                     delta_temp, slot_fill, stator_od, stator_id, core_length,
+                     poles, l0_score, source_path, fault, fault_detail}
+    无有效 delta_eff 且非 fault 的条目跳过; fault 条目以 fault=1 落库供审计,
+    但被 evolve_l0_calibration 排除出统计 (防 Δη≈-95pp 伪残差污染)。
+    """
+    result = {"inserted": 0, "skipped": 0, "fault": 0, "error": ""}
+    try:
+        rows = []
+        ts = datetime.now().isoformat()
+        for it in (residuals or []):
+            if not isinstance(it, dict):
+                result["skipped"] += 1
+                continue
+            _fault = bool(it.get("fault"))
+            if _fault:
+                result["fault"] += 1
+            elif it.get("delta_eff") is None or it.get("l0_eff") is None:
+                result["skipped"] += 1
+                continue
+            rows.append((
+                project_id, int(round_index or 0),
+                (motor_type or (specs or {}).get("motor_type") or ""),
+                it.get("signature"),
+                _fnum(it.get("l0_eff")), _fnum(it.get("l1_eff")), _fnum(it.get("delta_eff")),
+                _fnum(it.get("l0_temp")), _fnum(it.get("l1_temp")), _fnum(it.get("delta_temp")),
+                _fnum(it.get("slot_fill")),
+                _fnum(it.get("stator_od")), _fnum(it.get("stator_id")),
+                _fnum(it.get("core_length")), _fnum(it.get("poles")),
+                _fnum(it.get("turns_per_coil")),
+                _fnum(it.get("wire_dia")), _fnum(it.get("n_strands")),
+                _fnum(it.get("current_density")),
+                _fnum(it.get("l0_score")), it.get("source_path"),
+                1 if _fault else 0, str(it.get("fault_detail") or "")[:300],
+                # ── v1.0 损耗/工况真值（A3）：调用方未传则 NULL，不影响既有写入 ──
+                _fnum(it.get("max_temp")),
+                _fnum(it.get("copper_loss")), _fnum(it.get("iron_loss")),
+                _fnum(it.get("mechanical_loss")), _fnum(it.get("total_loss")),
+                _fnum(it.get("line_current_a")),
+                (it.get("cooling") if isinstance(it.get("cooling"), str) else None),
+                _fnum(it.get("power_kw")), _fnum(it.get("voltage_v")),
+                # 铜损标定必需：P=ρ·I²·Qs·N·l/(a·aWire) 中的 Qs 与 a
+                _fnum(it.get("slots_stator")), _fnum(it.get("parallel_circuits")),
+                _fnum(it.get("speed_rpm")), ts,
+            ))
+        if not rows:
+            return result
+        conn = _get_conn()
+        try:
+            conn.executemany(
+                "INSERT INTO l0_residuals "
+                "(project_id, round_index, motor_type, signature, "
+                " l0_eff, l1_eff, delta_eff, l0_temp, l1_temp, delta_temp, slot_fill, "
+                " stator_od, stator_id, core_length, poles, turns_per_coil, "
+                " wire_dia, n_strands, current_density, l0_score, source_path, "
+                " fault, fault_detail, "
+                " max_temp, copper_loss, iron_loss, mechanical_loss, total_loss, "
+                " line_current_a, cooling, power_kw, voltage_v, "
+                " slots_stator, parallel_circuits, speed_rpm, timestamp) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?"
+                " ,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            conn.commit()
+            result["inserted"] = len(rows)
+        finally:
+            conn.close()
+    except Exception as e:  # fail-open: 账本异常不得影响主流程
+        result["error"] = f"{type(e).__name__}: {e}"
+    return result
+
+
+def _fnum(v):
+    """安全转 float; 非法/None → None (保持 SQL NULL)。"""
+    try:
+        if v is None:
+            return None
+        f = float(v)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return round(f, 4)
+    except (TypeError, ValueError):
+        return None
+
+
+def evolve_l0_calibration(window: int = L0_CAL_WINDOW,
+                          min_samples: int = L0_CAL_MIN_SAMPLES) -> dict:
+    """跨轮 L0 离线标定: 统计 L0 预测偏差, 输出全局偏置与高残差设计区域。
+
+    返回:
+      {total_samples, window, global_bias_pp, global_mae_pp,
+       regions: [{dim, band, n, bias_pp, mae_pp}],
+       high_residual_regions: [str], updated_at, note}
+    约定: delta = L1实算η - L0预测η; 正 = L0 低估, 负 = L0 高估。
+    """
+    out = {"total_samples": 0, "window": 0, "global_bias_pp": 0.0,
+           "global_mae_pp": 0.0, "regions": [], "high_residual_regions": [],
+           "updated_at": datetime.now().isoformat(), "note": ""}
+    try:
+        conn = _get_conn()
+        try:
+            total_all = conn.execute(
+                "SELECT COUNT(*) FROM l0_residuals WHERE fault=0").fetchone()[0]
+            rows = conn.execute(
+                "SELECT delta_eff, delta_temp, stator_od, slot_fill, poles "
+                "FROM l0_residuals WHERE fault=0 AND delta_eff IS NOT NULL "
+                "ORDER BY id DESC LIMIT ?", (int(window),)).fetchall()
+        finally:
+            conn.close()
+    except Exception as e:
+        out["note"] = f"标定查询失败: {type(e).__name__}: {e}"
+        return out
+
+    out["total_samples"] = int(total_all or 0)
+    out["window"] = len(rows)
+    deltas = [float(r[0]) for r in rows if r[0] is not None]
+    if not deltas:
+        out["note"] = "无有效残差样本 (故障方案已排除), 暂不标定"
+        _save_json(L0_CALIBRATION_PATH, out)
+        return out
+
+    n = len(deltas)
+    bias = sum(deltas) / n
+    mae = sum(abs(x) for x in deltas) / n
+    out["global_bias_pp"] = round(bias, 2)
+    out["global_mae_pp"] = round(mae, 2)
+
+    if n < min_samples:
+        out["note"] = f"样本不足 ({n}/{min_samples}), 仅报全局偏置, 不输出区域结论"
+        _save_json(L0_CALIBRATION_PATH, out)
+        return out
+
+    # 区域分带: 外径三分位 / 槽满率工艺带 / 极数
+    ods = sorted(float(r[2]) for r in rows if r[2] is not None)
+    od_bands = None
+    if len(ods) >= 9:
+        _q1, _q2 = ods[len(ods) // 3], ods[(2 * len(ods)) // 3]
+        od_bands = (_q1, _q2)
+
+    def _od_band(od):
+        if od is None or od_bands is None:
+            return None
+        if od <= od_bands[0]:
+            return f"外径≤{od_bands[0]:.0f}mm"
+        if od <= od_bands[1]:
+            return f"外径{od_bands[0]:.0f}~{od_bands[1]:.0f}mm"
+        return f"外径>{od_bands[1]:.0f}mm"
+
+    def _sf_band(sf):
+        if sf is None:
+            return None
+        if sf < 0.65:
+            return "槽满率<0.65"
+        if sf <= 0.75:
+            return "槽满率0.65~0.75"
+        return "槽满率>0.75"
+
+    def _poles_band(p):
+        if p is None:
+            return None
+        return f"{int(p)}极"
+
+    def _collect(key_fn):
+        groups = defaultdict(list)
+        for r in rows:
+            if r[0] is None:
+                continue
+            b = key_fn(r[2], r[3], r[4])
+            if b is None:
+                continue
+            groups[b].append(float(r[0]))
+        res = []
+        for b, vals in groups.items():
+            if len(vals) < L0_CAL_REGION_MIN_N:
+                continue
+            _b = sum(vals) / len(vals)
+            _m = sum(abs(x) for x in vals) / len(vals)
+            res.append({"dim": key_fn.__name__, "band": b, "n": len(vals),
+                        "bias_pp": round(_b, 2), "mae_pp": round(_m, 2)})
+        return res
+
+    regions = []
+    for _fn, _dim in ((lambda od, sf, p: _od_band(od), "外径带"),
+                      (lambda od, sf, p: _sf_band(sf), "槽满率带"),
+                      (lambda od, sf, p: _poles_band(p), "极数")):
+        for _rg in _collect(_fn):
+            _rg["dim"] = _dim
+            regions.append(_rg)
+    regions.sort(key=lambda x: -x["mae_pp"])
+    out["regions"] = regions
+
+    # 高残差判定: 区域 MAE 超全局 1.5 倍 (>2pp 下限), 或区域偏置相对全局偏置偏离 >2pp
+    #   (后者避免"全局性偏置"把所有分带一并标红 —— 只标真正异于全局的区域)
+    _hi_mae = max(2.0, mae * 1.5)
+    for _rg in regions:
+        _excess = abs(_rg["bias_pp"] - bias)
+        if _rg["mae_pp"] > _hi_mae or _excess > 2.0:
+            out["high_residual_regions"].append(
+                f"{_rg['dim']}={_rg['band']} (n={_rg['n']}, "
+                f"偏置{_rg['bias_pp']:+.1f}pp, MAE={_rg['mae_pp']:.1f}pp)")
+    out["high_residual_regions"] = out["high_residual_regions"][:5]
+    out["note"] = (f"样本 {n} 条 (累计 {out['total_samples']} 条, 已排除故障方案); "
+                   "正偏置=L0低估, 负偏置=L0高估")
+    _save_json(L0_CALIBRATION_PATH, out)
+    try:
+        _log_evolution("ReviewAgent", "l0_calibration",
+                       f"L0 离线标定: 全局偏置 {out['global_bias_pp']:+.2f}pp, "
+                       f"MAE {out['global_mae_pp']:.2f}pp, "
+                       f"高残差区域 {len(out['high_residual_regions'])} 个",
+                       json.dumps(out, ensure_ascii=False)[:1500])
+    except Exception:
+        pass
+    return out
+
+
+def get_l0_calibration_hint() -> dict:
+    """只读读取最近一次 L0 标定结果 (不存在则返回空结构, 不触发标定)。"""
+    return _load_json(L0_CALIBRATION_PATH, {})
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1046,6 +1328,8 @@ def run_all_evolution() -> dict:
     results["quality_check"] = check_quality_threshold()
     results["efficiency_check"] = check_efficiency_threshold()
     results["decision_time_check"] = check_decision_time_growth()
+    # v4.02.68 (系列三 Tier B): L0↔L1 残差离线标定 (高残差区域 → 评价提示)
+    results["l0_calibration"] = evolve_l0_calibration()
     return results
 
 

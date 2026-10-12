@@ -25,6 +25,18 @@ if _SCRIPTS_DIR not in sys.path:
 
 import db_tools
 
+import db_tools
+
+
+def _connect():
+    """带 WAL 模式的数据库连接"""
+    conn = sqlite3.connect(db_tools.DB_PATH, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
 # 积分规则常量
 POINTS_DAILY_CHECKIN = 10
 POINTS_CLIENT_ONLINE_HOUR = 2
@@ -39,7 +51,10 @@ POINTS_VIP_TRIAL = 500
 
 def add_points(user_id: int, amount: int, reason: str) -> int:
     """增加积分, 返回新余额"""
-    with sqlite3.connect(db_tools.DB_PATH) as conn:
+    with sqlite3.connect(db_tools.DB_PATH, timeout=10) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         # 获取当前余额
         row = conn.execute("SELECT points_balance FROM users WHERE id = ?", (user_id,)).fetchone()
         if not row:
@@ -61,7 +76,10 @@ def add_points(user_id: int, amount: int, reason: str) -> int:
 
 def spend_points(user_id: int, amount: int, reason: str) -> dict:
     """消耗积分, 返回 {success, balance, error}"""
-    with sqlite3.connect(db_tools.DB_PATH) as conn:
+    with sqlite3.connect(db_tools.DB_PATH, timeout=10) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         row = conn.execute("SELECT points_balance FROM users WHERE id = ?", (user_id,)).fetchone()
         if not row:
             return {"success": False, "error": "用户不存在"}
@@ -82,14 +100,20 @@ def spend_points(user_id: int, amount: int, reason: str) -> dict:
 
 def get_balance(user_id: int) -> int:
     """获取积分余额"""
-    with sqlite3.connect(db_tools.DB_PATH) as conn:
+    with sqlite3.connect(db_tools.DB_PATH, timeout=10) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         row = conn.execute("SELECT points_balance FROM users WHERE id = ?", (user_id,)).fetchone()
         return row[0] if row else 0
 
 
 def get_points_history(user_id: int, limit: int = 50) -> list:
     """获取积分变动记录"""
-    with sqlite3.connect(db_tools.DB_PATH) as conn:
+    with sqlite3.connect(db_tools.DB_PATH, timeout=10) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT * FROM points WHERE user_id = ? ORDER BY created_time DESC LIMIT ?",
@@ -101,7 +125,10 @@ def get_points_history(user_id: int, limit: int = 50) -> list:
 def check_daily_checkin(user_id: int) -> bool:
     """检查今日是否已签到"""
     today = date.today().isoformat()
-    with sqlite3.connect(db_tools.DB_PATH) as conn:
+    with sqlite3.connect(db_tools.DB_PATH, timeout=10) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         row = conn.execute(
             "SELECT COUNT(*) FROM points WHERE user_id = ? AND reason LIKE ? AND date(created_time) = ?",
             (user_id, "%每日签到%", today)

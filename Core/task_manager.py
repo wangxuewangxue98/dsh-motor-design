@@ -26,6 +26,7 @@ STATUS_RUNNING = "running"
 STATUS_COMPLETED = "completed"
 STATUS_FAILED = "failed"
 STATUS_CANCELLED = "cancelled"
+STATUS_INTERRUPTED = "interrupted"  # v2.05.04: 后端重启后标记中断的任务
 
 # 任务类型
 TYPE_SOLVE = "solve"
@@ -234,12 +235,40 @@ def cleanup_old_tasks(days: int = 30) -> int:
     with _get_conn() as conn:
         cursor = conn.execute(
             """DELETE FROM task_queue
-               WHERE status IN (?, ?, ?)
+               WHERE status IN (?, ?, ?, ?)
                AND created_at < datetime('now', ?)""",
-            (STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED, f"-{days} days")
+            (STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED, STATUS_INTERRUPTED, f"-{days} days")
         )
         conn.commit()
         return cursor.rowcount
+
+
+def cleanup_interrupted_tasks() -> int:
+    """
+    v2.05.04: 后端启动时调用, 将所有 "running" 状态的任务标记为 "interrupted"
+    因为后端重启后这些任务的执行线程已丢失, 不可能再完成
+
+    Returns:
+        被标记为 interrupted 的任务数量
+    """
+    count = 0
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, current_step FROM task_queue WHERE status = ?",
+            (STATUS_RUNNING,)
+        ).fetchall()
+        for row in rows:
+            conn.execute(
+                """UPDATE task_queue
+                   SET status = ?, current_step = ?, updated_at = ?
+                   WHERE id = ?""",
+                (STATUS_INTERRUPTED, "服务重启中断", datetime.now().isoformat(), row["id"])
+            )
+            count += 1
+        conn.commit()
+    if count > 0:
+        print(f"[task_manager] {count} 个运行中任务已标记为中断 (服务重启)")
+    return count
 
 
 def _row_to_dict(row) -> dict:

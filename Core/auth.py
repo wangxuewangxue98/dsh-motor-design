@@ -198,6 +198,9 @@ def _ensure_admin():
             needs_update["membership_level"] = "flagship"
         if not admin.get("password_hash"):
             needs_update["password_hash"] = hash_password("admin123")
+        # v3.00.02: 确保 admin 有主机 Motor-CAD 权限
+        if not admin.get("can_use_host_motorcad"):
+            needs_update["can_use_host_motorcad"] = 1
         if needs_update:
             db_tools.update_user(admin["id"], **needs_update)
             env_label = "dev" if Config.IS_DEV else "trial"
@@ -293,6 +296,8 @@ def current_user_dict() -> dict:
         "status": u.get("status", "active"),
         "last_login": u.get("last_login"),
         "created_time": u.get("created_time"),
+        # v3.00.02: 主机共享 Motor-CAD 权限
+        "can_use_host_motorcad": u.get("can_use_host_motorcad", 0),
     }
 
 
@@ -300,3 +305,60 @@ def get_membership_info(level: str) -> dict:
     """获取会员等级信息"""
     info = MEMBERSHIP_LEVELS.get(level, MEMBERSHIP_LEVELS["trial"])
     return {"level": level, **info}
+
+
+# ============================================================
+# 主机共享 Motor-CAD 权限 (v3.00.02 RMxprt 升级)
+# ============================================================
+def can_use_host_motorcad(user: dict = None) -> bool:
+    """检查用户是否可以使用主机共享 Motor-CAD 进行精细求解
+
+    权限规则:
+      1. admin 角色始终允许
+      2. can_use_host_motorcad 字段为 1 时允许
+      3. flagship 会员等级自动允许
+      4. 其他情况拒绝
+
+    Args:
+        user: 用户字典 (默认从 g.user 获取)
+    Returns:
+        bool: 是否允许使用主机共享 Motor-CAD
+    """
+    if user is None:
+        user = g.user if g else None
+    if not user:
+        return False
+
+    # admin 始终允许
+    if user.get("role") == "admin":
+        return True
+
+    # 显式权限字段
+    if user.get("can_use_host_motorcad", 0) == 1:
+        return True
+
+    # 旗舰会员自动允许
+    if user.get("membership_level") == "flagship":
+        return True
+
+    return False
+
+
+def check_motorcad_permission(user: dict = None) -> tuple:
+    """检查 Motor-CAD 使用权限并返回详细原因
+
+    Returns:
+        (allowed: bool, reason: str, degraded_mode: str)
+        degraded_mode: 'rmxprt' (降级到RMxprt) 或 'simulation' (降级到模拟)
+    """
+    if user is None:
+        user = g.user if g else None
+    if not user:
+        return (False, "用户未登录", "simulation")
+
+    if can_use_host_motorcad(user):
+        return (True, "权限验证通过", "")
+
+    role = user.get("role", "guest")
+    level = user.get("membership_level", "trial")
+    return (False, f"用户角色 {role} / 会员 {level} 无主机 Motor-CAD 使用权限, 已降级", "rmxprt")

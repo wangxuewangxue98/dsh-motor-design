@@ -17,9 +17,36 @@ COMPUTE_STEP_TIME_THRESHOLD_H = 1.0    # 计算环节超过1小时建议降量
 COST_VS_AVG_RATIO = 1.3                # 超出历史均值30%需复盘
 HUMAN_WAIT_TIMEOUT_RATIO = 0.5         # 人工超时默认占比过高需优化界面
 
+# v4.01.029: 运营质量指标阈值
+CORRECTION_RATE_THRESHOLD = 0.20       # 人工修正率>20% → AI提取质量待提升
+REWORK_RATE_THRESHOLD = 0.20           # 返工率>20% → 前置校验待加强
+
+# v4.01.029: 运营质量指标模块 (人工修正率/返工率)
+try:
+    from quality_metrics import (get_project_metrics as _qm_project,
+                                 get_global_metrics as _qm_global)
+    _QM_OK = True
+except Exception:  # pragma: no cover
+    try:
+        from Core.quality_metrics import (get_project_metrics as _qm_project,
+                                          get_global_metrics as _qm_global)
+        _QM_OK = True
+    except Exception:
+        _QM_OK = False
+
+        def _qm_project(_pid):
+            return {}
+
+        def _qm_global(_days=30):
+            return {}
+
 
 def _get_conn():
-    return sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
 
 
 def get_historical_avg_cost(days: int = 90) -> float:
@@ -76,6 +103,7 @@ class OperationAnalyst:
         self._compare_historical(cost_report)
         self._analyze_timeout_defaults(events)
         self._analyze_decision_efficiency(events, workflow_context)
+        self._analyze_quality_metrics(cost_report.get("project_id", ""))
 
         return self.suggestions
 
@@ -173,18 +201,77 @@ class OperationAnalyst:
                 f"决策界面参数修改 {ui_modifies} 次,建议将高频修改项前置或增加AI推荐默认值"
             )
 
+    def _analyze_quality_metrics(self, project_id: str):
+        """7. v4.01.029: 分析运营质量指标 (人工修正率 / 返工率)"""
+        if not _QM_OK or not project_id:
+            return
+        try:
+            proj = _qm_project(project_id) or {}
+            glob = _qm_global(30) or {}
+        except Exception:
+            return
+
+        corr = proj.get("correction_rate", 0) or 0
+        if corr > CORRECTION_RATE_THRESHOLD:
+            tops = proj.get("top_corrected_params", [])[:3]
+            top_txt = "、".join(f"{t['param_cn']}" for t in tops) if tops else "多个参数"
+            self.suggestions.append(
+                f"人工修正率 {corr*100:.0f}%(修正 {proj.get('override_applied',0)}/"
+                f"{proj.get('total_params',0)} 项),高频修正参数: {top_txt},"
+                f"建议强化需求提取提示词或把这些参数加入强制追问,减少人工返工"
+            )
+
+        rework = proj.get("rework_rate", 0) or 0
+        if rework > REWORK_RATE_THRESHOLD:
+            worst = ""
+            by_cp = proj.get("by_checkpoint", {}) or {}
+            if by_cp:
+                worst_cp = max(by_cp.items(), key=lambda x: x[1].get("rework_rate", 0))
+                if worst_cp[1].get("rework_rate", 0) > 0:
+                    worst = f",其中「{worst_cp[0]}」返工率最高 " \
+                            f"{worst_cp[1]['rework_rate']*100:.0f}%"
+            self.suggestions.append(
+                f"返工率 {rework*100:.0f}%({proj.get('rework_count',0)}/"
+                f"{proj.get('total_decisions',0)} 次决策为重做/驳回){worst},"
+                f"建议在人工确认前增加一致性校验与AI自检,降低无效轮次"
+            )
+
+        # 与近30天全局均值对比
+        g_corr = glob.get("correction_rate", 0) or 0
+        if g_corr and corr > g_corr * 1.5 and corr > 0.1:
+            self.suggestions.append(
+                f"本项目人工修正率 {corr*100:.0f}% 明显高于近30天均值 "
+                f"{g_corr*100:.0f}%,建议复盘本项目需求描述是否过于模糊"
+            )
+
+    def get_quality_metrics(self, project_id: str) -> Dict[str, Any]:
+        """v4.01.029: 对外暴露运营质量指标 (项目 + 全局)"""
+        if not _QM_OK:
+            return {"available": False}
+        try:
+            return {
+                "available": True,
+                "project": _qm_project(project_id) if project_id else {},
+                "global": _qm_global(30),
+            }
+        except Exception as e:
+            return {"available": False, "error": str(e)}
+
     def generate_report(self, cost_report: Dict[str, Any],
                         workflow_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """生成完整运营分析报告"""
         suggestions = self.analyze(cost_report, workflow_context)
+        project_id = cost_report.get("project_id", "")
         return {
-            "project_id": cost_report.get("project_id", ""),
+            "project_id": project_id,
             "suggestions": suggestions,
             "suggestion_count": len(suggestions),
             "risk_level": self._risk_level(cost_report, suggestions),
             "analyzed_at": datetime.now().isoformat(),
             "historical_avg_cost": round(get_historical_avg_cost(), 4),
             "historical_avg_duration_h": round(get_historical_avg_duration(), 4),
+            # v4.01.029: 运营质量指标 (人工修正率/返工率)
+            "quality_metrics": self.get_quality_metrics(project_id),
         }
 
     @staticmethod
