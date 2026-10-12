@@ -44,6 +44,9 @@ export const TOOL_PARAMS = {
   speed_rpm: { type: 'number', required: true, description: '额定转速 (rpm)' },
   voltage_v: { type: 'number', description: '电压 (V)，默认 380' },
   poles: { type: 'number', description: '极数，缺省由转速推荐' },
+  pole_span: { type: 'number', description: 'v0.4.0：极数候选扩展跨度（偶数档），默认 2（主极 ±2）。传 4 则生成主极 ±2/±4。仅当未显式传 pole_candidates 时生效' },
+  pole_candidates: { type: 'array', description: 'v0.4.0：极数候选显式列表（如 [4,6,8]），优先级高于 pole_span，过滤非法极数（须 2~24 偶数）' },
+  poles_strict: { type: 'boolean', description: 'v0.4.0：锁定极数，只生成用户指定 poles，不扩展候选（用于「只验证该极数」）' },
   motor_type: {
     type: 'string',
     description:
@@ -91,13 +94,42 @@ export function recommendPoles(speedRpm, lineFreqHz = DEFAULT_LINE_FREQ_HZ) {
   return 8
 }
 
-/** 候选极数：主极数 ± 2 档（physics_kernel.py:553-557） */
-export function poleCandidates(poles) {
-  const list = [poles]
-  if (poles > 2) list.push(poles - 2)
-  if (poles < 8) list.push(poles + 2)
-  return list.filter((p) => p >= 1)
+/**
+ * 候选极数（v0.4.0 P0-3：不再硬编码 ±2，改为可配置）
+ * ---------------------------------------------------------------------------
+ * 入参 opts 三选一优先级：
+ *   polesStrict=true   → 仅主极数（不扩展，用于「只验证用户指定极数」）
+ *   poleCandidates=[]  → 显式极数列表（过滤非法：必须 2~24 的偶数，防御）
+ *   poleSpan=N         → 主极数 ±N（按偶数极数档，N 缺省 2，零回归）
+ *
+ * 旧实现 [poles, poles-2 (if>2), poles+2 (if<8)] 等价于 poleSpan=2，已用
+ * poleSpan 默认 2 复刻，行为逐字节一致。
+ *
+ * @param {number} poles 主极数（用户指定或 recommendPoles 推荐）
+ * @param {object} [opts] { poleSpan, poleCandidates, polesStrict }
+ * @returns {number[]} 去重后的候选极数列表
+ */
+export function poleCandidates(poles, opts = {}) {
+  const p = Math.round(Number(poles))
+  if (!Number.isFinite(p) || p < 2) return [poles]
+  if (opts.polesStrict === true) return [p]
+  if (Array.isArray(opts.poleCandidates) && opts.poleCandidates.length > 0) {
+    const out = opts.poleCandidates
+      .map((x) => Number(x))
+      .filter((x) => Number.isFinite(x) && x >= 2 && x % 2 === 0 && x <= 24)
+    return out.length ? [...new Set(out)] : [p]
+  }
+  const span = Number.isFinite(Number(opts.poleSpan)) ? Math.max(0, Math.floor(Number(opts.poleSpan))) : 2
+  const list = [p]
+  for (let s = 2; s <= span; s += 2) {
+    if (p - s >= 2) list.push(p - s)
+    if (p + s <= 24) list.push(p + s)
+  }
+  return [...new Set(list)].filter((x) => x >= 2 && x % 2 === 0)
 }
+
+/** 矩阵规模硬上限（v0.4.0 P0-4）：防止 maxMatrixSize 被传极大值导致网格爆炸 */
+export const MATRIX_HARD_CAP = 50000
 
 /** 等距取点（对齐 physics_kernel.py:_linspace 的用法） */
 function linspace(lo, hi, n) {
@@ -152,7 +184,11 @@ export function defaultOdLimit(baseD, scanRange, poleList, ratioOf) {
 
 export function buildParamMatrix(rawSpec, config = {}) {
   const { spec, applied } = normalizeSpec(rawSpec)
-  const maxMatrixSize = config.maxMatrixSize ?? 2000
+  // v0.4.0 P0-4：maxMatrixSize 钳到硬上限，防止网格爆炸；越界时记 warning
+  let maxMatrixSize = Number.isFinite(Number(config.maxMatrixSize)) && Number(config.maxMatrixSize) > 0
+    ? Number(config.maxMatrixSize) : 2000
+  const capWarning = maxMatrixSize > MATRIX_HARD_CAP ? maxMatrixSize : null
+  if (capWarning) maxMatrixSize = MATRIX_HARD_CAP
 
   const powerKw = Number(spec.power_kw)
   const speedRpm = Number(spec.speed_rpm)
@@ -192,7 +228,12 @@ export function buildParamMatrix(rawSpec, config = {}) {
   const scanRange = 0.15
 
   // ---- 扫描网格规模：保证够 count 又不至于暴量 ----
-  const poleList = poleCandidates(poles)
+  // v0.4.0 P0-3：极数候选可配置（pole_span / pole_candidates / poles_strict）
+  const poleList = poleCandidates(poles, {
+    poleSpan: spec.pole_span,
+    poleCandidates: spec.pole_candidates,
+    polesStrict: spec.poles_strict,
+  })
   const perPole = Math.max(1, Math.ceil(count / poleList.length))
   const axis = Math.max(2, Math.ceil(Math.sqrt(perPole)))
 
@@ -390,7 +431,26 @@ export function buildParamMatrix(rawSpec, config = {}) {
   // truncated 必须拿「原始请求量」比，不能拿被 maxMatrixSize 夹断后的 count 比 ——
   // 后者恒为 false，会掩盖真实截断。
   const returned = matrix.slice(0, maxMatrixSize)
-  const truncated = Math.max(1, Math.floor(spec.count ?? 20)) > returned.length
+  const requestedCount = Math.max(1, Math.floor(spec.count ?? 20))
+  const truncated = requestedCount > returned.length
+  // v0.4.0 P0-4：截断必须**显式告警**，不能只埋一个 boolean。
+  //   真实场景（spec.count=10000 被 maxMatrixSize=2000 夹断）原本静默丢 8000 行，
+  //   调用方无从察觉。此处把「请求量 / 实际量 / 上限」全部回吐，并提示放宽上限。
+  const warnings = []
+  if (truncated || capWarning) {
+    warnings.push({
+      code: 'MATRIX_TRUNCATED',
+      level: 'warning',
+      requested: requestedCount,
+      returned: returned.length,
+      max_matrix_size: maxMatrixSize,
+      hard_cap: MATRIX_HARD_CAP,
+      message: capWarning
+        ? `maxMatrixSize=${capWarning} 超过硬上限 ${MATRIX_HARD_CAP}，已钳至 ${maxMatrixSize}；`
+        : `请求 ${requestedCount} 个方案，受 maxMatrixSize=${maxMatrixSize} 限制仅产出 ${returned.length} 个；`
+        + `若需更多候选请提高 config.maxMatrixSize（上限 ${MATRIX_HARD_CAP}）。`,
+    })
+  }
 
   // ---- 形状自检：任何一行缺 L1 严格必填都视为内部错误 ----
   for (const row of returned) {
@@ -406,7 +466,6 @@ export function buildParamMatrix(rawSpec, config = {}) {
   // 夹紧本身不报错：用户给的硬约束必须在限制内给出方案；但「夹紧了多少、本该多大」
   // 必须让调用方看见 —— 否则会像 450kW 那样把参数夹紧误读成物理不可行。
   const clampedRows = returned.filter((r) => r._physics?.od_clamped).length
-  const warnings = []
   const odLimitMeta = {
     value: odLimit,
     source: odLimitExplicit != null ? 'user' : 'auto',
@@ -447,12 +506,31 @@ export function buildParamMatrix(rawSpec, config = {}) {
     })
   }
 
+  // v0.4.0 P0-2：极数候选透明度 —— 工具静默扩展候选极数（如用户指定 6 极却生成 8 极）
+  //   必须显式告知，并提供对照，避免「无声越权」。
+  //   当 poles_strict 时只列主极数；pole_span>2 时提示扩展幅度；recommendPoles 选的也标注来源。
+  const poleSource = spec.poles ? 'user' : (spec.pole_candidates ? 'explicit' : 'recommended')
+  warnings.push({
+    code: 'POLE_CANDIDATES',
+    level: 'info',
+    primary_pole: poles,
+    source: poleSource,
+    candidates: poleList,
+    strict: spec.poles_strict === true,
+    message: spec.poles_strict === true
+      ? `极数已锁定为 ${poles} 极（poles_strict=true），不扩展候选。`
+      : `极数候选集 = [${poleList.join(', ')}] 极（主极 ${poles} 极，来源=${poleSource}` +
+        `${spec.pole_span != null ? `，pole_span=${spec.pole_span}` : ''}）。` +
+        `若主极被 V16 判超同步，候选集中其余极数即替代方案，请对照查看。`,
+  })
+
   return {
     warnings,
     od_limit: odLimitMeta,
     matrix: returned,
     total: matrix.length,
     returned: returned.length,
+    requested: requestedCount,
     truncated,
     spec: {
       power_kw: powerKw, speed_rpm: speedRpm, voltage_v: voltage, poles,

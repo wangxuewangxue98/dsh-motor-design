@@ -5,6 +5,46 @@
 
 版本三重一致性：`package.json.version` = `SKILL.md` 的 `metadata.version` = `CHANGELOG.md` 最新条目。
 
+## [0.4.0] - 2026-10-12 — 🛠 P0/P1/P2 广筛质量修复 + MC/CI 水位线
+
+### Fixed
+- **P0-1 VFD 低频断崖**：`LINE_FREQ_MIN_HZ` 20Hz → **5Hz**（`lib/motor-constants.mjs`）。
+  旧口径把 VFD 恒转矩低频区（400kW 船推真实运行 12.5Hz/15Hz）整批判死（V18 全批 failed）；
+  真正守门人 V16（n_sync=120f/p 须 > n）在低频下给出「选 X 极」可执行建议，不再静默放行。
+- **P0-1 续：V16 同步边界 VFD 放宽**（core `design-rules.mjs`）：显式传 `line_freq_hz`（变频模式）时，
+  同步转速落在 `[n·(1−SLIP_MIN_TOL), n]`（滑差 < 3%）属「临界可行」→ 降级为 **warning + 频率微调建议**
+  （如 12.5Hz→12.9Hz 把 6 极@250rpm 从滑差 0 拉到 ~3%），不再整批判死；
+  **工频（无 line_freq_hz，按 50Hz）维持严格口径**，4 极@1500rpm@50Hz 同步点断崖保留。
+  直接效果：400kW/250rpm/6极@12.5Hz 船推的 **6 极设计不再被静默丢弃**，成为 Top1 推荐。
+- **P0-3 极数候选可配置**：`poleCandidates(poles, opts)` 不再硬编码 ±2，支持
+  `pole_span`（扩展跨度）/ `pole_candidates`（显式列表，非法值过滤）/ `poles_strict`（锁定单极）。
+  默认 ±2 行为逐字节一致（零回归）。`buildParamMatrix` 透传 `pole_span/pole_candidates/poles_strict`。
+- **P0-4 截断显式告警 + 硬上限**：`MATRIX_HARD_CAP=50000`；`maxMatrixSize` 越界钳断并告警；
+  `count` 被 `maxMatrixSize` 夹断时回吐 `MATRIX_TRUNCATED` 告警（请求量/实际量/上限齐全），不再只埋 boolean。
+  `index.mjs` 默认 `maxMatrixSize` 2000 → **5000**。
+- **P0-2 极数透明度**：`buildParamMatrix` 回吐 `POLE_CANDIDATES` 告警，显式列出候选极数集与主极来源
+  （user/recommended/explicit），解决「用户指定 6 极却静默生成 8 极」的无声越权。
+
+### Added
+- **P2 蒙特卡洛效率置信区间（MC/CI 水位线）**：`motor_l0_estimate` 新增 `mc_samples` / `mc_ci_level`
+  入参（默认关闭）。开启后对 TopN 每行做 N 次 ±3% 参数扰动重算，统计效率分布，
+  结果行附 `mc: {efficiency_mean, efficiency_ci:[lo,hi], efficiency_point, spread_pp, temp_rise_mean}`，
+  返回体附 `mc_watermark` 提示「排序应结合 CI 水位线，点估计低于 ci_low 的方案在误差带下可能不达标」。
+
+- **转矩双字段三级降级编排（P2/P1/P4/P5 报告落地）**：core 新增
+  ① 典型 Bδ/A 知识表 `TYPICAL_B_DELTA`/`TYPICAL_SIGMA` + `queryTypicalBLoading`（按 induction/pmsm ×
+  natural/forced_air/liquid_jacket 给中值+区间，σ 按定子内径口径校准 ~28kPa，与资料第五节一致）；
+  ② 公式层 `computeTorqueD2L`（方法2 T=(π/2)·Bδ·A·D²·L·kw·kFe）/`computeTorqueStress`（方法3 T=(π/2)·D²·L·σ）；
+  ③ 编排器 `l0TorqueEstimate`（期望输出=spec 9550·P/n 精确值；可达能力=surrogate(T1, env
+  `DSH_L0_SURROGATE_TORQUE` 默认 OFF)→d2l(T2)→stress(T2b)→unavailable 恒 0 不伪造）；
+  ④ `surrogate-engine` 去除 `torque:0` 硬置改走编排器；⑤ 结果行新增
+  `torque_source/torque_confidence/torque_capability/capability_source/capability_confidence`，
+  `torque_contract` 升级 `dual_field_resolver` 并显式弃用旧 D²L 线性类比（对拍误差 max 523%）。
+
+### Changed
+- core `@wangxue98/dsh-motor-ai-core` 同步升至 **1.1.0**（SLIP_MIN_TOL 常量、V16 VFD 放宽逻辑、
+  典型 Bδ/A 知识表、转矩公式层 computeTorqueD2L/Stress、torque-resolver 三级降级编排器）。
+
 ## [0.3.3] - 2026-10-12 — 🔧 发布自检脚本 EBUSY 免疫（无功能变化）
 
 ### Fixed

@@ -46,6 +46,15 @@ export const TOOL_PARAMS = {
     description: '排序字段：efficiency / efficiency_raw / torque_density / temp_rise，默认 efficiency。' +
       '注意：默认 efficiency 排序已改用未封顶真值（efficiency_raw），避免大机座整批触顶时排序被压平',
   },
+  mc_samples: {
+    type: 'number',
+    description: 'v0.4.0 P2：蒙特卡洛不确定度采样数（默认 0=关闭）。开启后对 TopN 每行做 N 次 ±3% 参数扰动重算，' +
+      '给出效率 95% 置信区间 [ci_low, ci_high] 作为「水位线」，排序应结合 CI 而非只看点估计。建议 100~500',
+  },
+  mc_ci_level: {
+    type: 'number',
+    description: 'v0.4.0 P2：置信水平，默认 0.95（可选 0.90/0.99），仅 mc_samples>0 时生效',
+  },
 }
 
 /** 允许参与排序的字段白名单（防注入 sort 到任意键） */
@@ -53,6 +62,73 @@ export const SORTABLE_FIELDS = ['efficiency', 'efficiency_raw', 'torque_density'
 
 /** temp_rise 为「越小越好」，其余为「越大越好」 */
 const ASCENDING_FIELDS = new Set(['temp_rise', 'total_loss'])
+
+const r1 = (v) => Math.round(v * 10) / 10
+const r2 = (v) => Math.round(v * 100) / 100
+const r3 = (v) => Math.round(v * 1000) / 1000
+
+/**
+ * v0.4.0 P2：蒙特卡洛不确定度（MC/CI 水位线）
+ * ---------------------------------------------------------------------------
+ * L0 是「点估计」，但几何/电气参数存在制造公差与估算误差。对每行做 N 次 ±3% 参数
+ * 扰动重算，统计效率分布，给出置信区间 [ci_low, ci_high] 作为「水位线」——
+ * 点估计低于 ci_low 的方案在误差带下可能不达标，排序应结合 CI 而非只看点估计。
+ * 默认关闭（mc_samples=0）以避免性能/回归风险。CI 用正态近似（ci 0.90/0.95/0.99 → z）。
+ * @param {object} baseParams 原始参数行
+ * @param {object} baseResult 原始点估计结果
+ * @param {number} samples 扰动次数
+ * @param {number} ciLevel 置信水平（0.90/0.95/0.99）
+ * @param {(row:object)=>object} estimateOpts 行级 opts 构造器
+ * @returns {object|null}
+ */
+function monteCarloRow(baseParams, baseResult, samples, ciLevel, estimateOpts) {
+  const effs = []
+  const temps = []
+  for (let i = 0; i < samples; i++) {
+    const perturb = (v, frac) => (typeof v === 'number' && Number.isFinite(v))
+      ? v * (1 + (Math.random() * 2 - 1) * frac) : v
+    const p = {
+      ...baseParams,
+      stator_id: r1(perturb(baseParams.stator_id, 0.03)),
+      core_length: r1(perturb(baseParams.core_length, 0.03)),
+      turns_per_coil: Math.max(1, Math.round(perturb(baseParams.turns_per_coil, 0.03))),
+      peak_current: r1(perturb(baseParams.peak_current, 0.03)),
+      air_gap: r3(perturb(baseParams.air_gap, 0.05)),
+    }
+    try {
+      const e = quickL0Estimate(p, estimateOpts(p))
+      if (typeof e.efficiency === 'number' && Number.isFinite(e.efficiency)) effs.push(e.efficiency)
+      if (typeof e.temp_rise === 'number' && Number.isFinite(e.temp_rise)) temps.push(e.temp_rise)
+    } catch { /* 跳过非法扰动 */ }
+  }
+  if (effs.length < 2) return { samples: effs.length, available: false }
+  const mean = effs.reduce((a, b) => a + b, 0) / effs.length
+  const variance = effs.reduce((a, b) => a + (b - mean) ** 2, 0) / effs.length
+  const se = Math.sqrt(variance) / Math.sqrt(effs.length)
+  const z = ciLevel >= 0.99 ? 2.576 : (ciLevel >= 0.95 ? 1.96 : 1.645)
+  return {
+    samples: effs.length,
+    available: true,
+    ci_level: ciLevel,
+    efficiency_mean: r2(mean),
+    efficiency_ci: [r2(mean - z * se), r2(mean + z * se)],
+    efficiency_point: typeof baseResult?.efficiency === 'number' ? r2(baseResult.efficiency) : null,
+    efficiency_spread_pp: r2(Math.max(...effs) - Math.min(...effs)),
+    temp_rise_mean: temps.length ? r1(temps.reduce((a, b) => a + b, 0) / temps.length) : null,
+  }
+}
+
+/** 对 TopN 结果批量附加 MC 不确定度（无副作用：失败不影响点估计） */
+function applyMonteCarlo(topRows, mcSamples, mcCiLevel, estimateOpts) {
+  if (mcSamples <= 0) return false
+  for (const r of topRows) {
+    try {
+      const mc = monteCarloRow(r.params, r, mcSamples, mcCiLevel, estimateOpts)
+      if (mc) r.mc = mc
+    } catch { /* MC 异常静默，保留点估计 */ }
+  }
+  return true
+}
 
 /**
  * 取排序键（v0.2.4）
@@ -81,6 +157,9 @@ export function runL0Estimate(rawArgs, config = {}) {
 
   const efficiencyCap = config.efficiencyCap ?? 96
   const maxTempClamp = config.tempRiseRange ?? [45, 130]
+  // v0.4.0 P2：MC/CI 模式解析（默认关闭）
+  const mcSamples = Number(args.mc_samples) > 0 ? Math.min(Math.floor(Number(args.mc_samples)), 2000) : 0
+  const mcCiLevel = [0.90, 0.95, 0.99].includes(Number(args.mc_ci_level)) ? Number(args.mc_ci_level) : 0.95
 
   // v0.2.5：按行解析绝缘等级与电源频率，构造 quickL0Estimate 的 opts。
   // 取证根因：此前两处调用只传 {efficiencyCap, maxTempClamp}，行内的
@@ -182,6 +261,7 @@ export function runL0Estimate(rawArgs, config = {}) {
 
         const effectiveTopN = wantAll ? results.length : topN
         const topRows = results.slice(0, effectiveTopN)
+        applyMonteCarlo(topRows, mcSamples, mcCiLevel, estimateOpts)
 
         const handoff = buildHandoff(topRows, {
           fromLevel: 'l0',
@@ -209,6 +289,10 @@ export function runL0Estimate(rawArgs, config = {}) {
           sorted_by: sortBy,
           sort_order: ascending ? 'asc' : 'desc',
           l0_mode: 'surrogate',
+          // v0.4.0 P2：MC/CI 水位线（与公式通道同口径）
+          mc_enabled: mcSamples > 0,
+          mc_samples: mcSamples > 0 ? mcSamples : undefined,
+          mc_ci_level: mcSamples > 0 ? mcCiLevel : undefined,
           applicability: applicability.verdict,
           applicability_reasons: applicability.reasons.length ? applicability.reasons : undefined,
           applicability_advice: applicability.advice ?? undefined,
@@ -256,6 +340,7 @@ export function runL0Estimate(rawArgs, config = {}) {
 
   const effectiveTopN = wantAll ? results.length : topN
   const topRows = results.slice(0, effectiveTopN)
+  applyMonteCarlo(topRows, mcSamples, mcCiLevel, estimateOpts)
 
   // TopN 交接载荷 —— v3 §10.1：L0 → L1
   const handoff = buildHandoff(topRows, {
@@ -313,17 +398,40 @@ export function runL0Estimate(rawArgs, config = {}) {
     efficiency_cap: efficiencyCap,
     efficiency_capped_count: cappedCount,
     efficiency_note: efficiencyNote,
-    // ---- v0.2.5 转矩口径声明（P0）----
-    // L0 不预测转矩。矩阵行的 _physics.estimated_torque 是「按 D²L 几何类比外推的可达转矩」，
-    // 与 target_torque（9550·P/n，用户规格）是不同物理量，差一个 D²L 比例。
-    // 交接给 RMxprt 时必须用 specs[].torque_nm（规格），不得用 estimated_torque 当规格。
+    // v0.4.0 P2：MC/CI 水位线（仅在 mc_samples>0 时有意义）
+    mc_enabled: mcSamples > 0,
+    mc_samples: mcSamples > 0 ? mcSamples : undefined,
+    mc_ci_level: mcSamples > 0 ? mcCiLevel : undefined,
+    mc_watermark: mcSamples > 0
+      ? `本批 TopN 已附蒙特卡洛效率置信区间（N=${mcSamples}, 水平 ${mcCiLevel}）。` +
+        `排序请结合效率_ci 水位线：点估计低于 ci_low 的方案在 ±3% 参数误差带下可能不达标。`
+      : undefined,
+    // ---- 转矩口径声明（v0.2.5 P0 → v0.4.0 dual_field_resolver 升级）----
+    // 期望输出 torque（排序口径）= spec 9550·P/n 精确值；可达能力 torque_capability
+    // = surrogate(T1, env 默认 OFF) → d2l(方法2) → stress(方法3) 物理代理（低置信）。
+    // 旧 _physics.estimated_torque 线性类比已弃用（同几何多转矩点误差 max 523%）。
+    // 交接给 RMxprt 时必须用 specs[].torque_nm（规格），不得用能力值当规格。
     torque_contract: {
-      basis: 'analogy_d2l',
+      basis: 'dual_field_resolver',
       spec_field: 'torque_nm',
       spec_formula: '9550·P(kW)/n(rpm)',
-      analogy_field: '_physics.estimated_torque',
-      analogy_formula: 'torque_nm × (D²L)/(D²L_base)',
-      warning: 'estimated_torque 是几何类比外推量，不是规格承诺；当作规格使用会导致转矩静默违约',
+      expected_output: {
+        fields: ['torque', 'torque_density', 'torque_source', 'torque_confidence'],
+        note: '排序口径：spec 9550·P/n 精确值（conf 1.0）优先；无 P/n 时回退能力估计',
+      },
+      capability_output: {
+        fields: ['torque_capability', 'capability_source', 'capability_confidence'],
+        methods: ['surrogate(T1, env DSH_L0_SURROGATE_TORQUE 默认 OFF)', 'd2l(T2, 方法2 电磁负荷)', 'stress(T2b, 方法3 切向应力)'],
+        note: '可达能力代理估算，绝不当作额定转矩规格使用',
+      },
+      deprecated_analogy: {
+        field: '_physics.estimated_torque',
+        formula: 'torque_nm × (D²L)/(D²L_base)',
+        status: '已弃用',
+        reason: '线性类比对同几何多转矩点误差 max 523%，已被方法2/3 物理公式取代',
+      },
+      surrogate_env_switch: 'DSH_L0_SURROGATE_TORQUE',
+      warning: 'torque_capability 是广筛可行性代理（低置信），交接 RMxprt 必须用 specs[].torque_nm（规格），不得用能力值当规格',
     },
     sorted_by: sortBy,
     sort_order: ascending ? 'asc' : 'desc',

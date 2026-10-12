@@ -22,7 +22,7 @@ whenToUse: >
 user-invocable: true
 metadata:
   author: Motor-AI
-  version: 0.3.3
+  version: 0.4.0
   level: l0
   tier: free
 ---
@@ -133,8 +133,11 @@ L0 的几何/磁密/反电势模型按**工频中压异步电机**标定。超�
 
 调用 `motor_l0_estimate`（或在上游直接用聚合工具 `motor_l0_pipeline` 一步拿结果），对剔除后的组合做毫秒级估算。
 注意 `motor_l0_estimate` 输出**默认封顶 Top10**（`top_n:0` 才取全量），避免回吐全量矩阵触发 DSH 截断。
-输出含原生 6 字段（`efficiency` / `torque` / `temp_rise` / `total_loss` /
-`torque_density` / `prediction_source`）+ L1 镜像字段。
+输出含原生字段（`efficiency` / `torque` / `temp_rise` / `total_loss` /
+`torque_density` / `prediction_source`）+ **转矩双字段**（v0.4.0）：
+期望输出 `torque_source`/`torque_confidence`（spec 9550·P/n 精确值，排序口径）与
+可达能力 `torque_capability`/`capability_source`/`capability_confidence`
+（d2l/stress 物理代理，低置信，**绝不当作规格**）+ L1 镜像字段。
 
 **排序口径**：默认按 `efficiency` 降序；`temp_rise` / `total_loss` 为升序
 （越小越好）。可用 `sort_by` 切换。

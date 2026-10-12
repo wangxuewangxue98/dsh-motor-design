@@ -66,8 +66,8 @@ export const Config = Schema.object({
     .description('代理模型权重文件路径'),
   surrogateConfidenceThreshold: Schema.number().default(0.4)
     .description('代理模型置信度阈值，低于此值自动降级到公式模式'),
-  maxMatrixSize: Schema.number().default(2000)
-    .description('参数矩阵最大组合数'),
+  maxMatrixSize: Schema.number().default(5000)
+    .description('参数矩阵最大组合数（v0.4.0 P0-4：硬上限 50000；超过会钳断并显式告警，不再静默截断）'),
   topNPreview: Schema.number().default(20)
     .description('L0 结果预览返回的 TopN 数量'),
 

@@ -45,6 +45,11 @@ export const TOOL_PARAMS = {
     type: 'string',
     description: '排序字段：efficiency / torque_density / temp_rise，默认 efficiency',
   },
+  pole_span: { type: 'number', description: 'v0.4.0：极数候选扩展跨度（偶数档），默认 2；传 4 生成主极 ±2/±4' },
+  pole_candidates: { type: 'array', description: 'v0.4.0：极数候选显式列表（如 [4,6,8]）' },
+  poles_strict: { type: 'boolean', description: 'v0.4.0：锁定极数，只生成指定 poles' },
+  mc_samples: { type: 'number', description: 'v0.4.0 P2：蒙特卡洛采样数（默认 0=关闭），开启后附效率置信区间水位线' },
+  mc_ci_level: { type: 'number', description: 'v0.4.0 P2：置信水平 0.90/0.95/0.99，默认 0.95' },
   write_handoff: {
     type: 'boolean',
     description: '是否把 TopN + L1 交接载荷写入文件（默认 true）。强烈建议开启：' +
@@ -83,7 +88,11 @@ export function runL0Pipeline(rawArgs, config = {}) {
   const topN = Number(args.top_n) > 0 ? Number(args.top_n) : 10
   const sortBy = ['efficiency', 'efficiency_raw', 'torque_density', 'temp_rise', 'total_loss', 'power']
     .includes(args.sort_by) ? args.sort_by : 'efficiency'
-  const estimate = runL0Estimate({ params_list: feasibleRows, top_n: topN, sort_by: sortBy }, config)
+  const estimate = runL0Estimate({
+    params_list: feasibleRows, top_n: topN, sort_by: sortBy,
+    ...(args.mc_samples != null ? { mc_samples: args.mc_samples } : {}),
+    ...(args.mc_ci_level != null ? { mc_ci_level: args.mc_ci_level } : {}),
+  }, config)
 
   // ---- 计数自洽校验（让模型一眼确认没有丢行）----
   const sumStatus = (validated.summary?.passed ?? 0)

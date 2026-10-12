@@ -32,6 +32,8 @@ import {
 import {
   computeTorque, computeD2L, computeLambda, validateLambda, quickL0Estimate,
   deriveElectricalClosure,
+  computeTorqueD2L, computeTorqueStress, l0TorqueEstimate, isSurrogateTorqueEnabled,
+  queryTypicalBLoading, buildSurrogateResult, WINDING_FACTOR, STACKING_FACTOR,
 } from '@wangxue98/dsh-motor-ai-core'
 import { buildParamMatrix, recommendPoles, poleCandidates } from '../tools/l0/param-matrix.mjs'
 import { runL0Estimate } from '../tools/l0/l0-estimate.mjs'
@@ -1369,13 +1371,101 @@ check('V16+推荐极数: 电源频率可配置，1500rpm 断崖消除', () => {
 
 check('V18: 非法电源频率显式判 failed，不静默回落 50Hz', () => {
   const base = { stator_od: 300, stator_id: 180, core_length: 200, poles: 4, slots_stator: 36, parallel_circuits: 1, turns_per_coil: 8, peak_current: 45, voltage: 380, power_kw: 30, cooling: 'forced_air', speed: 1460 }
-  const bad = validateDesign({ ...base, line_freq_hz: 5 })
+  // v0.4.0：LINE_FREQ_MIN_HZ 由 20 下调至 5，故 5Hz 已合法；越界用 4Hz 验证下界
+  const bad = validateDesign({ ...base, line_freq_hz: 4 })
   const nan = validateDesign({ ...base, line_freq_hz: '五十' })
   const ok = validateDesign({ ...base, line_freq_hz: 60 })
-  must(bad.issues.some((i) => i.rule === 'V18' && i.level === 'failed'), '5Hz 越界应判 V18 failed')
+  const fineLow = validateDesign({ ...base, line_freq_hz: 5 })
+  must(bad.issues.some((i) => i.rule === 'V18' && i.level === 'failed'), '4Hz 越界（<5Hz 下限）应判 V18 failed')
   must(nan.issues.some((i) => i.rule === 'V18' && i.level === 'failed'), '非数值频率应判 V18 failed')
   must(!ok.issues.some((i) => i.rule === 'V18'), '60Hz 合法频率不应触发 V18')
-  return `越界/非数值各拦 1，合法放行（V18 独立于 V16 归因）`
+  must(!fineLow.issues.some((i) => i.rule === 'V18'), '5Hz 处于下限（v0.4.0 起合法）不应触发 V18')
+  return `越界(4Hz)/非数值各拦 1，5Hz 与 60Hz 放行（V18 独立于 V16）`
+})
+
+// ═════════════════════════════════════════════════════════════════
+// v0.4.0 P0/P2 修复组（VFD 边界 / 极数可配置 / 截断告警 / 极数透明 / MC/CI）
+// ═══════════════════════════════════════════════════════════════
+
+check('V16: VFD 低频边界放宽（6极@250rpm@12.5Hz 临界可行，不再整批判死）', () => {
+  // P0-1 续：400kW 船推真实工况。6极@12.5Hz 同步转速=250rpm=speed（滑差0），
+  // 工频严格口径会判 failed，但 VFD 显式频率下应降级为 warning + 频率微调建议。
+  // ⚠ 注意：必须以「入参对象」为基准做 spread，不能 spread validateDesign 结果
+  //   （结果体不含顶层几何字段，spread 会丢 speed 导致 V16 被 skipped）。
+  const base = { stator_od: 300, stator_id: 180, core_length: 200, slots_stator: 36, parallel_circuits: 1, turns_per_coil: 8, peak_current: 45, voltage: 380, power_kw: 30, cooling: 'forced_air', speed: 250, line_freq_hz: 12.5 }
+  const p6 = validateDesign({ ...base, poles: 6 })
+  const p8 = validateDesign({ ...base, poles: 8 })
+  const p4 = validateDesign({ ...base, poles: 4 })
+  must(!p6.issues.some((i) => i.rule === 'V16' && i.level === 'failed'), '6极@12.5Hz 应不再 failed（临界可行，降级 warning）')
+  must(p6.issues.some((i) => i.rule === 'V16' && i.level === 'warning'), '6极@12.5Hz 应给 V16 warning（滑差<3%）+ 频率微调建议')
+  must(p8.issues.some((i) => i.rule === 'V16' && i.level === 'failed'), '8极@12.5Hz（n_sync=187.5<250）应仍 failed（真不可行）')
+  must(!p4.issues.some((i) => i.rule === 'V16'), '4极@12.5Hz（n_sync=375>250）应合法放行')
+  // 工频（无 line_freq_hz）维持严格口径：4极@1500rpm@50Hz 仍 failed（断崖保留）
+  const gridFreq = validateDesign({ stator_od: 300, stator_id: 180, core_length: 200, poles: 4, slots_stator: 36, parallel_circuits: 1, turns_per_coil: 8, peak_current: 45, voltage: 380, power_kw: 30, cooling: 'forced_air', speed: 1500 })
+  must(gridFreq.issues.some((i) => i.rule === 'V16' && i.level === 'failed'), '工频 4极@1500rpm 必须仍 failed（断崖保留，VFD 专属放宽不污染工频）')
+  return `6极→warning(临界) / 8极→failed(真不可行) / 4极→放行；工频断崖保留`
+})
+
+check('P0-3: 极数候选可配置（pole_span / pole_candidates / poles_strict）', () => {
+  // 旧实现硬编码 ±2（[4,6,8]）；新实现可扩展且可锁定
+  const def = poleCandidates(6)
+  must(JSON.stringify(def) === JSON.stringify([6, 4, 8]) || JSON.stringify(def) === JSON.stringify([4, 6, 8]), `默认 poleCandidates(6) 应为 ±2=[4,6,8]，实际 ${JSON.stringify(def)}`)
+  const span4 = poleCandidates(6, { poleSpan: 4 })
+  must(span4.includes(2) && span4.includes(4) && span4.includes(6) && span4.includes(8) && span4.includes(10), `poleSpan=4 应扩到 [2,4,6,8,10]，实际 ${JSON.stringify(span4)}`)
+  const strict = poleCandidates(6, { polesStrict: true })
+  must(JSON.stringify(strict) === JSON.stringify([6]), `polesStrict 应仅 [6]，实际 ${JSON.stringify(strict)}`)
+  const explicit = poleCandidates(6, { poleCandidates: [4, 6] })
+  must(JSON.stringify(explicit) === JSON.stringify([4, 6]), `poleCandidates=[4,6] 应直达，实际 ${JSON.stringify(explicit)}`)
+  const filtered = poleCandidates(6, { poleCandidates: [4, 6, 7, 100] })
+  must(!filtered.includes(7) && !filtered.includes(100), `非法极数(7/100) 应被过滤，实际 ${JSON.stringify(filtered)}`)
+  return `默认±2 / span4 扩五档 / strict 锁定 / explicit 直达 / 非法过滤，全部通过`
+})
+
+check('P0-4: 矩阵截断显式告警 + 硬上限（不再静默丢行）', () => {
+  // spec.count=10000 被 maxMatrixSize 夹断，必须回吐 MATRIX_TRUNCATED 告警而非只埋 boolean
+  const m = buildParamMatrix({ power_kw: 400, speed_rpm: 750, poles: 4, count: 10000 }, { maxMatrixSize: 2000 })
+  must(m.truncated === true, 'count=10000 应 truncated=true')
+  must(m.requested === 10000, '应回吐 requested=10000')
+  must(m.returned <= 2000, `实际产出应 ≤ maxMatrixSize(2000)，实际 ${m.returned}`)
+  const tw = (m.warnings ?? []).find((w) => w.code === 'MATRIX_TRUNCATED')
+  must(tw != null, '必须含 MATRIX_TRUNCATED 告警')
+  must(tw.requested === 10000 && tw.returned <= 2000 && tw.max_matrix_size === 2000, '告警须含 requested/returned/上限')
+  // 硬上限：maxMatrixSize=99999 应被钳到 50000 并告警
+  const cap = buildParamMatrix({ power_kw: 400, speed_rpm: 750, poles: 4, count: 60000 }, { maxMatrixSize: 99999 })
+  const cw = (cap.warnings ?? []).find((w) => w.code === 'MATRIX_TRUNCATED')
+  must(cw != null && cw.message.includes('硬上限'), `超硬上限须告警并提及「硬上限」，实际 ${JSON.stringify(cw?.message ?? cw)}`)
+  return `count=10000→截断告警(请求/实际/上限齐全)；maxMatrixSize=99999→钳至硬上限并告警`
+})
+
+check('P0-2: 极数候选透明度（POLE_CANDIDATES 不静默越权）', () => {
+  // 用户指定 6 极时，矩阵同时生成 8 极候选（越权），必须显式告知并提供对照
+  const m = buildParamMatrix({ power_kw: 30, speed_rpm: 1500, poles: 6 }, {})
+  const pc = (m.warnings ?? []).find((w) => w.code === 'POLE_CANDIDATES')
+  must(pc != null, '必须含 POLE_CANDIDATES 透明度告警')
+  must(pc.source === 'user' && pc.primary_pole === 6, '应标注来源=user、主极=6')
+  must(pc.candidates.includes(8), `候选集应显式列出 8 极（越权对照），实际 ${JSON.stringify(pc.candidates)}`)
+  // poles_strict 时只列主极，不扩展
+  const strict = buildParamMatrix({ power_kw: 30, speed_rpm: 1500, poles: 6, poles_strict: true }, {})
+  const spc = (strict.warnings ?? []).find((w) => w.code === 'POLE_CANDIDATES')
+  must(spc.strict === true && JSON.stringify(spc.candidates) === JSON.stringify([6]), 'poles_strict 应仅 [6] 且 strict=true')
+  return `用户指定 6 极 → 候选集[含8]显式告知；poles_strict → 仅[6]`
+})
+
+check('P2: 蒙特卡洛效率置信区间（MC/CI 水位线）', () => {
+  // 开启 mc_samples 后 TopN 每行附 mc：效率均值 + 95% 置信区间，且区间必包住点估计
+  const m = buildParamMatrix({ power_kw: 30, speed_rpm: 1500, poles: 4, count: 12 }, {})
+  const est = runL0Estimate({ params_list: m.matrix, top_n: 5, mc_samples: 80, mc_ci_level: 0.95 })
+  must(est.mc_enabled === true, '应启用 MC（mc_enabled=true）')
+  must(est.mc_samples === 80 && est.mc_ci_level === 0.95, '应回吐采样数与置信水平')
+  const top0 = est.results[0]
+  must(top0.mc && top0.mc.available === true, 'Top1 应附可用 mc 统计')
+  const [lo, hi] = top0.mc.efficiency_ci
+  must(lo <= top0.mc.efficiency_mean && top0.mc.efficiency_mean <= hi, `CI 必须包住均值: [${lo}, ${hi}] 含 ${top0.mc.efficiency_mean}`)
+  must(lo <= top0.efficiency && top0.efficiency <= hi + 0.001, '点估计应落在 CI 附近（误差带内）')
+  // 默认 mc_samples=0 不应产生 mc 字段、不应有性能/回退副作用
+  const off = runL0Estimate({ params_list: m.matrix, top_n: 5 })
+  must(off.mc_enabled !== true && off.results[0].mc === undefined, 'mc_samples=0 不应启用 MC、无 mc 字段')
+  return `MC 开启后 TopN 附效率 CI 水位线（N=80, 0.95），区间包住均值；默认关闭零副作用`
 })
 
 check('绝缘等级: params.insulation_class 透传到温升判据（B 级 80K 生效）', () => {
@@ -1398,7 +1488,7 @@ check('绝缘等级: params.insulation_class 透传到温升判据（B 级 80K �
   return `params/opts/矩阵三路一致（B=80K、F=105K、Z→valid=false）；B级比F级严 25K`
 })
 
-check('转矩口径: estimated_torque 标注为类比外推量而非规格承诺', () => {
+check('转矩口径: estimated_torque 类比已弃用，契约升级 dual_field_resolver', () => {
   // 压测把 _physics.estimated_torque 当规格断言 → 报 91.4% 守恒失效。
   // 复核：它是 D²L 类比外推量，与 target_torque(9550P/n) 本就不同物理量。
   const { matrix } = buildParamMatrix({ power_kw: 400, speed_rpm: 750, poles: 4, count: 3 })
@@ -1414,9 +1504,10 @@ check('转矩口径: estimated_torque 标注为类比外推量而非规格承诺
   must(Math.abs(est.torque - ph.target_torque) < 0.01, `native.torque 应等于规格值，实际 ${est.torque} vs ${ph.target_torque}`)
   // 交接面必须暴露契约声明
   const out = runL0Estimate({ params_list: matrix.slice(0, 2) }, {})
-  must(out.torque_contract?.basis === 'analogy_d2l', '返回体必须给出 torque_contract 声明')
+  must(out.torque_contract?.basis === 'dual_field_resolver', '返回体必须给出 torque_contract 声明（dual_field_resolver）')
   must(out.torque_contract?.spec_field === 'torque_nm', '必须指明规格字段为 torque_nm')
-  return `target=规格(9550P/n) / estimated=类比外推(D²L)，比例=${ph.torque_ratio_estimated_over_target}；native.torque 与规格偏差 0%`
+  must(out.torque_contract?.deprecated_analogy?.status === '已弃用', '旧 D²L 线性类比必须在契约中显式弃用')
+  return `target=规格(9550P/n) / 能力=物理代理(d2l)，比例=${ph.torque_ratio_estimated_over_target}；native.torque 与规格偏差 0%`
 })
 
 check('V06: 极数奇偶合法性（3/5/7/9 极物理不存在）', () => {
@@ -1807,6 +1898,77 @@ check('quota: 运行时行为（fail-open/开关/拦截/算法一致）—— �
     `配额运行时自检失败: ${((QUOTA_SELF && QUOTA_SELF.fails) || ['unknown']).join(', ')}`)
   const passed = QUOTA_SELF.lines.filter(l => l.startsWith('✅')).length
   return `${passed} 项行为全过（${QUOTA_SELF.lines.map(l => l.split(' | ')[0].replace(/^[✅❌]\s*/, '')).join('; ')}）`
+})
+
+// ---------- 转矩双字段三级降级（P2/P1/P4/P5）----------
+const _TQ_GEO = { power_kw: 15, speed: 1460, stator_od: 260, stator_id: 160, core_length: 130, cooling: 'forced_air', motor_type: 'induction' }
+
+check('P2: 典型 Bδ/A 知识表 + queryTypicalBLoading 取值域', () => {
+  const t = queryTypicalBLoading('induction', 'forced_air')
+  must(t.bDelta === 0.78, `induction/forced_air Bδ 应为 0.78，实得 ${t.bDelta}`)
+  must(t.sigma === 28000 && t.sigmaRange[0] === 22000 && t.sigmaRange[1] === 35000,
+    `σ 中值/区间应为 28000/[22000,35000]，实得 ${t.sigma}/${t.sigmaRange}`)
+  must(Math.abs(t.loading - t.sigma / t.bDelta) < 1e-6, 'A=σ/Bδ 派生口径应自洽')
+  const p = queryTypicalBLoading('pmsm', 'forced_air')
+  must(p.sigma > t.sigma, '同冷却下 pmsm σ 应高于 induction（永磁励磁）')
+  const fb = queryTypicalBLoading('unknown_type', 'bad_cooling')
+  must(fb.sigma === t.sigma, '非法入参应回退缺省段（induction/forced_air）不抛错')
+  return `induction/forced_air: Bδ=${t.bDelta}T σ=28kPa A=${Math.round(t.loading)}A/m；pmsm 更高；非法入参安全回退`
+})
+
+check('P1: computeTorqueD2L/Stress 公式数值 + 口径一致性', () => {
+  const g = { stator_id: 160, core_length: 130, motor_type: 'induction', cooling: 'forced_air' }
+  const d2l = computeTorqueD2L(g)
+  const st = computeTorqueStress(g)
+  must(d2l.torque > 0 && st.torque > 0, '有几何时两法应给出正转矩')
+  const ratio = d2l.torque / st.torque
+  must(Math.abs(ratio - WINDING_FACTOR * STACKING_FACTOR) < 0.01,
+    `d2l/stress 比值应≈kw·kFe(${(WINDING_FACTOR * STACKING_FACTOR).toFixed(3)})，实得 ${ratio.toFixed(3)}`)
+  must(d2l.confidence === 0.5 && st.basis === 'stress', '能力代理置信应为公式通道标记值 0.5')
+  const hand = (Math.PI / 2) * 28000 * 0.16 ** 2 * 0.13 * WINDING_FACTOR * STACKING_FACTOR
+  must(Math.abs(d2l.torque - hand) < 0.5, `d2l 应等于手算 ${hand.toFixed(1)}，实得 ${d2l.torque}`)
+  const empty = computeTorqueD2L({ stator_id: 0, core_length: 0 })
+  must(empty.torque === 0 && empty.basis === 'd2l', '缺几何应安全返回 0（不抛错）')
+  return `D=0.16/L=0.13: d2l=${d2l.torque}N·m stress=${st.torque}N·m 比值${ratio.toFixed(3)}=kw·kFe；手算对拍通过`
+})
+
+check('P4: 三级降级编排器双字段路由（spec/无Pn/T1门/unavailable）', () => {
+  const r1 = l0TorqueEstimate(_TQ_GEO)
+  must(r1.torque_source === 'power_speed' && r1.torque_confidence === 1 && r1.torque === 98.12,
+    `spec 已知应走 9550·P/n=98.12，实得 ${r1.torque}/${r1.torque_source}`)
+  must(r1.capability_source === 'd2l' && r1.torque_capability > 0, 'spec 优先时能力字段仍应独立给出 d2l')
+  const r2 = l0TorqueEstimate({ stator_id: 160, core_length: 130, cooling: 'forced_air' })
+  must(r2.torque_source === 'd2l' && r2.torque === r2.torque_capability, '无 P/n 期望输出应回退能力估计（d2l）')
+  const t1off = l0TorqueEstimate(_TQ_GEO, { surrogateTorque: 150, surrogateConfidence: 0.9, surrogateTorqueEnabled: false })
+  must(t1off.capability_source === 'd2l', 'env OFF 应拦截 T1 → 走 d2l')
+  const t1on = l0TorqueEstimate(_TQ_GEO, { surrogateTorque: 150, surrogateConfidence: 0.9, surrogateTorqueEnabled: true })
+  must(t1on.capability_source === 'surrogate' && t1on.torque_capability === 150, 'env ON + 置信≥0.70 应命中 T1')
+  const t1low = l0TorqueEstimate(_TQ_GEO, { surrogateTorque: 150, surrogateConfidence: 0.5, surrogateTorqueEnabled: true })
+  must(t1low.capability_source === 'd2l', '置信<0.70 应拦截 T1')
+  const r3 = l0TorqueEstimate({ speed: 1460 })
+  must(r3.torque_source === 'insufficient_data' && r3.capability_source === 'unavailable' && r3.torque_capability === 0,
+    '几何全缺应 insufficient_data + unavailable（恒 0 不伪造）')
+  must(isSurrogateTorqueEnabled({}) === false, 'env 缺省必须 OFF')
+  return '7 断言全过：spec优先/无Pn回退/T1 OFF拦/T1 ON命中/T1低置信拦/unavailable恒0/env缺省OFF'
+})
+
+check('P5: 公式/代理通道双字段接线 + 契约诚实声明', () => {
+  const q = quickL0Estimate(_TQ_GEO)
+  must(q.torque_source === 'power_speed' && q.torque_confidence === 1, '公式通道期望输出应为 spec 精确值')
+  must(q.torque_capability > 0 && q.capability_source === 'd2l' && q.capability_confidence === 0.5,
+    '公式通道能力应为 d2l 低置信代理')
+  const sr = buildSurrogateResult(_TQ_GEO, { efficiency: 0.91, temp_rise: 60, confidence: 0.5 })
+  must(sr.torque === 98.12 && sr.torque_source === 'power_speed', `代理通道 torque 不再恒 0（应 spec=98.12），实得 ${sr.torque}`)
+  must(sr.torque_capability > 0 && sr.capability_source === 'd2l', '代理通道能力应降级到 d2l（T1 无代理转矩）')
+  const m = buildParamMatrix({ power_kw: 15, speed: 1460, poles: 4 })
+  const est = runL0Estimate({ params_list: m.matrix, top_n: 3 })
+  const tc = est.torque_contract
+  must(tc && tc.basis === 'dual_field_resolver', `契约 basis 应为 dual_field_resolver，实得 ${tc && tc.basis}`)
+  must(tc.surrogate_env_switch === 'DSH_L0_SURROGATE_TORQUE', '契约应声明 T1 env 开关名')
+  must(tc.deprecated_analogy && tc.deprecated_analogy.status === '已弃用', '契约应显式弃用旧 D²L 线性类比')
+  must(L0_NATIVE_FIELDS.includes('torque_capability') && L0_NATIVE_FIELDS.includes('capability_source'),
+    'L0_NATIVE_FIELDS 应含能力字段白名单（防 buildL0Result 过滤）')
+  return '公式通道 spec+d2l / 代理通道去硬置0 / 契约 dual_field_resolver 全过'
 })
 
 // ---------- 输出 ----------
