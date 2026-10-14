@@ -31,7 +31,7 @@ import {
   DEFAULT_CONFIDENCE_THRESHOLD,
 } from '@wangxue98/dsh-motor-ai-core'
 import { getUsageSink, logUsage } from '@wangxue98/dsh-motor-ai-core'
-import { enforceQuota } from '../../lib/quota.mjs'
+import { assertFreeQuota, QuotaExceededError } from '../../lib/quota.mjs'
 import { assessApplicability, scenarioFromMatrix } from '@wangxue98/dsh-motor-ai-core'
 
 /** 工具入参声明 */
@@ -147,6 +147,9 @@ function sortKey(row, sortBy) {
  * @param {object} [config] 插件配置：{ efficiencyCap, tempRiseRange, topNPreview, l0Mode, surrogatePath, surrogateConfidenceThreshold }
  */
 export function runL0Estimate(rawArgs, config = {}) {
+  if (!config || typeof config !== 'object') config = {}
+  // v0.5.1 P0-门1：纯函数入口过闸（详见 lib/quota.mjs assertFreeQuota 注释）
+  assertFreeQuota('l0-estimate', config)
   const { spec: args } = normalizeSpec(rawArgs)
   const paramsList = Array.isArray(args.params_list) ? args.params_list : []
   const sortBy = SORTABLE_FIELDS.includes(args.sort_by) ? args.sort_by : 'efficiency'
@@ -494,8 +497,8 @@ export async function registerL0Estimate(ctx, config = {}) {
     async execute(args) {
       const t0 = Date.now()
       try {
-        const quotaErr = await enforceQuota(config)
-        if (quotaErr) return quotaErr.error
+        // v0.5.1：闸门内聚到 runL0Estimate 纯函数入口（P0-门1），execute 不再
+        // 单独 enforceQuota（await 边界会放跑消费标记造成双重扣次）。
         const result = runL0Estimate(args, config)
         logUsage(getUsageSink(config), {
           tool: 'motor_l0_estimate', ok: true, elapsed_ms: Date.now() - t0,
@@ -520,6 +523,13 @@ export async function registerL0Estimate(ctx, config = {}) {
         }
         return JSON.stringify(result, null, 2)
       } catch (err) {
+        if (err instanceof QuotaExceededError) {
+          logUsage(getUsageSink(config), {
+            tool: 'motor_l0_estimate', ok: false, elapsed_ms: Date.now() - t0,
+            error: 'quota-exhausted',
+          })
+          return err.message
+        }
         logUsage(getUsageSink(config), {
           tool: 'motor_l0_estimate', ok: false, elapsed_ms: Date.now() - t0,
           error: String(err?.message ?? err),

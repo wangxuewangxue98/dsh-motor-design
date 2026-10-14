@@ -22,6 +22,12 @@
  *  11) 非阻塞：后端挂死（fetch 永不 resolve）时 checkFreeQuota 不得等待 —— 延迟回归
  *  12) 配额文件路径与完整版激活态同目录同文件（两端共用一本账）
  *
+ * v0.5.1（P0-门1修复）新增：
+ *  13) 纯函数入口过闸：直调 buildParamMatrix 也计配额（旧版脱闸）
+ *  14) runL0Pipeline 整链只扣 1 次（三个子纯函数同链不重复扣）
+ *  15) freeQuotaEnabled=false 在纯函数入口同样生效（内部离线批量工具 bypass 依据）
+ *  16) 拦截文案含联系邮箱 + 完整版下载引导（市场/npm）
+ *
  * 隔离：全程使用临时 DSH_HOME，绝不污染用户真实配额文件。
  */
 import {
@@ -31,6 +37,8 @@ import {
   getDeviceId,
   getQuotaFilePath,
 } from '../lib/quota.mjs'
+import { buildParamMatrix } from '../tools/l0/param-matrix.mjs'
+import { runL0Pipeline } from '../tools/l0/pipeline.mjs'
 import { createHash } from 'node:crypto'
 import { hostname, tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -169,6 +177,47 @@ export async function runQuotaSelfTest() {
     const dt2 = Date.now() - t2
     t('enforceQuota 完全不触网（<50ms）', e11 === null && dt2 < 50, `elapsed=${dt2}ms`)
     globalThis.fetch = origFetch
+
+    // ── v0.5.1 P0-门1 修复项 ──────────────────────────────
+    // 13) 纯函数入口过闸：直调 buildParamMatrix 也计配额（此前脱闸，探针实测复现）
+    resetQuota(0)
+    const m13 = buildParamMatrix(
+      { power_kw: 15, speed_rpm: 1460, voltage_v: 380, motor_type: 'induction', count: 8 },
+      { maxMatrixSize: 2000 }
+    )
+    const u13 = (await checkFreeQuota({})).used
+    t('P0-门1：直调纯函数 buildParamMatrix 也计配额（不再脱闸）',
+      m13?.matrix?.length > 0 && u13 === 1, `used=${u13}`)
+
+    // 14) pipeline 整链只扣 1 次（三个子纯函数同链，靠一次性消费标记不重复扣）
+    resetQuota(0)
+    const p14 = runL0Pipeline(
+      { power_kw: 15, speed_rpm: 1460, voltage_v: 380, motor_type: 'induction', count: 8 },
+      { handoffDir: join(tmpHome, 'handoff-selftest') }
+    )
+    const u14 = (await checkFreeQuota({})).used
+    t('P0-门1：runL0Pipeline 整链只扣 1 次（三子函数同链不重复扣）',
+      p14?.summary?.generated > 0 && u14 === 1, `used=${u14}`)
+
+    // 15) 运维开关在纯函数入口同样生效（内部离线批量工具 experience-hub/case-feedback 据此 bypass）
+    resetQuota(0)
+    buildParamMatrix(
+      { power_kw: 15, speed_rpm: 1460, count: 8 },
+      { maxMatrixSize: 2000, freeQuotaEnabled: false }
+    )
+    const u15 = (await checkFreeQuota({})).used
+    t('freeQuotaEnabled=false 在纯函数入口同样放行不计数', u15 === 0, `used=${u15}`)
+
+    // 16) 额度用尽文案：联系邮箱 + 完整版下载引导（用户核心诉求）
+    resetQuota(0)
+    process.env.DSH_FREE_DAILY_LIMIT = '1'
+    await enforceQuota({})             // 1/1 放行
+    const o16 = await enforceQuota({}) // 超限 → 拦截
+    delete process.env.DSH_FREE_DAILY_LIMIT
+    t('额度用尽文案含联系邮箱（反馈/购买）',
+      !!o16 && /13546196530@163\.com/.test(o16.error), o16?.error?.split('\n')[0] || '')
+    t('额度用尽文案含完整版下载引导（DSH 市场 + npm install）',
+      !!o16 && /完整版/.test(o16.error) && /npm install/.test(o16.error))
 
     // 收尾：确认确实落盘（而非只写内存）
     t(

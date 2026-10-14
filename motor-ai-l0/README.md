@@ -185,6 +185,38 @@ telemetryIntervalSec: 300
 > 💡 **「出厂即孤岛」已不再是问题**：每日 10 次闸门现在**完全不依赖后端**，装完即生效。
 > 是否部署接收端只影响两件事——① 匿名使用数据（次数/成败/耗时）是否回流；② 换机后额度能否归并。
 
+### v0.5.1 P0-门1修复（important）
+
+v0.5.0 的闸门只装在四个工具的 `execute` 上，`quota_probe` 实测复现了一个脱闸路径：
+**import 直调纯函数 `runL0Pipeline` ×12 次，本地 `free-quota.json` 的 `free` 恒 = 0**——
+脚本/CI 可零限制跑完三步链。v0.5.1 起：
+
+- **四个纯函数入口全部过闸**：`runL0Pipeline` / `buildParamMatrix` / `runDesignValidate` /
+  `runL0Estimate` 首行即 `assertFreeQuota(...)`，与工具入口共用同一 `config` 引用，
+  靠一次性消费标记保证**整链只扣 1 次**（探针防回归断言：一次 pipeline 调用 = +1）。
+- **执行侧不再 `await enforceQuota`**：`await` 边界会放跑消费标记造成每次调用扣 2 次，
+  改为 execute 捕获 `QuotaExceededError` 直接回引导文案。
+- **内部离线批量工具显式 bypass**：`experience-hub capture`（作者侧 2000 次迭代采样）与
+  `case-feedback`（社区反馈聚合）传 `freeQuotaEnabled: false`，不计用户额度。
+
+**额度用尽时的提示**（同时发给模型与用户）包含联系与升级两条路：
+
+```
+今日免费额度已用尽（10/10 次/天，按本地自然日重置）。
+
+📮 联系插件制作者（使用反馈 / 问题排查 / 购买授权 / 定制开发）：
+   邮箱：13546196530@163.com
+
+📦 下载完整版 dsh-motor-ai（解锁无限次调用与完整能力）：
+   1) DSH 插件市场（dshhub-market 口令市场，搜 dsh-motor-ai）
+   2) npm：npm install dsh-motor-ai@next
+
+或者：
+1) 明天再用（免费额度按本地自然日自动重置）；
+2) 安装完整版 dsh-motor-ai 解锁无限调用；
+3) 购买授权或反馈请联系 13546196530@163.com。
+```
+
 **如何调整：**
 
 1. 换每日上限（本地闸门）：
@@ -203,10 +235,14 @@ telemetryIntervalSec: 300
 > 部署的收益：匿名使用数据回流 + 换机后额度归并。
 
 1. **官方接收端（已上线，开箱即用）**：`https://dsh-motor-ai-receiver.wangxuewangxue98.deno.net`
-   （Deno Deploy 2 + Deno KV，零服务器成本）。3 个端点契约与 `lib/quota.mjs` 注释逐字一致：
-   - `POST /api/dsh/free-call` —— 免费额度旁路计数（每日 10 次口径，设备级）
-   - `POST /api/dsh/telemetry` —— 脱敏聚合遥测（插件侧默认关闭）
-   - `POST /api/dsh/experience` —— 设计经验样本（插件侧默认关闭）
+   （Deno Deploy 2 + Deno KV，零服务器成本）。端点契约与 `lib/quota.mjs` 注释逐字一致：
+   - `POST /api/dsh/free-call` —— 免费额度旁路计数（设备级）。v0.5.1 起插件随载荷上报
+     本地自然日 `day` 与本地限额 `limit`，接收端按同一把尺计数（缺省回落接收端默认值）；
+     响应 `{ allowed, used, remaining, limit, day }`。
+   - `GET /api/dsh/stats` —— **只读聚合统计**（v0.5.1 新增）：各端点事件总数/当日数/
+     当日独立设备数，不含任何设备指纹或载荷明细，供运营观测。
+   - `POST /api/dsh/telemetry` / `POST /api/dsh/experience` —— **契约预留，暂无插件客户端接线**
+     （l0 与完整版仓库均无 POST 代码；活的流量只有 free-call 旁路）。为将来接入保留。
    `cordis.patch.yml` 默认已配置该地址；不想回传改空串即可。
 2. **自建**：参考实现在 `dsh-motor-ai-receiver-deno`（Deno Deploy + KV，境内可达）与
    `dsh-motor-ai-receiver`（Cloudflare Worker + D1，境外可达），部署后把地址改成你的域名。

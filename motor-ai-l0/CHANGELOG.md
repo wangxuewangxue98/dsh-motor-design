@@ -5,6 +5,57 @@
 
 版本三重一致性：`package.json.version` = `SKILL.md` 的 `metadata.version` = `CHANGELOG.md` 最新条目。
 
+## [0.5.1] - 2026-10-14 — P0-门1 修复：纯函数入口过闸 + 额度用尽引导补全
+
+> **性质：缺陷修复（安全相关）。** 0.5.0 的闸门只装在四个 `registerX.execute` 上，
+> `scripts/quota_probe_0.5.0.mjs` 实测复现：import 直调 `runL0Pipeline` ×12 次，
+> 本地 `free-quota.json` 的 `free` 恒 = 0 —— 脚本/CI 可零限制跑完三步链。
+
+### Fixed
+
+- 🔴 **P0-门1（纯函数脱闸）**：四个纯函数入口全部注入 `assertFreeQuota` ——
+  `runL0Pipeline`（`tools/l0/pipeline.mjs`）、`buildParamMatrix`（`param-matrix.mjs`）、
+  `runDesignValidate`（`design-validate.mjs`）、`runL0Estimate`（`l0-estimate.mjs`）。
+  与工具入口共用同一 `config` 引用，靠一次性消费标记保证**整链只扣 1 次**
+  （探针新增防回归断言 F：一次 pipeline 调用 = +1，不会因加闸被扣成 4 次）。
+- 🔴 **执行侧双重扣次隐患**：四个 `execute` 不再 `await enforceQuota(config)` 后直调纯函数
+  —— `await` 边界会放跑一次性消费标记（microtask 重置先于 await 续体执行），
+  导致每次工具调用扣 2 次。改为纯函数入口内聚闸门 + execute 捕获 `QuotaExceededError`
+  直接回引导文案。
+- 🟢 **`assertFreeQuota` 尊重 `freeQuotaEnabled: false` 开关**：纯函数入口与工具入口
+  语义对齐；内部离线批量工具（`experience-hub capture` 2000 次迭代、`case-feedback`
+  社区反馈聚合）据此显式 bypass，不再被 10 次/天上限卡死。
+
+### Changed
+
+- 🟢 **额度用尽引导文案补全**（用户诉求）：拦截提示现在包含 ——
+  📮 联系插件制作者邮箱 `13546196530@163.com`（使用反馈 / 问题排查 / 购买授权 / 定制开发）；
+  📦 下载完整版 `dsh-motor-ai` 的两条渠道（DSH 插件市场 dshhub-market 口令市场 /
+  `npm install dsh-motor-ai@next`）；以及原有的「明天再用」选项。
+- 🟢 **free-call 旁路遥测上报 `day` + `limit`**（P1 口径对齐）：随载荷附带本地自然日与
+  本地限额，接收端按同一把尺计数，消「接收端 UTC+8 vs 插件本地时区」
+  「接收端固定 10 vs 插件可覆盖」两个口径差（接收端同步支持，缺省回落旧行为）。
+
+### Tests
+
+- `scripts/quota_probe_0.5.0.mjs` → **`quota_probe_0.5.1.mjs`**（A 段从「脱闸复现」
+  改为「闸门已捕获直调」）：**19/19 全绿** —— 直调 ×12 = 前 10 放行 + 第 11/12 拦、
+  第 11/12 次抛 QuotaExceededError、本地 free=10、整链只扣 1 次、文案含邮箱+完整版引导。
+- `scripts/_selftest_quota.mjs` 扩为 **22 项**：新增 P0-门1 三项（纯函数计配额 /
+  整链单次/开关生效）+ 文案两项（联系邮箱 / 完整版下载引导）。**22/22 全绿**。
+- `scripts/verify.mjs`：门禁 50 改写为「四工具纯函数入口 assertFreeQuota 接线 +
+  execute 捕获 QuotaExceededError + 禁止 await enforceQuota 旧写法」静态断言；
+  模块顶部新增配额隔离（`DSH_L0_QUOTA_FILE` 临时文件 + `DSH_FREE_DAILY_LIMIT=100000`）——
+  否则跑一遍 verify 会扣开发者真实配额 ~17 次、跑两遍即假红灯。
+- verify **117/117 全绿**。
+
+### Docs
+
+- README「免费额度与联网行为」整节同步：闸门覆盖范围（含纯函数直调）、
+  用尽提示新文案、内部批量工具 bypass 说明。
+- README「接收端部署」：官方接收端新增只读 `GET /api/dsh/stats` 聚合端点说明；
+  `telemetry` / `experience` 两端点标注「契约预留、暂无插件客户端接线」。
+
 ## [0.5.0] - 2026-10-14 — 🔴 免费额度闸门语义升级：本地为准的硬闸 + 非阻塞旁路遥测
 
 > **性质：行为变更（freeQuotaEnabled 默认开启时，免费档从「断网不限次」变为「每日 10 次硬闸」）。**

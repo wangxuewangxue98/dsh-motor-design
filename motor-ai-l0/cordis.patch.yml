@@ -44,7 +44,7 @@
         # 默认开启。v0.5.0 起闸门语义 = 「本地为准的硬闸 + 非阻塞旁路遥测」：
         #   - 每日 10 次（DSH_FREE_DAILY_LIMIT 可覆盖），按本地自然日重置，**本地计数、断网也拦**；
         #     配额文件 $DSH_HOME/storages/dsh-motor-ai/free-quota.json（与完整版共用一本账）。
-        #   - 仅当下列地址**显式配置**时才发旁路计数请求（POST {plugin_id, device_id}）；
+        #   - 仅当下列地址**显式配置**时才发旁路计数请求（POST {plugin_id, device_id, day, limit}，v0.5.1 起附带本地自然日与限额）；
         #     未配置 ⇒ 一个网络请求都不发。旁路遥测是 fire-and-forget，**调用链不等待**。
         #   - 放行决策 100% 本地：后端即使返回 allowed:false 也不拦截（旧版会拦）。
         #     旧实现是 `await fetch` + 4s 超时 ⇒ 后端落在国内不可达地址时每次调用白等 4 秒，已修。

@@ -119,7 +119,9 @@ export function buildCaseFeedbackDraft(opts = {}) {
   for (const c of cases) {
     let matrix = []
     try {
-      matrix = buildParamMatrix({ ...c.spec, count })?.matrix ?? []
+      // v0.5.1：社区反馈通道不计免费额度（鼓励反馈；内部只做统计聚合，不回吐设计结果）。
+      // freeQuotaEnabled:false 语义 = 本次调用不计配额，见 lib/quota.mjs assertFreeQuota。
+      matrix = buildParamMatrix({ ...c.spec, count }, { freeQuotaEnabled: false })?.matrix ?? []
     } catch (e) {
       matrix = []
     }

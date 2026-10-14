@@ -22,7 +22,7 @@ import { buildParamMatrix } from './param-matrix.mjs'
 import { runDesignValidate } from './design-validate.mjs'
 import { runL0Estimate } from './l0-estimate.mjs'
 import { getUsageSink, logUsage } from '@wangxue98/dsh-motor-ai-core'
-import { enforceQuota } from '../../lib/quota.mjs'
+import { assertFreeQuota, QuotaExceededError } from '../../lib/quota.mjs'
 
 /** 工具入参声明（矩阵生成参数 + 聚合控制） */
 export const TOOL_PARAMS = {
@@ -68,6 +68,13 @@ export const TOOL_PARAMS = {
  * }}
  */
 export function runL0Pipeline(rawArgs, config = {}) {
+  if (!config || typeof config !== 'object') config = {}
+  // v0.5.1 P0-门1：纯函数入口过闸。此前闸门只装在 registerL0Pipeline.execute（:206），
+  // 脚本/CI import 直调本函数可零限制跑完三步链（探针实测：直调×12 本地 free 恒=0）。
+  // 本函数与三个子纯函数传同一 config 引用 ⇒ 靠一次性消费标记整链只扣 1 次；
+  // execute 侧不再单独 enforceQuota（await 边界会放跑消费标记导致双重扣次），
+  // 改用捕获 QuotaExceededError 回引导文案。
+  assertFreeQuota('pipeline', config)
   const { spec: args } = normalizeSpec(rawArgs ?? {})
   const t0 = Date.now()
 
@@ -203,8 +210,9 @@ export async function registerL0Pipeline(ctx, config = {}) {
     async execute(args) {
       const t0 = Date.now()
       try {
-        const quotaErr = await enforceQuota(config)
-        if (quotaErr) return quotaErr.error
+        // v0.5.1：闸门内聚到 runL0Pipeline 纯函数入口（P0-门1），execute 不再
+        // 单独 enforceQuota —— await 边界会放跑一次性消费标记造成双重扣次。
+        // 用尽时 QuotaExceededError 上浮，直接把引导文案回给用户/模型。
         const result = runL0Pipeline(args, config)
         logUsage(getUsageSink(config), {
           tool: 'motor_l0_pipeline', ok: true, elapsed_ms: Date.now() - t0,
@@ -214,6 +222,13 @@ export async function registerL0Pipeline(ctx, config = {}) {
         })
         return JSON.stringify(result, null, 2)
       } catch (err) {
+        if (err instanceof QuotaExceededError) {
+          logUsage(getUsageSink(config), {
+            tool: 'motor_l0_pipeline', ok: false, elapsed_ms: Date.now() - t0,
+            error: 'quota-exhausted',
+          })
+          return err.message
+        }
         logUsage(getUsageSink(config), {
           tool: 'motor_l0_pipeline', ok: false, elapsed_ms: Date.now() - t0,
           error: String(err?.message ?? err),

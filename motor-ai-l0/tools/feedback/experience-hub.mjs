@@ -89,16 +89,20 @@ function cmdCapture(args) {
 
   const lines = []
   let matrixSkipped = 0
+  // v0.5.1：capture 是作者侧离线批量工具（默认 2000 次迭代，只写本地 models/experience/，
+  // 永不出网），不受面向用户的每日免费额度约束，显式 bypass 闸门
+  // （freeQuotaEnabled:false 语义 = 本次调用不计配额，见 lib/quota.mjs assertFreeQuota）。
+  const noQuota = { maxMatrixSize: 2000, freeQuotaEnabled: false }
   for (let i = 0; i < n; i++) {
     const spec = sampleSpec(rand, i)
     let built
     try {
-      built = buildParamMatrix(spec, { maxMatrixSize: 2000 })
+      built = buildParamMatrix(spec, noQuota)
     } catch (_) { matrixSkipped++; continue }
     if (!built.matrix?.length) { matrixSkipped++; continue }
     let est
     try {
-      est = runL0Estimate({ params_list: built.matrix, top_n: 0, sort_by: 'efficiency' }, {})
+      est = runL0Estimate({ params_list: built.matrix, top_n: 0, sort_by: 'efficiency' }, { freeQuotaEnabled: false })
     } catch (_) { matrixSkipped++; continue }
     for (const row of est.results ?? []) {
       const p = row.params ?? {}

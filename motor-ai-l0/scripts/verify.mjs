@@ -60,6 +60,14 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
+// v0.5.1 闸门隔离：本脚本多个门禁直调 L0 纯函数（buildParamMatrix / runDesignValidate /
+// runL0Estimate / runL0Pipeline），而 v0.5.1 起这些纯函数入口带配额硬闸（P0-门1修复）。
+// 若不打隔离，跑一遍 verify 会扣开发者真实配额 ~17 次，跑两遍即用尽并让后续门禁抛
+// QuotaExceededError（假红灯）。此处把配额文件改指临时路径并放大上限（仅本进程生效）。
+// 外部已显式设置时不覆盖，尊重开发者的定向调试意图。
+process.env.DSH_L0_QUOTA_FILE ||= join(tmpdir(), `l0-verify-quota-${process.pid}.json`)
+process.env.DSH_FREE_DAILY_LIMIT ||= '100000'
+
 /** 递归列出目录下所有文件（发布物泄漏扫描用，跳过 node_modules 与隐藏目录） */
 function walk(dir) {
   const out = []
@@ -1888,24 +1896,35 @@ check('design_exp：readPendingRecords 必须在模块内有本地绑定（v0.2.
   return '本地 import + re-export 成对，对外导出可用'
 })
 
-// ---------- 50~51. 免费额度闸门（G1，v0.3.2 新增） ----------
-check('quota: lib/quota.mjs 导出契约 + 四 L0 工具接入（静态）', () => {
+// ---------- 50~51. 免费额度闸门（G1，v0.3.2 新增；v0.5.1 P0-门1修复） ----------
+check('quota: lib/quota.mjs 导出契约 + 四 L0 工具纯函数入口过闸（静态）', () => {
   const p = join(ROOT, 'lib', 'quota.mjs')
   must(existsSync(p), 'lib/quota.mjs 不存在（l0 免费档配额闸门缺失）')
   const src = readFileSync(p, 'utf8')
   must(/export\s+(async\s+)?function\s+checkFreeQuota/.test(src), '缺少 export checkFreeQuota')
   must(/export\s+(async\s+)?function\s+enforceQuota/.test(src), '缺少 export enforceQuota')
+  must(/export\s+(async\s+)?function\s+assertFreeQuota/.test(src), '缺少 export assertFreeQuota')
   must(/export\s+(async\s+)?function\s+getDeviceId/.test(src), '缺少 export getDeviceId')
   // 设备指纹算法锚定：与完整版 lib/license.mjs:86 必须逐字节一致，改这里 = 两端额度账分裂
   must(/createHash\('sha256'\)[\s\S]{0,200}slice\(0,\s*16\)/.test(src),
     'getDeviceId 算法被改（应为 sha256(...).slice(0,16)）')
+  // P0-门1（v0.5.1）：四个纯函数入口必须注入 assertFreeQuota，且 execute 侧改为
+  // 捕获 QuotaExceededError（不再 await enforceQuota —— await 边界会放跑一次性消费
+  // 标记造成双重扣次，这是 v0.5.1 执行侧改造的核心）。
   for (const t of ['param-matrix', 'l0-estimate', 'design-validate', 'pipeline']) {
     const s = readFileSync(join(ROOT, 'tools', 'l0', `${t}.mjs`), 'utf8')
-    must(/import\s*\{\s*enforceQuota\s*\}\s*from\s*'\.\.\/\.\.\/lib\/quota\.mjs'/.test(s),
-      `${t}.mjs 缺少 quota.mjs import`)
-    must(/await\s+enforceQuota\(config\)/.test(s), `${t}.mjs execute 未接入 enforceQuota`)
+    must(/import\s*\{[^}]*assertFreeQuota[^}]*\}\s*from\s*'\.\.\/\.\.\/lib\/quota\.mjs'/.test(s),
+      `${t}.mjs 缺少 assertFreeQuota import`)
+    must(/import\s*\{[^}]*QuotaExceededError[^}]*\}\s*from\s*'\.\.\/\.\.\/lib\/quota\.mjs'/.test(s),
+      `${t}.mjs 缺少 QuotaExceededError import`)
+    must(/assertFreeQuota\(/.test(s),
+      `${t}.mjs 纯函数入口未接入 assertFreeQuota（P0-门1：直调脱闸）`)
+    must(/err\s+instanceof\s+QuotaExceededError/.test(s),
+      `${t}.mjs execute 未捕获 QuotaExceededError（用尽时回不了引导文案）`)
+    must(!/await\s+enforceQuota\(config\)/.test(s),
+      `${t}.mjs execute 仍 await enforceQuota（会与纯函数入口双重扣次，v0.5.1 已废弃该写法）`)
   }
-  return '契约齐备 + 四工具 import/调用齐备 + device-id 算法锚定'
+  return '契约齐备 + 四工具纯函数入口/QuotaExceededError 接线齐备 + device-id 算法锚定'
 })
 
 check('quota: 运行时行为（本地为准/开关/拦截/算法一致/非阻塞）—— 顶层 await 预跑', () => {

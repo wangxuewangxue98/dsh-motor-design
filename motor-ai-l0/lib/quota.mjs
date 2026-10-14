@@ -16,7 +16,9 @@
  *  2. **免费档硬闸（fail-closed）**：默认 10 次/天，用尽抛 QuotaExceededError。
  *     断网也拦 —— 否则「分发出去即失联」时闸门形同虚设，这正是本次要修的问题。
  *  3. **一次性消费标记**：同一调用链（同一 config 对象）只计 1 次；
- *     pipeline 内连调多个内部函数不重复扣。绕过工具网关直调内部函数同样被计。
+ *     pipeline 内连调多个内部函数不重复扣。v0.5.1（P0-门1修复）起四个纯函数
+ *     （runL0Pipeline / buildParamMatrix / runDesignValidate / runL0Estimate）
+ *     入口全部注入 assertFreeQuota，绕过工具网关直调同样被计。
  *  4. **与完整版共用一本账**：配额文件路径与完整版 lib/license.mjs:52 的
  *     激活文件同目录同文件名（`$DSH_HOME/storages/dsh-motor-ai/free-quota.json`），
  *     同机上 l0 与完整版的免费额度不会分裂成两本。
@@ -30,7 +32,7 @@
  *  - **额度用尽引导不含 activate 工具**（l0 未提供），改为引导安装完整版。
  *
  * 后端契约（Core/dsh_registry.py:free_call → POST /api/dsh/free-call，仅遥测用）：
- *   入参 { plugin_id, device_id }
+ *   入参 { plugin_id, device_id, day, limit }  ← v0.5.1 起附带本地自然日与本地限额
  *   成功 { allowed, used, remaining, limit, day }
  *
  * 诚实边界：本地限制本质是「软限制」——懂技术用户可删/改 free-quota.json 清零。
@@ -173,13 +175,20 @@ export class QuotaExceededError extends Error {
 }
 
 /**
- * 硬闸（消耗型）—— 注入各 L0 模块函数/工具入口顶部。
+ * 硬闸（消耗型）—— 注入各 L0 纯函数入口/工具入口顶部。
+ * v0.5.1（P0-门1修复）：四个纯函数（runL0Pipeline / buildParamMatrix /
+ * runDesignValidate / runL0Estimate）**全部注入本闸**。此前闸门只装在
+ * registerX.execute，脚本/CI import 直调纯函数可零限制跑完（探针实测复现）。
  *  - 本地 free 计数达到 limit（默认 10）→ 抛 QuotaExceededError（fail-closed，断网也拦）。
  *  - 同一调用链（config 对象相同）只消耗一次：后续兄弟/嵌套调用见标记即跳过。
+ *    pipeline 内连调三个子纯函数传同一 config 引用 ⇒ 整链只扣 1 次。
+ *  - config.freeQuotaEnabled === false → 直接放行（运维开关；纯函数入口同样尊重，
+ *    内部离线批量工具——experience-hub capture / case-feedback 聚合——据此显式 bypass）。
  * @param {string} [tool] 调用来源标记（仅用于审计/日志）
  * @param {object} [config] 调用链透传对象；同一用户动作各层须传同一引用
  */
 export function assertFreeQuota(tool = 'l0', config = {}) {
+  if (config && config.freeQuotaEnabled === false) return // 运维开关：纯函数入口同样尊重（v0.5.1）
   if (alreadyConsumed(config)) return // 本调用链已消耗：不重复扣
   const state = readLocalQuota()
   if (state.free >= state.limit) {
@@ -216,7 +225,14 @@ function syncBackendTelemetry(config, localUsed) {
       const res = await fetch(`${base}/api/dsh/free-call`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plugin_id: pluginId, device_id: deviceId }),
+        // v0.5.1 P1：附带本地自然日与本地限额，接收端按同一把尺计数，
+        // 消「接收端 UTC+8 vs 插件本地时区」「接收端固定 10 vs 插件可覆盖」两个口径差
+        body: JSON.stringify({
+          plugin_id: pluginId,
+          device_id: deviceId,
+          day: localDayKey(),
+          limit: getDailyLimit(),
+        }),
         ...(controller ? { signal: controller.signal } : {}),
       })
       if (timer) clearTimeout(timer)
@@ -264,17 +280,32 @@ export async function checkFreeQuota(config = {}) {
   }
 }
 
-/** 额度用尽时的引导文案（l0 无 activate 工具，引导安装完整版） */
+/** 完整版获取渠道（额度用尽引导用；与 README「安装完整版」一节口径一致） */
+export const FULL_VERSION_HINTS = {
+  contact: '13546196530@163.com',
+  npmPackage: 'dsh-motor-ai',
+  market: 'DSH 插件市场（dshhub-market 口令市场，搜 dsh-motor-ai）',
+}
+
+/** 额度用尽时的引导文案（l0 无 activate 工具，引导联系制作者 + 安装完整版） */
 export function buildQuotaExceededMessage(info = {}) {
   const limit = info.limit ?? getDailyLimit()
   const used = info.used ?? limit
-  const contact = '13546196530@163.com'
+  const { contact, npmPackage, market } = FULL_VERSION_HINTS
   return (
     `今日免费额度已用尽（${used}/${limit} 次/天，按本地自然日重置）。\n` +
-    `请选择：\n` +
-    `1) 明天再用（额度自动重置）；\n` +
+    `\n` +
+    `📮 联系插件制作者（使用反馈 / 问题排查 / 购买授权 / 定制开发）：\n` +
+    `   邮箱：${contact}\n` +
+    `\n` +
+    `📦 下载完整版 dsh-motor-ai（解锁无限次调用与完整能力）：\n` +
+    `   1) ${market}\n` +
+    `   2) npm：npm install ${npmPackage}@next\n` +
+    `\n` +
+    `或者：\n` +
+    `1) 明天再用（免费额度按本地自然日自动重置）；\n` +
     `2) 安装完整版 dsh-motor-ai 解锁无限调用；\n` +
-    `3) 购买授权请联系 ${contact}。`
+    `3) 购买授权或反馈请联系 ${contact}。`
   )
 }
 
