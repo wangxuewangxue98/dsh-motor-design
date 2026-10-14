@@ -185,6 +185,23 @@ telemetryIntervalSec: 300
 > 💡 **「出厂即孤岛」已不再是问题**：每日 10 次闸门现在**完全不依赖后端**，装完即生效。
 > 是否部署接收端只影响两件事——① 匿名使用数据（次数/成败/耗时）是否回流；② 换机后额度能否归并。
 
+### v0.5.2 P0-门1'修复：同步批量脱闸（important）
+
+v0.5.1 的「同链只扣 1 次」用「`_consumed` WeakSet（key = config 对象）+ `queueMicrotask`
+复位」实现，实测有致命盲区（`scripts/_repro_syncbatch.mjs`）：
+
+| 调用形态 | v0.5.1 实测 | v0.5.2 实测 |
+| --- | --- | --- |
+| 同一 config 引用 + **同步循环** ×12（CI/压测典型写法） | **12 次全放行，整批只扣 1 次** ❌ | 10 放行 + 2 拦，`free=10` ✅ |
+| 每次新建 config 字面量 ×12 | 10 放行 + 2 拦 ✅ | 10 放行 + 2 拦 ✅ |
+| 同一 config + 每次 `await` 微任务 ×12 | 10 放行 + 2 拦 ✅ | 10 放行 + 2 拦 ✅ |
+| `freeQuotaEnabled: false` | 放行且不计数 ✅ | 放行且不计数 ✅ |
+| 一次 `runL0Pipeline` 三步链 | 扣 1 次 ✅ | 扣 1 次 ✅ |
+
+v0.5.2 起「同链」判据改为**显式调用链令牌**（`newQuotaChain()` / `withQuotaChain()`）：
+聚合入口每次调用新建唯一令牌并透传给三个子纯函数 ⇒ 整链仍只扣 1 次，而循环调用因令牌
+互不相同 ⇒ **各计一次**。
+
 ### v0.5.1 P0-门1修复（important）
 
 v0.5.0 的闸门只装在四个工具的 `execute` 上，`quota_probe` 实测复现了一个脱闸路径：
@@ -192,8 +209,10 @@ v0.5.0 的闸门只装在四个工具的 `execute` 上，`quota_probe` 实测复
 脚本/CI 可零限制跑完三步链。v0.5.1 起：
 
 - **四个纯函数入口全部过闸**：`runL0Pipeline` / `buildParamMatrix` / `runDesignValidate` /
-  `runL0Estimate` 首行即 `assertFreeQuota(...)`，与工具入口共用同一 `config` 引用，
-  靠一次性消费标记保证**整链只扣 1 次**（探针防回归断言：一次 pipeline 调用 = +1）。
+  `runL0Estimate` 首行即 `assertFreeQuota(...)`，靠一次性消费标记保证**整链只扣 1 次**
+  （探针防回归断言：一次 pipeline 调用 = +1）。
+  ⚠️ v0.5.1 版的「一次性消费标记」以 config 对象引用为判据，同步批量循环会脱闸；
+  **v0.5.2 起改为调用链令牌**（见上节），本节其余结论不变。
 - **执行侧不再 `await enforceQuota`**：`await` 边界会放跑消费标记造成每次调用扣 2 次，
   改为 execute 捕获 `QuotaExceededError` 直接回引导文案。
 - **内部离线批量工具显式 bypass**：`experience-hub capture`（作者侧 2000 次迭代采样）与

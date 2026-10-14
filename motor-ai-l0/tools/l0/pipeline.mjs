@@ -22,7 +22,7 @@ import { buildParamMatrix } from './param-matrix.mjs'
 import { runDesignValidate } from './design-validate.mjs'
 import { runL0Estimate } from './l0-estimate.mjs'
 import { getUsageSink, logUsage } from '@wangxue98/dsh-motor-ai-core'
-import { assertFreeQuota, QuotaExceededError } from '../../lib/quota.mjs'
+import { assertFreeQuota, QuotaExceededError, newQuotaChain, withQuotaChain } from '../../lib/quota.mjs'
 
 /** 工具入参声明（矩阵生成参数 + 聚合控制） */
 export const TOOL_PARAMS = {
@@ -71,22 +71,27 @@ export function runL0Pipeline(rawArgs, config = {}) {
   if (!config || typeof config !== 'object') config = {}
   // v0.5.1 P0-门1：纯函数入口过闸。此前闸门只装在 registerL0Pipeline.execute（:206），
   // 脚本/CI import 直调本函数可零限制跑完三步链（探针实测：直调×12 本地 free 恒=0）。
-  // 本函数与三个子纯函数传同一 config 引用 ⇒ 靠一次性消费标记整链只扣 1 次；
+  // v0.5.2 P0-门1'：同链判据改为**显式调用链令牌**（v0.5.1 用「config 引用 + 微任务
+  // 复位」，同步批量循环复用同一 config 引用时微任务不穿插 ⇒ 整批只扣 1 次，门禁被绕）。
+  // 本函数每次调用新建唯一令牌，派生带令牌的 chainCfg 透传给三个子纯函数
+  // ⇒ 整链仍只扣 1 次，而循环调用因令牌互不相同 ⇒ **各计一次**。
   // execute 侧不再单独 enforceQuota（await 边界会放跑消费标记导致双重扣次），
   // 改用捕获 QuotaExceededError 回引导文案。
-  assertFreeQuota('pipeline', config)
+  const chain = newQuotaChain()
+  const chainCfg = withQuotaChain(config, chain)
+  assertFreeQuota('pipeline', chainCfg)
   const { spec: args } = normalizeSpec(rawArgs ?? {})
   const t0 = Date.now()
 
   // ---- 第 1 步：生成参数矩阵 ----
   // 保留完整返回对象：param-matrix 的 warnings / od_limit 必须透传出来，
   // 否则「外径被夹紧」这类会扭曲结论的异常在聚合链路里会被静默吞掉。
-  const matrix = buildParamMatrix(args, config)
+  const matrix = buildParamMatrix(args, chainCfg)
   const allRows = matrix.matrix
   const requestedCount = Math.max(1, Math.floor(args.count ?? 20))
 
   // ---- 第 2 步：批量物理校验 ----
-  const validated = runDesignValidate({ params_list: allRows }, config)
+  const validated = runDesignValidate({ params_list: allRows }, chainCfg)
   const failedSet = new Set(validated.failed_indices ?? [])
   // 剔除 failed（物理不成立），保留 passed + warning
   const feasibleRows = allRows.filter((_, i) => !failedSet.has(i))
@@ -99,7 +104,7 @@ export function runL0Pipeline(rawArgs, config = {}) {
     params_list: feasibleRows, top_n: topN, sort_by: sortBy,
     ...(args.mc_samples != null ? { mc_samples: args.mc_samples } : {}),
     ...(args.mc_ci_level != null ? { mc_ci_level: args.mc_ci_level } : {}),
-  }, config)
+  }, chainCfg)
 
   // ---- 计数自洽校验（让模型一眼确认没有丢行）----
   const sumStatus = (validated.summary?.passed ?? 0)

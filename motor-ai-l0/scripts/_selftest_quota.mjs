@@ -34,6 +34,8 @@ import {
   checkFreeQuota,
   enforceQuota,
   assertFreeQuota,
+  newQuotaChain,
+  withQuotaChain,
   getDeviceId,
   getQuotaFilePath,
 } from '../lib/quota.mjs'
@@ -144,13 +146,23 @@ export async function runQuotaSelfTest() {
     delete process.env.DSH_FREE_DAILY_LIMIT
 
     // 8) 同一调用链只计 1 次（同步兄弟调用，未让出事件循环）
+    //    v0.5.2：同链判据是**调用链令牌**（withQuotaChain 派生），不再看 config 对象引用
     resetQuota(0)
-    const chainCfg = {}
-    assertFreeQuota('l0-estimate', chainCfg)
-    assertFreeQuota('design-validate', chainCfg)
-    assertFreeQuota('pipeline', chainCfg)
+    const chainTok = newQuotaChain()
+    assertFreeQuota('l0-estimate', withQuotaChain({}, chainTok))
+    assertFreeQuota('design-validate', withQuotaChain({}, chainTok))
+    assertFreeQuota('pipeline', withQuotaChain({}, chainTok))
     const after8 = await checkFreeQuota({})
-    t('同一 config 对象调用链只计 1 次（3 次兄弟调用 = +1）', after8.used === 1, `used=${after8.used}`)
+    t('同一调用链（同令牌）只计 1 次（3 次兄弟调用 = +1）', after8.used === 1, `used=${after8.used}`)
+
+    // 8b) P0-门1' 回归：同一 config 引用 + **同步循环** ⇒ 必须各计一次
+    //     v0.5.1 用「config 引用 + 微任务复位」，同步循环里微任务不穿插 ⇒ 整批只扣 1 次。
+    resetQuota(0)
+    const sameCfg = {}
+    for (let i = 0; i < 3; i++) assertFreeQuota('pipeline', sameCfg)
+    const after8b = await checkFreeQuota({})
+    t("P0-门1' 回归：同一 config 引用 + 同步循环 ×3 = +3（不得整批只扣 1 次）",
+      after8b.used === 3, `used=${after8b.used}`)
 
     // 9) 不同 config 对象分别计数
     resetQuota(0)

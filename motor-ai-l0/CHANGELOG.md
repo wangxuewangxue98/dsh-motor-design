@@ -5,6 +5,40 @@
 
 版本三重一致性：`package.json.version` = `SKILL.md` 的 `metadata.version` = `CHANGELOG.md` 最新条目。
 
+## [0.5.2] - 2026-10-15 — P0-门1' 修复：同步批量调用脱闸（同链判据改为调用链令牌）
+
+> **性质：缺陷修复（安全相关；0.5.1 修复方案的缺陷转移）。** 0.5.1 把「同一调用链只扣
+> 1 次」实现成「`_consumed` WeakSet（key = config 对象）+ `queueMicrotask` 复位」。
+> 实测复现（`scripts/_repro_syncbatch.mjs`）：**同步 for 循环复用同一 config 引用 ×12 次，
+> 整批只扣 1 次、12 次全部放行** —— 同步循环里微任务不穿插执行，第 2~N 次
+> `alreadyConsumed()` 恒为 true。CI 脚本 / 压测循环正是这种写法，门禁形同虚设。
+> 另注：0.5.1 探针 A 组每次新建 `{ handoffDir }` 字面量，恰好绕过该缺陷 ⇒ **假绿灯**。
+
+### Fixed
+
+- 🔴 **P0-门1'（同步批量脱闸）**：「同链只扣 1 次」的判据由 **config 对象引用**改为
+  **显式调用链令牌** —— 新增 `newQuotaChain()` / `withQuotaChain(config, token)`；
+  聚合入口 `runL0Pipeline` 每次调用新建唯一令牌，并派生带令牌的 `chainCfg` 透传给三个
+  子纯函数。同链（同令牌）仍只扣 1 次；跨调用（哪怕同一 config 引用、同一 macrotask、
+  同步循环）因令牌唯一 ⇒ **各计一次**，第 11 次起拦截。
+- 🟢 **语义纠正**：不再把「一次用户动作」等价于「config 对象引用相同」——反向场景
+  （同一 config 引用被复用于两次独立动作）此前也会被误判成同链、少扣一次。
+
+### Tests
+
+- `scripts/_repro_syncbatch.mjs`（新增，最小复现）：[A] 同 config + 同步循环 ×12 ——
+  修复前 `blocked=0 / pass=12 / free=1`，修复后 `blocked=2 / pass=10 / free=10`；
+  [A2] 新字面量 / [B] 每次 await 微任务 / [C] `freeQuotaEnabled:false` /
+  [D] 整链 = 1 四种对照形态同测。
+- `scripts/quota_probe_0.5.2.mjs`（新增）：新增 **A-same** 组（同一 config 引用 + 同步
+  循环 ×12 必须同样 10 放行 + 2 拦且 `free=10`），补齐 0.5.1 探针漏掉的形态，22/22 通过。
+- `scripts/verify.mjs` 门禁 H 升级：静态断言新增「必须导出 `newQuotaChain` /
+  `withQuotaChain`」「禁止 `function alreadyConsumed(config)` / `markConsumed(config)`
+  的 config 引用形态」「pipeline 必须把带令牌配置透传给三个子纯函数」；运行时自检新增
+  8b「同一 config 引用 + 同步循环 ×3 = +3」。
+  **反向验证**：把子调用改回 `buildParamMatrix(args, config)` 后门禁**双路变红**
+  （静态断言 + 运行时「整链只扣 1 次」），还原后 117/117 通过。
+
 ## [0.5.1] - 2026-10-14 — P0-门1 修复：纯函数入口过闸 + 额度用尽引导补全
 
 > **性质：缺陷修复（安全相关）。** 0.5.0 的闸门只装在四个 `registerX.execute` 上，

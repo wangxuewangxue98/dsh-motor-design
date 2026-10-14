@@ -1924,7 +1924,24 @@ check('quota: lib/quota.mjs 导出契约 + 四 L0 工具纯函数入口过闸（
     must(!/await\s+enforceQuota\(config\)/.test(s),
       `${t}.mjs execute 仍 await enforceQuota（会与纯函数入口双重扣次，v0.5.1 已废弃该写法）`)
   }
-  return '契约齐备 + 四工具纯函数入口/QuotaExceededError 接线齐备 + device-id 算法锚定'
+  // P0-门1'（v0.5.2）：同链判据必须是**显式调用链令牌**，禁止退回 v0.5.1 的
+  // 「_consumed WeakSet(key=config 对象) + queueMicrotask 复位」——该写法在同步批量
+  // 循环（CI/压测典型形态）里微任务不穿插 ⇒ 整批只扣 1 次，门禁形同虚设。
+  must(/export\s+function\s+newQuotaChain/.test(src), '缺少 export newQuotaChain（v0.5.2 调用链令牌）')
+  must(/export\s+function\s+withQuotaChain/.test(src), '缺少 export withQuotaChain（v0.5.2 同链派生配置）')
+  must(!/function\s+alreadyConsumed\s*\(\s*config\s*\)/.test(src),
+    'quota.mjs 仍按 config 对象引用判同链（v0.5.1 缺陷形态：同步批量脱闸）')
+  must(!/markConsumed\(config\)/.test(src),
+    'quota.mjs 仍按 config 对象标记消费（v0.5.2 应改为按调用链令牌标记）')
+  // 聚合入口必须新建令牌，并把带令牌的派生配置透传给三个子纯函数（否则整链会被扣成 4 次，
+  // 或退回「靠 config 引用去重」的脱闸老路）
+  const pl = readFileSync(join(ROOT, 'tools', 'l0', 'pipeline.mjs'), 'utf8')
+  must(/const\s+chain\s*=\s*newQuotaChain\(\)/.test(pl), 'pipeline.mjs 未新建调用链令牌')
+  must(/withQuotaChain\(config,\s*chain\)/.test(pl), 'pipeline.mjs 未派生带令牌配置')
+  must(/buildParamMatrix\(args,\s*chainCfg\)/.test(pl), 'pipeline.mjs 未把带令牌配置透传给 buildParamMatrix')
+  must(/runDesignValidate\(\{[^}]*\},\s*chainCfg\)/.test(pl), 'pipeline.mjs 未把带令牌配置透传给 runDesignValidate')
+  must(/runL0Estimate\([\s\S]*?\},[\s\S]*?chainCfg\)/.test(pl), 'pipeline.mjs 未把带令牌配置透传给 runL0Estimate')
+  return '契约齐备 + 四工具纯函数入口/QuotaExceededError 接线齐备 + device-id 算法锚定 + 调用链令牌（P0-门1\'）'
 })
 
 check('quota: 运行时行为（本地为准/开关/拦截/算法一致/非阻塞）—— 顶层 await 预跑', () => {

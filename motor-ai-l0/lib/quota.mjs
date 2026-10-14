@@ -134,34 +134,50 @@ function writeLocalQuota(state) {
 }
 
 /**
- * 调用链一次性消费标记：config 对象被消费后置入 _consumed；
- * 当前 macrotask（一次工具调用）结束后的微任务里清空，确保：
- *  - 同一调用链内的顺序兄弟（buildParamMatrix → runDesignValidate）不重复扣；
- *  - 下一次独立工具调用（新 macrotask）拿到干净的 _consumed，重新计数。
+ * 调用链一次性消费标记（**v0.5.2 重写：显式调用链令牌**）
+ * ============================================================================
+ * v0.5.1 的写法是「_consumed WeakSet（key = config 对象）+ queueMicrotask 复位」，
+ * 实测有两个致命缺陷（最小复现见 scripts/_repro_syncbatch.mjs）：
+ *   ① **同步批量脱闸**：同步 for 循环复用同一 config 引用时，微任务在整段循环结束前
+ *      不会执行 ⇒ 第 2~N 次 alreadyConsumed() 恒为 true ⇒ **整批只扣 1 次**。
+ *      CI 脚本 / 压测循环正是这种写法，门禁形同虚设（P0-门1'）。
+ *   ② **语义错位**：把「一次用户动作」错误等价于「config 对象引用相同」——
+ *      反过来，同一 config 引用被复用于两次独立动作时又会被误判成同链。
+ * v0.5.2 改为由聚合入口（runL0Pipeline）新建**唯一调用链令牌**，并派生携带令牌的
+ * config 透传给子纯函数：
+ *   - 同链（同一令牌）⇒ 只扣 1 次，行为不变；
+ *   - 跨调用（哪怕同一 config 引用、同一 macrotask、同步循环）⇒ 令牌不同 ⇒ 各计一次。
  */
-let _consumed = null
-let _resetScheduled = false
-const _scheduleReset =
-  typeof queueMicrotask === 'function'
-    ? queueMicrotask
-    : typeof setImmediate === 'function'
-      ? setImmediate
-      : (cb) => setTimeout(cb, 0)
+const QUOTA_CHAIN = Symbol('l0-quota-chain')
+let _chainConsumed = null // WeakSet<token>；令牌随调用链结束自然可回收，无需定时清理
 
-function markConsumed(config) {
-  if (!config) return
-  if (!_consumed) _consumed = new WeakSet()
-  _consumed.add(config)
-  if (!_resetScheduled) {
-    _resetScheduled = true
-    _scheduleReset(() => {
-      _consumed = new WeakSet()
-      _resetScheduled = false
-    })
-  }
+/** 新建一次调用链的唯一令牌（聚合入口每次调用新建一个） */
+export function newQuotaChain() {
+  return {}
 }
-function alreadyConsumed(config) {
-  return !!(config && _consumed && _consumed.has(config))
+
+/**
+ * 派生「属于同一调用链」的 config（携带不可枚举令牌）。
+ * 不污染调用方传入的 config 对象本身 ⇒ 用户复用同一 config 时仍各自独立计数。
+ * @param {object} [config] 调用方配置
+ * @param {object} token newQuotaChain() 产出的令牌
+ * @returns {object} 携带令牌的派生配置
+ */
+export function withQuotaChain(config, token) {
+  const out = Object.assign({}, config || {})
+  Object.defineProperty(out, QUOTA_CHAIN, {
+    value: token, enumerable: false, writable: false, configurable: false,
+  })
+  return out
+}
+
+function chainConsumed(token) {
+  return !!(token && _chainConsumed && _chainConsumed.has(token))
+}
+function markChainConsumed(token) {
+  if (!token) return
+  if (!_chainConsumed) _chainConsumed = new WeakSet()
+  _chainConsumed.add(token)
 }
 
 /** 配额用尽错误：内部函数抛出，工具层捕获后转成引导文案 */
@@ -180,16 +196,20 @@ export class QuotaExceededError extends Error {
  * runDesignValidate / runL0Estimate）**全部注入本闸**。此前闸门只装在
  * registerX.execute，脚本/CI import 直调纯函数可零限制跑完（探针实测复现）。
  *  - 本地 free 计数达到 limit（默认 10）→ 抛 QuotaExceededError（fail-closed，断网也拦）。
- *  - 同一调用链（config 对象相同）只消耗一次：后续兄弟/嵌套调用见标记即跳过。
- *    pipeline 内连调三个子纯函数传同一 config 引用 ⇒ 整链只扣 1 次。
+ *  - 同一调用链只消耗一次：判据是**调用链令牌**（v0.5.2），不是 config 对象引用。
+ *    pipeline 新建令牌并用 withQuotaChain() 派生配置透传给三个子纯函数 ⇒ 整链只扣 1 次；
+ *    而调用方同步循环复用同一 config 引用时，因每次顶层调用令牌不同 ⇒ **各计一次**
+ *    （v0.5.1 此处整批只扣 1 次，见 scripts/_repro_syncbatch.mjs）。
  *  - config.freeQuotaEnabled === false → 直接放行（运维开关；纯函数入口同样尊重，
  *    内部离线批量工具——experience-hub capture / case-feedback 聚合——据此显式 bypass）。
  * @param {string} [tool] 调用来源标记（仅用于审计/日志）
- * @param {object} [config] 调用链透传对象；同一用户动作各层须传同一引用
+ * @param {object} [config] 配置对象；同链子调用须传 withQuotaChain() 派生的带令牌对象
  */
 export function assertFreeQuota(tool = 'l0', config = {}) {
   if (config && config.freeQuotaEnabled === false) return // 运维开关：纯函数入口同样尊重（v0.5.1）
-  if (alreadyConsumed(config)) return // 本调用链已消耗：不重复扣
+  // v0.5.2：同链判据 = 调用链令牌（无令牌 ⇒ 视为独立顶层调用，必计一次）
+  const token = config && typeof config === 'object' ? config[QUOTA_CHAIN] : null
+  if (chainConsumed(token)) return // 本调用链已消耗：不重复扣
   const state = readLocalQuota()
   if (state.free >= state.limit) {
     throw new QuotaExceededError(
@@ -198,7 +218,7 @@ export function assertFreeQuota(tool = 'l0', config = {}) {
     )
   }
   writeLocalQuota({ day: state.day, free: state.free + 1, limit: state.limit })
-  markConsumed(config)
+  markChainConsumed(token) // v0.5.2：按调用链令牌标记，同链子调用据此跳过
 }
 
 /**
