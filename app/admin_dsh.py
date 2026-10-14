@@ -53,7 +53,11 @@ CORE_DIR = WORKTREE / "Core"
 PLUGIN_ROOT = WORKTREE / "motor-ai-l0"
 # 门禁按 plugin_id 定位各自仓库根：l0 走 worktree 镜像，full 走独立仓库
 # （可用环境变量 DSH_FULL_PLUGIN_ROOT 覆盖，默认 D:/dsh-motor-ai）
+# [2026-10-15] 规范 id = dsh-motor-ai-l0（npm 包名）；motor-ai-l0 仅为 npm 改名前
+# 的遗留别名（老客户端心跳/历史令牌可能仍上报），保留映射防门禁 root-missing，
+# 但台账主键与种子一律用规范 id（见 _ensure_seeded）。
 PLUGIN_ROOTS = {
+    "dsh-motor-ai-l0": PLUGIN_ROOT,
     "motor-ai-l0": PLUGIN_ROOT,
     "dsh-motor-ai": Path(os.environ.get("DSH_FULL_PLUGIN_ROOT", r"D:/dsh-motor-ai")),
 }
@@ -333,11 +337,41 @@ def _find_node():
     return shutil.which("node") or "node"
 
 
+def _ensure_gate_deps(root: Path) -> bool:
+    """确保门禁目标(root)的 node_modules 可用；缺失时从真源仓补齐（幂等，只读真源）。
+
+    背景：镜像按白名单同步且 node_modules 被 .gitignore，而 ESM 解析不走
+    NODE_PATH —— 缺 @wangxue98/dsh-motor-ai-core 时 scripts/verify.mjs 直接
+    ERR_MODULE_NOT_FOUND，曾把 G4 假红灯（2026-10-15 实测复现）。
+    真源默认 D:\\dsh-motor-ai-l0（可用 L0_SOURCE_REPO 覆盖）。
+    """
+    if (root / "node_modules" / "@wangxue98" / "dsh-motor-ai-core").exists():
+        return True
+    src = Path(os.environ.get("L0_SOURCE_REPO", r"D:\dsh-motor-ai-l0"))
+    src_nm = src / "node_modules"
+    if not src_nm.is_dir():
+        print(f"[gate][WARN] 真源 node_modules 不存在，跳过补齐: {src_nm}")
+        return False
+    try:
+        shutil.copytree(src_nm, root / "node_modules", dirs_exist_ok=True, symlinks=False)
+        print(f"[gate] 已从真源补齐 node_modules: {src_nm} -> {root / 'node_modules'}")
+        return True
+    except Exception as e:
+        print(f"[gate][WARN] 补齐 node_modules 失败: {e}")
+        return False
+
+
 def _ensure_seeded():
-    """首次访问时若 motor-ai-l0 未登记，则按 package.json 自动建 draft 台账。"""
+    """首次访问时若 l0 插件未登记，则按镜像 package.json 自动建 draft 台账。
+
+    [2026-10-15] pid 定为规范名 dsh-motor-ai-l0（npm 包名 / 台账主键）。
+    旧版误用 motor-ai-l0（npm 改名前的种子 id），曾导致台账出现重复行、
+    数据分裂到两个 plugin_id 下；规范行由发布流程登记，本函数只兜底补建，
+    且只认规范 id（dsh-motor-ai-l0）。
+    """
     if not REG_OK:
         return
-    pid = "motor-ai-l0"
+    pid = "dsh-motor-ai-l0"
     try:
         reg.get_plugin(pid)
         return
@@ -427,6 +461,9 @@ def _run_gate_l0(plugin_id: str, root: Path) -> dict:
     except Exception as e:
         gates["g3"] = {"ok": False, "detail": f"版本比对失败: {str(e)[:120]}"}
     # G4 发布前置（node verify + regression）
+    # 前置补齐：镜像默认不带 node_modules（ESM 不认 NODE_PATH），缺 core 时
+    # verify.mjs 直接 MODULE_NOT_FOUND —— 曾把 G4 假红灯（2026-10-15 实测）。
+    _ensure_gate_deps(root)
     node = _find_node()
     log = []
     for script in ("verify.mjs", "regression.mjs"):
@@ -842,7 +879,9 @@ def dsh_plugins_page():
 #   POST /api/dsh/verify      {code, device_id} → {valid, plan, expires_at, days_left}
 #   POST /api/dsh/free-call   {plugin_id, device_id} → {allowed, used, remaining, limit}
 # 说明：授权验证只判「是否已付费、是否过期、是否本机」，不验证功能；
-#       每日免费 5 次为服务端配额（DSH_FREE_DAILY_LIMIT 可覆盖），重装不重置。
+#       每日免费 10 次为服务端配额（DSH_FREE_DAILY_LIMIT 可覆盖，默认 10，
+#       与 Core/dsh_registry.py:FREE_DAILY_LIMIT_DEFAULT 及插件侧
+#       lib/quota.mjs:DEFAULT_FREE_DAILY_LIMIT 三方一致），重装不重置。
 #       接口契约与商业方案中 Cloudflare Workers 版 /api/verify 对齐，后续可平移上云。
 # ============================================================================
 @bp.route("/dsh-plugins/<plugin_id>/passcodes", methods=["GET"])
@@ -1016,6 +1055,25 @@ def dsh_pay_webhook(channel: str):
         # 非支付成功通知（如退款/关闭）不是错误，记为忽略
         return jsonify({"ok": True, "ignored": True,
                         "trade_state": parsed.get("trade_state")})
+    # 金数据「直接付款」回调不带我方 order_id：付款成功即现场建单 + 原子发码
+    if channel == "jinshuju":
+        plan = pay.amount_to_plan(parsed.get("amount_fen"))
+        if not plan:
+            return jsonify({"error": "回调金额与套餐不符",
+                            "expected_plans": sorted(reg.PASSCODE_PLANS),
+                            "got": parsed.get("amount_fen")}), 400
+        buyer_contact = parsed.get("buyer_contact") or ""
+        buyer_fields = parsed.get("buyer_fields") or {}
+        order = com.create_order(COMMERCE_PLUGIN_ID, plan, channel="jinshuju",
+                                 buyer_contact=buyer_contact)
+        out = _fulfill(order["order_id"], parsed.get("channel_trade_no") or "", raw)
+        # 金数据侧投递：成功页默认展示；配 JINSHUJU_API_KEY 则回写表单字段
+        # （买家自动收码走 _fulfill → dsh_notify，buyer_contact 已传入 create_order）
+        dlv = pay.deliver_to_jinshuju(out.get("passcode") or "",
+                                      buyer_contact=buyer_contact,
+                                      buyer_fields=buyer_fields, order=order)
+        out["jinshuju_delivery"] = dlv
+        return jsonify({"ok": True, "plan": plan, "channel": "jinshuju", **out})
     order_id = (parsed.get("out_trade_no") or "").strip()
     if not order_id:
         return jsonify({"error": "回调缺少订单号"}), 400
@@ -1106,3 +1164,68 @@ def expiring_plugin_orders(plugin_id):
         return jsonify({"error": f"商业化模块不可用: {COM_ERR}"}), 500
     days = int(request.args.get("days", 7))
     return jsonify({"expiring": com.expiring_orders(days, plugin_id)})
+
+
+# ================================================================ L2 商业化自动化：聚合视图 + 到期提醒触发（管理端「商业化自动化」标签后端）
+
+
+@bp.route("/dsh-plugins/<plugin_id>/commerce-overview", methods=["GET"])
+@_wrap
+def commerce_overview(plugin_id):
+    """商业化自动化一屏聚合：对账 + 口令核销统计 + N 天到期订单。
+
+    供管理端「商业化自动化」标签一次拉取，避免三连请求。?days=7
+    """
+    if not COM_OK:
+        return jsonify({"error": f"商业化模块不可用: {COM_ERR}"}), 500
+    days = int(request.args.get("days", 7))
+    try:
+        recon = com.reconcile(plugin_id)
+    except Exception as e:
+        return jsonify({"error": f"对账失败: {e}"}), 500
+    stats = None
+    if REG_OK:
+        try:
+            stats = reg.passcode_stats(plugin_id)
+        except Exception:
+            stats = None  # 统计失败不阻塞对账主视图
+    expiring = com.expiring_orders(days, plugin_id)
+    return jsonify({
+        "reconcile": recon,
+        "passcode_stats": stats,
+        "expiring": expiring,
+        "expiring_days": days,
+    })
+
+
+@bp.route("/dsh-plugins/<plugin_id>/commerce-remind", methods=["POST"])
+@_wrap
+def commerce_remind(plugin_id):
+    """触发续费提醒批处理（复用 Scripts/dsh_expiry_reminder.run，幂等口径一致）。
+
+    body: {"dry_run": bool(默认 true 只预览不发送), "stages": [7,1,0,-1](可选)}
+    幂等：已成功发送的 (code, stage) 落 dsh_reminder_log，重跑不重发。
+    """
+    if not COM_OK:
+        return jsonify({"error": f"商业化模块不可用: {COM_ERR}"}), 500
+    data = request.get_json(silent=True) or {}
+    dry_run = bool(data.get("dry_run", True))
+    stages = data.get("stages")
+    if not isinstance(stages, (list, tuple)) or not stages:
+        stages = [7, 1, 0, -1]
+    try:
+        stages = sorted({int(s) for s in stages}, reverse=True)
+    except (TypeError, ValueError):
+        return jsonify({"error": "stages 必须是整数数组，如 [7,1,0,-1]"}), 400
+    scripts_dir = WORKTREE / "Scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    try:
+        import dsh_expiry_reminder as reminder
+    except Exception as e:
+        return jsonify({"error": f"提醒模块加载失败: {e}"}), 500
+    try:
+        result = reminder.run(None, stages, plugin_id, dry_run)
+    except Exception as e:
+        return jsonify({"error": f"提醒执行失败: {e}"}), 500
+    return jsonify({"remind": result, "dry_run": dry_run, "stages": stages})

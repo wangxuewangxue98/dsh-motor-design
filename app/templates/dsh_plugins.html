@@ -60,7 +60,7 @@
 
   <div class="card">
     <h2>注册插件</h2>
-    <label>plugin_id</label><input id="r_id" value="motor-ai-l0" />
+    <label>plugin_id</label><input id="r_id" value="dsh-motor-ai-l0" />
     <label>name</label><input id="r_name" value="电机设计专家 L0" />
     <label>channel</label>
     <select id="r_channel"><option>l0</option><option>l1</option><option>l2</option></select>
@@ -74,7 +74,7 @@
   <div class="card">
     <h2>插件使用情况（脱敏聚合指标）</h2>
     <div class="row" style="margin-bottom:10px">
-      <input id="u_pid" value="motor-ai-l0" style="margin:0" />
+      <input id="u_pid" value="dsh-motor-ai-l0" style="margin:0" />
       <button onclick="loadUsage()">刷新</button>
     </div>
     <table id="u_tbl"><thead><tr>
@@ -98,7 +98,7 @@
   <div class="card full">
     <h2>口令发放 / 吊销</h2>
     <div class="row">
-      <div style="flex:1"><label>plugin_id</label><input id="t_pid" value="motor-ai-l0" /></div>
+      <div style="flex:1"><label>plugin_id</label><input id="t_pid" value="dsh-motor-ai-l0" /></div>
       <div style="flex:1"><label>token_id</label><input id="t_id" placeholder="tok_xxxx" /></div>
     </div>
     <div class="row">
@@ -240,7 +240,7 @@ async function loadUsage() {
 
 async function showGate() {
   const pid = (document.querySelector("#tbl tbody").firstChild
-    && document.querySelector("#tbl tbody").firstChild.children[0].textContent) || "motor-ai-l0";
+    && document.querySelector("#tbl tbody").firstChild.children[0].textContent) || "dsh-motor-ai-l0";
   const { body } = await api("/" + pid + "/release-gate", { method:"POST" });
   m_body.textContent = "【发布门禁】\n" + JSON.stringify(body, null, 2);
 }
