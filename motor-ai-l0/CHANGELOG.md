@@ -5,6 +5,27 @@
 
 版本三重一致性：`package.json.version` = `SKILL.md` 的 `metadata.version` = `CHANGELOG.md` 最新条目。
 
+## [0.5.3] - 2026-10-15 — L0 四项修复：截断可见化 / 冷却回退显式化 / 极数提示 / 密度自检
+
+> **性质：缺陷修复（对齐 full rc.16 同款改动；l0 侧 P0-2 此前已有部分修复，本轮补齐其余三项）。**
+
+1. **P0-2 截断可见化补强**：`MATRIX_TRUNCATED` 告警字段与 full 对齐
+   （`requested_count` / `max_matrix_size` / `returned` / `suggested_max_matrix_size` /
+   `hard_cap`），并明确提示「采样密度被静默改变 ⇒ Top1 效率与达标判定会随 count 漂移」。
+2. **P1-1 冷却回退显式化**：`cooling` 不在合法值内时不再静默回退 `forced_air`，
+   写 `COOLING_FALLBACK` 告警（含合法值列表），回退行为不变、可见性补齐。
+3. **P0-4 极数提示**：未显式传 `poles` 且默认极数下可行组为 0 时，
+   `runL0Pipeline` 输出 `pole_suggestion`（默认极数 / 建议补算极数 / 理由），
+   不改默认行为，仅在输出侧提示用户「可尝试更多极数」。
+4. **P0-1 密度自检**：新增 `density_check`（args 或 env `L0_DENSITY_CHECK=1`，默认 OFF），
+   以 20 与当前 count 双密度跑 pipeline 比对 Top1 效率，`|Δ| < 0.1pp` 判已收敛；
+   handoff 落 `density_check` 块。零回归：开关 OFF 时输出与 0.5.2 逐字节一致（探针 20/20 实证）。
+
+- 新探针 `scripts/l0_fixes_probe_0.5.3.mjs`（20 断言，含默认 OFF 零回归对照）；
+  `scripts/verify.mjs` 门禁补静态断言 + 运行时强断言（门内 spawn 探针）。
+- 版本四处一致 0.5.3；verify **119/119**；探针 **20/20**；
+  反向验证（破坏冷却判据）门禁双路变红，还原后全绿。
+
 ## [0.5.2] - 2026-10-15 — P0-门1' 修复：同步批量调用脱闸（同链判据改为调用链令牌）
 
 > **性质：缺陷修复（安全相关；0.5.1 修复方案的缺陷转移）。** 0.5.1 把「同一调用链只扣

@@ -70,6 +70,9 @@ export const Config = Schema.object({
     .description('参数矩阵最大组合数（v0.4.0 P0-4：硬上限 50000；超过会钳断并显式告警，不再静默截断）'),
   topNPreview: Schema.number().default(20)
     .description('L0 结果预览返回的 TopN 数量'),
+  // v0.5.3 P0-2：默认 false（截断只告警，兼容既有脚本）；true = 请求量超上限直接报错
+  strictMaxMatrixSize: Schema.boolean().default(false)
+    .description('矩阵截断严格模式：请求 count 超过 maxMatrixSize 时直接报错而非静默截断'),
 
   // ---- 口径对齐（v1 取证 #4：与 _run_simulated 同口径，避免 L0/L1 排序跳变）----
   efficiencyCap: Schema.number().default(96)

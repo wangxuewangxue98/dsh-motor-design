@@ -18,7 +18,7 @@ import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, unlinkS
 import { tmpdir } from 'node:os'
 import { readdir, access } from 'node:fs/promises'
 import { join, dirname, resolve, relative, sep } from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -1942,6 +1942,40 @@ check('quota: lib/quota.mjs 导出契约 + 四 L0 工具纯函数入口过闸（
   must(/runDesignValidate\(\{[^}]*\},\s*chainCfg\)/.test(pl), 'pipeline.mjs 未把带令牌配置透传给 runDesignValidate')
   must(/runL0Estimate\([\s\S]*?\},[\s\S]*?chainCfg\)/.test(pl), 'pipeline.mjs 未把带令牌配置透传给 runL0Estimate')
   return '契约齐备 + 四工具纯函数入口/QuotaExceededError 接线齐备 + device-id 算法锚定 + 调用链令牌（P0-门1\'）'
+})
+
+// ---------- v0.5.3 L0 四项修复不可回退（静默失败防线）----------
+// P0-2 截断告警 + 硬上限 + 严格模式；P1-1 冷却回退告警；
+// P0-4 默认极数建议；P0-1 密度收敛自检（默认 OFF，须读 efficiency_raw）。
+check('v0.5.3 静默失败防线：四项修复静态形态齐备', () => {
+  const pm = readFileSync(join(ROOT, 'tools', 'l0', 'param-matrix.mjs'), 'utf8')
+  const pl = readFileSync(join(ROOT, 'tools', 'l0', 'pipeline.mjs'), 'utf8')
+  for (const token of ['MATRIX_TRUNCATED', 'MATRIX_HARD_CAP', 'strictMaxMatrixSize',
+    'COOLING_FALLBACK', 'POLES_DEFAULT_ASSUMED', 'poles_explicit']) {
+    must(pm.includes(token), `param-matrix.mjs 缺 ${token}（v0.5.3 修复被回退）`)
+  }
+  for (const token of ['density_check', 'DENSITY_NOT_CONVERGED', 'export function topEfficiencyOf']) {
+    must(pl.includes(token), `pipeline.mjs 缺 ${token}（v0.5.3 修复被回退）`)
+  }
+  // 密度自检必须读真值：拿被钳的 efficiency 比对会在高效率段恒差 0 ⇒ 假绿
+  must(/efficiency_raw\s*\?\?\s*row\.efficiency/.test(pl),
+    'topEfficiencyOf 未优先读 efficiency_raw（密度自检会假绿）')
+  // 默认必须 OFF（零回归）：自检不得无条件执行
+  must(/args\.density_check\s*===\s*true/.test(pl) && /L0_DENSITY_CHECK/.test(pl),
+    '密度自检未受 args.density_check / L0_DENSITY_CHECK 控制（默认 OFF 零回归被破坏）')
+  return 'P0-2/P0-1/P0-4/P1-1 形态齐备（含硬上限与严格模式开关）'
+})
+
+check('v0.5.3 静默失败防线：四项修复运行时探针全绿', () => {
+  const probe = join(ROOT, 'scripts', 'l0_fixes_probe_0.5.3.mjs')
+  must(existsSync(probe), '缺 l0_fixes_probe_0.5.3.mjs（v0.5.3 四项修复行为探针）')
+  // 运行时强断言：静态字符串查不出「判据被改坏但文案还在」的回退
+  const r = spawnSync(process.execPath, [probe], { encoding: 'utf8', timeout: 180_000 })
+  const out = String(r.stdout || '')
+  must(out.includes('L0_FIXES_PROBE_0.5.3_ALL_OK'),
+    `四项修复运行时探针未全绿（exit=${r.status}）：` +
+    out.split('\n').filter((l) => l.startsWith('[FAIL]')).join(' | ').slice(0, 300))
+  return '20 项行为断言全过（含默认 OFF 零回归对照）'
 })
 
 check('quota: 运行时行为（本地为准/开关/拦截/算法一致/非阻塞）—— 顶层 await 预跑', () => {

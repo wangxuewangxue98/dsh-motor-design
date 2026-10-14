@@ -67,6 +67,21 @@ export const TOOL_PARAMS = {
  *   note: string
  * }}
  */
+/**
+ * 取估算结果的 Top1 效率真值（v0.5.3 P0-1 密度自检用）
+ *
+ * 必须读 `efficiency_raw`：efficiency 是被展示上限钳过的显示值（efficiency_cap），
+ * 拿它做密度比对会在高效率段全部撞顶、差值恒为 0 ⇒ 自检假绿。
+ * @param {{recommended?: object, results?: object[]}} est
+ * @returns {number|null}
+ */
+export function topEfficiencyOf(est) {
+  const row = est?.recommended ?? est?.results?.[0] ?? null
+  if (!row) return null
+  const v = Number(row.efficiency_raw ?? row.efficiency)
+  return Number.isFinite(v) ? v : null
+}
+
 export function runL0Pipeline(rawArgs, config = {}) {
   if (!config || typeof config !== 'object') config = {}
   // v0.5.1 P0-门1：纯函数入口过闸。此前闸门只装在 registerL0Pipeline.execute（:206），
@@ -106,6 +121,47 @@ export function runL0Pipeline(rawArgs, config = {}) {
     ...(args.mc_ci_level != null ? { mc_ci_level: args.mc_ci_level } : {}),
   }, chainCfg)
 
+  // ---- v0.5.3 P0-1：密度收敛自检（默认 OFF）----
+  // 背景：Top1 效率随采样密度漂移（20→91.56 … 2000→92.06 … 10000→92.09），
+  // 「达标/不达标」会被 count 翻转。本自检不再假装 verdict 与密度无关，而是把
+  // 漂移量显式量出来：粗档(count/4) 与当前档比对，差值超容差即判未收敛并告警。
+  // 开关：args.density_check=true 或 env L0_DENSITY_CHECK=1（默认 OFF，零额外开销）。
+  // 内部复用同一调用链 ⇒ 用 freeQuotaEnabled:false 派生配置，不额外扣免费额度。
+  let density = null
+  const wantDensityCheck = args.density_check === true
+    || /^(1|true|yes)$/i.test(String(globalThis?.process?.env?.L0_DENSITY_CHECK ?? ''))
+  if (wantDensityCheck) {
+    const tolPp = Number.isFinite(Number(args.density_tol_pp)) ? Number(args.density_tol_pp) : 0.1
+    const coarseRequested = Math.max(1, Math.floor(requestedCount / 4))
+    const innerCfg = { ...chainCfg, freeQuotaEnabled: false }
+    const coarseMatrix = buildParamMatrix({ ...args, count: coarseRequested }, innerCfg)
+    const coarseValidated = runDesignValidate({ params_list: coarseMatrix.matrix }, innerCfg)
+    const coarseFailed = new Set(coarseValidated.failed_indices ?? [])
+    const coarseFeasible = coarseMatrix.matrix.filter((_, i) => !coarseFailed.has(i))
+    const coarseEst = runL0Estimate(
+      { params_list: coarseFeasible, top_n: 1, sort_by: sortBy }, innerCfg)
+    const coarseEff = topEfficiencyOf(coarseEst)
+    const fineEff = topEfficiencyOf(estimate)
+    if (coarseEff != null && fineEff != null) {
+      const deltaPp = Math.round((fineEff - coarseEff) * 1000) / 1000
+      const converged = Math.abs(deltaPp) <= tolPp
+      density = {
+        coarse_count: coarseRequested,
+        fine_count: requestedCount,
+        coarse_top_efficiency: coarseEff,
+        fine_top_efficiency: fineEff,
+        delta_pp: deltaPp,
+        tolerance_pp: tolPp,
+        converged,
+        suggested_count: converged ? requestedCount : requestedCount * 4,
+        note: converged
+          ? `两档密度 Top1 效率差 ${deltaPp}pp ≤ ${tolPp}pp，本次结论对采样密度不敏感。`
+          : `两档密度 Top1 效率差 ${deltaPp}pp > ${tolPp}pp：结论仍在随密度漂移，` +
+            `「达标/不达标」不可据此定论。建议提高 count/maxMatrixSize 至 ${requestedCount * 4} 重跑并复检。`,
+      }
+    }
+  }
+
   // ---- 计数自洽校验（让模型一眼确认没有丢行）----
   const sumStatus = (validated.summary?.passed ?? 0)
     + (validated.summary?.warning ?? 0)
@@ -136,6 +192,7 @@ export function runL0Pipeline(rawArgs, config = {}) {
           feasible_count: estimate.feasible_count,
           returned_feasible_count: estimate.returned_feasible_count,
           count_ok: countOk,
+          density,
           sort_by: sortBy,
         },
         recommended: estimate.recommended,
@@ -154,7 +211,15 @@ export function runL0Pipeline(rawArgs, config = {}) {
 
   return {
     // 矩阵层告警（如 OD_LIMIT_CLAMPED）放在最前，保证调用方第一眼看到
-    warnings: matrix.warnings ?? [],
+    // 矩阵层告警（OD_LIMIT_CLAMPED / MATRIX_TRUNCATED / COOLING_FALLBACK /
+    // POLES_DEFAULT_ASSUMED）放最前，保证调用方第一眼看到
+    warnings: (() => {
+      const w = [...(matrix.warnings ?? [])]
+      if (density && !density.converged) {
+        w.push({ code: 'DENSITY_NOT_CONVERGED', level: 'warning', ...density, message: density.note })
+      }
+      return w
+    })(),
     od_limit: matrix.od_limit,
     summary: {
       requested_count: requestedCount,
@@ -175,6 +240,8 @@ export function runL0Pipeline(rawArgs, config = {}) {
       efficiency_capped_count: estimate.efficiency_capped_count,
       rule_hits: validated.rule_hits,
     },
+    // v0.5.3 P0-1：默认 null（未开启自检）；开启后给出两档密度漂移量
+    density,
     efficiency_note: estimate.efficiency_note,
     recommended: estimate.recommended,
     results: estimate.results,
