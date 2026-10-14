@@ -40,6 +40,26 @@
         designExperienceUpload: false     # 总开关（boolean）；默认关闭
         experienceEndpoint: ''            # 目标 URL；为空则回退复用 telemetryEndpoint
         experienceBatchSize: 200          # 单批最多携带的 design_exp 样本条数
+        # ---- 每日免费额度闸门（P0 透明度修复：开关显式化；v0.5.0 语义升级）----
+        # 默认开启。v0.5.0 起闸门语义 = 「本地为准的硬闸 + 非阻塞旁路遥测」：
+        #   - 每日 10 次（DSH_FREE_DAILY_LIMIT 可覆盖），按本地自然日重置，**本地计数、断网也拦**；
+        #     配额文件 $DSH_HOME/storages/dsh-motor-ai/free-quota.json（与完整版共用一本账）。
+        #   - 仅当下列地址**显式配置**时才发旁路计数请求（POST {plugin_id, device_id}）；
+        #     未配置 ⇒ 一个网络请求都不发。旁路遥测是 fire-and-forget，**调用链不等待**。
+        #   - 放行决策 100% 本地：后端即使返回 allowed:false 也不拦截（旧版会拦）。
+        #     旧实现是 `await fetch` + 4s 超时 ⇒ 后端落在国内不可达地址时每次调用白等 4 秒，已修。
+        # 设为 false 可完全关闭闸门：不限次、不发任何计数请求。
+        # 注：此通道与上方 telemetry/designExperienceUpload 相互独立，后者默认 false，本项默认 true。
+        freeQuotaEnabled: true
+        # ---- 接收端地址（可选：只影响数据回流与跨机额度归并）----
+        # v0.5.0 起免费额度闸门本地闭环，不配也能正常限流；配了才有旁路计数与遥测回流。
+        # 默认指向官方接收端（Deno Deploy 2 + Deno KV，*.deno.net 域名境内直连实测可达）：
+        commerceBackendUrl: 'https://dsh-motor-ai-receiver.wangxuewangxue98.deno.net'
+        # ⚠️ 中国大陆：*.workers.dev / *.vercel.app 域名被 DNS 污染不可达（实测），
+        #    不要把地址指向这两类域名；*.deno.net / *.deno.dev / render.com / fly.io / railway.app 实测可达。
+        # 自建接收端参考实现：D:/dsh-motor-ai-receiver-deno（Deno Deploy + KV）与
+        # D:/dsh-motor-ai-receiver（Cloudflare Worker + D1），3 端点契约与 lib/quota.mjs 注释逐字一致。
+        # 不想回传任何数据 ⇒ 把上面一行改回 ''（空串），或把 freeQuotaEnabled 设为 false。
         # --- L1 预留（取消注释即激活，需同时实现 tools/l1/ 代码并扩展允许列表）---
         # l1Enabled: false
         # l1Config:

@@ -5,6 +5,73 @@
 
 版本三重一致性：`package.json.version` = `SKILL.md` 的 `metadata.version` = `CHANGELOG.md` 最新条目。
 
+## [0.5.0] - 2026-10-14 — 🔴 免费额度闸门语义升级：本地为准的硬闸 + 非阻塞旁路遥测
+
+> **性质：行为变更（freeQuotaEnabled 默认开启时，免费档从「断网不限次」变为「每日 10 次硬闸」）。**
+> 触发原因是一条实测到的事故级缺陷，而非功能偏好。
+
+### 问题（实测证据）
+
+`lib/quota.mjs` 的 `checkFreeQuota` 里是 `await fetch(...)` + **4s AbortController 超时**。
+把 `commerceBackendUrl` 指向一个**在中国大陆不可达**的地址时（实测 `*.workers.dev` 被 DNS 污染：
+同一域名两次解析分别返回 `103.252.115.49` / `199.59.149.236` + 伪造 IPv6，TCP 443 直连超时；
+同网络下 `registry.npmjs.org` 正常），国内用户**每次工具调用都要白等 4 秒**才拿到 fail-open 放行
+—— 限流没生效，延迟先炸了。
+
+### Changed
+
+- 🔴 **放行决策改为 100% 本地**：每日计数只认本地 `free-quota.json`（`$DSH_HOME/storages/dsh-motor-ai/`，
+  与完整版 `lib/license.mjs:52` 的激活态同目录同文件 ⇒ **同机两端共用一本账**，不会分裂成两本）。
+  本地自然日重置，`DSH_FREE_DAILY_LIMIT` 可覆盖上限（默认 10）。
+- 🔴 **免费档 fail-closed**：用尽即抛 `QuotaExceededError`，**断网也拦**（旧版断网等于不限次）。
+  这是「分发出去即失联」场景下闸门唯一能真正生效的方式。
+- 🟢 **旁路遥测非阻塞**：`syncBackendTelemetry` 改为 fire-and-forget，调用链**不再 await**；
+  超时定时器加 `unref()`，不把 CLI 进程多吊 4 秒。实测后端挂死时 `checkFreeQuota` **1ms 返回**、
+  `enforceQuota` **完全不触网**（<50ms）。
+- 🟢 **未配置后端 ⇒ 零网络请求**：不再向 `http://127.0.0.1:5000` 打无意义请求。
+- 🟢 **后端不再决定放行**：即使后端返回 `allowed: false`，本地未超限即放行（**语义反转**，旧版会拦）。
+- 🟢 **一次性消费标记**：同一调用链（同一 `config` 对象）只计 1 次，pipeline 内连调不重复扣；
+  绕过工具网关直调内部函数同样被计。
+- 新增导出：`assertFreeQuota` / `QuotaExceededError` / `getQuotaFilePath` / `getDailyLimit`。
+
+### Tests
+
+- `scripts/_selftest_quota.mjs` 重写为 **17 项**（断言方向随语义反转），全程用临时 `DSH_HOME` 隔离，
+  绝不污染用户真实配额文件。新增两条**延迟回归**断言：后端挂死时 `checkFreeQuota` <300ms、
+  `enforceQuota` <50ms。
+- `scripts/verify.mjs` 门禁项 50~51 标题同步为「本地为准/开关/拦截/算法一致/非阻塞」。
+- verify **117/117 全绿**；`_selftest_quota.mjs` 独立跑 **17/17 全绿**。
+
+### Docs
+
+- README「免费额度与联网行为」整节重写：新增 v0.5.0 语义升级说明与事故证据；
+  「接收端部署」降级为**可选**（只影响数据回流与跨机额度归并，不再影响闸门是否生效）。
+- 🔴 README/cordis.patch.yml 新增**中国大陆域名可达性实测**警示：`*.workers.dev`、`*.vercel.app`
+  被 DNS 污染不可达；实测可达替代 `*.deno.dev` / `render.com` / `onrender.com` / `fly.io` / `railway.app`。
+  建议国内部署者给 Worker 绑自定义域名。
+
+## [0.4.4] - 2026-10-14 — 接收端配套 + 免费额度限额口径对齐
+
+- **免费额度限额口径对齐**：`lib/quota.mjs` 引导文案回落值 `?? 5` → `?? 10`，与「每日 10 次」闸门决策一致。
+- **接收端配置模板**：`cordis.patch.yml` 新增 `commerceBackendUrl` 注释示例；部署 `dsh-motor-ai-receiver` 后取消注释即让闸门生效。
+- **文档**：README 新增「接收端部署（可选）」专节 + 免费额度区显眼化提示（feedback / 孤岛说明）。
+- 配套接收端参考实现 `dsh-motor-ai-receiver`（Cloudflare Worker + D1）已就绪：3 端点 + 3 表，契约与 `lib/quota.mjs:17-19` 逐字一致。
+
+## [0.4.3] - 2026-10-13 — 🔒 P0/P1 修复：免费额度开关显式化 + 权限声明 + dsh 兼容区间
+
+> **性质：透明度修复 + 清单声明修正；默认行为仅一处可关（freeQuotaEnabled），其余零回归。**
+
+### Fixed
+- 🔴 **P0 透明度**：`cordis.patch.yml` 配置块新增 `freeQuotaEnabled`（默认 `true`），用户可在插件配置中
+  显式关闭免费额度联网计数（此前该开关仅存在于 `lib/quota.mjs` 内部、未被暴露，用户无法关闭）。
+  `README.md` 新增「免费额度与联网行为」一节，诚实披露：默认开启、`POST /api/dsh/free-call`、
+  `device_id = sha256(hostname|platform|arch).slice(0,16)` 主机名指纹、后端不可达 fail-open、关闭方法。
+- 🟠 **P1 权限声明**：`manifest.json` 的 `permissions` 由 `[]` 改为真实能力
+  `["fs-read","fs-write","network","env","shell"]`（`shell` 来自随包发布的 `scripts/*.mjs` 中的 `child_process`）。
+- 🟠 **P1 dsh 兼容区间**：`package.json` 的 `peerDependencies["@deepseek-ai/dsh"]` 与
+  `dsh.compatibility.dsh` 由 `>=0.1.2 <0.2.0` 改为 `>=0.1.2 <0.3.0`，覆盖实测通过的 0.2.x 区间
+  （dsh.so L5 实测于 0.2.0-rc.2 / 0.2.1-alpha.2），消除声明自相矛盾。
+
 ## [0.4.2] - 2026-10-13 — 🔧 包络字段补齐（矩阵行补 `torque_margin_rated`）
 
 > **性质：字段补齐，无行为变更。**

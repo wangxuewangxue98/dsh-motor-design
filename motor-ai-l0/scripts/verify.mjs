@@ -1908,7 +1908,7 @@ check('quota: lib/quota.mjs 导出契约 + 四 L0 工具接入（静态）', () 
   return '契约齐备 + 四工具 import/调用齐备 + device-id 算法锚定'
 })
 
-check('quota: 运行时行为（fail-open/开关/拦截/算法一致）—— 顶层 await 预跑', () => {
+check('quota: 运行时行为（本地为准/开关/拦截/算法一致/非阻塞）—— 顶层 await 预跑', () => {
   must(QUOTA_SELF && QUOTA_SELF.ok === true,
     `配额运行时自检失败: ${((QUOTA_SELF && QUOTA_SELF.fails) || ['unknown']).join(', ')}`)
   const passed = QUOTA_SELF.lines.filter(l => l.startsWith('✅')).length

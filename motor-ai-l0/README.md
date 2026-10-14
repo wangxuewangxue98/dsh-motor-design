@@ -153,6 +153,75 @@ telemetryEndpoint: 'http://127.0.0.1:5000/api/admin/dsh-plugins/motor-ai-l0/usag
 telemetryIntervalSec: 300
 ```
 
+## 免费额度与联网行为（默认开启，与遥测相互独立）
+
+> ⚠️ **本插件有两条相互独立的「对外」通道，默认状态不同，请分别看待：**
+> - **遥测回传**（`telemetryEnabled` / `designExperienceUpload`）：默认 **关闭**，不配置 = 零外发（见上节）。
+> - **每日免费额度**（`freeQuotaEnabled`，本节）：默认 **开启**，但**计数与放行完全在本地完成**，
+>   后端不可达也不影响使用。
+
+### v0.5.0 语义升级（important）
+
+闸门从「后端决定 + 断网放行」改为 **「本地为准的硬闸 + 非阻塞旁路遥测」**。原因是一条实测到的事故级缺陷：
+
+> 旧实现 `checkFreeQuota` 里是 `await fetch(...)` + 4s 超时。一旦 `commerceBackendUrl` 指向一个
+> **在中国大陆不可达**的地址（实测 `*.workers.dev` 被 DNS 污染、TCP 443 直连超时），
+> 国内用户**每次工具调用都要白等 4 秒**才拿到放行 —— 限流没生效，延迟先炸了。
+
+**现在的行为：**
+
+- **每日 10 次硬闸（本地计数，fail-closed）**：默认 10 次/天，按**本地自然日**重置。
+  计数只认本地 `free-quota.json`，**断网也拦**——否则「分发出去即失联」时闸门形同虚设。
+- **非阻塞旁路遥测**：若 `config.commerceBackendUrl` / `config.backendUrl` / `env.DSH_BACKEND_URL`
+  **已显式配置**，插件会顺手 `POST /api/dsh/free-call`（载荷 `{ plugin_id, device_id }`）做旁路计数，
+  但这是 **fire-and-forget，调用链不等待**（实测后端挂死时闸门 1ms 返回）。
+  **未配置地址 ⇒ 一个网络请求都不发**，不再向 `http://127.0.0.1:5000` 打无意义请求。
+- **后端不再决定放行**：即使后端返回 `allowed: false`，本地未超限就照常放行（旧版会拦）。
+- **与完整版共用一本账**：配额文件路径 `$DSH_HOME/storages/dsh-motor-ai/free-quota.json`
+  （与完整版 `lib/license.mjs:52` 的激活态同目录同文件），同机上 l0 与完整版不会分裂成两本。
+- `device_id = sha256(hostname|platform|arch).slice(0, 16)`——以**主机名 + 平台 + 架构**派生的设备指纹，
+  与完整版逐字节一致，用于后端归并同一台机器的额度账。
+
+> 💡 **「出厂即孤岛」已不再是问题**：每日 10 次闸门现在**完全不依赖后端**，装完即生效。
+> 是否部署接收端只影响两件事——① 匿名使用数据（次数/成败/耗时）是否回流；② 换机后额度能否归并。
+
+**如何调整：**
+
+1. 换每日上限（本地闸门）：
+   ```bash
+   DSH_FREE_DAILY_LIMIT=50      # 环境变量覆盖，默认 10
+   ```
+2. 完全关闭闸门与联网（照常使用、不限次）—— 打开 `cordis.patch.yml`：
+   ```yaml
+   freeQuotaEnabled: false   # 关闭每日免费额度闸门（不限次、不发任何计请求）
+   ```
+   （v0.4.3 起该开关已暴露到配置；此前用户无法关闭。）
+
+## 接收端部署（可选，只影响数据回流与跨机额度归并）
+
+> v0.5.0 起免费额度闸门已在本地闭环，**不部署接收端功能完全不受影响**。
+> 部署的收益：匿名使用数据回流 + 换机后额度归并。
+
+1. **官方接收端（已上线，开箱即用）**：`https://dsh-motor-ai-receiver.wangxuewangxue98.deno.net`
+   （Deno Deploy 2 + Deno KV，零服务器成本）。3 个端点契约与 `lib/quota.mjs` 注释逐字一致：
+   - `POST /api/dsh/free-call` —— 免费额度旁路计数（每日 10 次口径，设备级）
+   - `POST /api/dsh/telemetry` —— 脱敏聚合遥测（插件侧默认关闭）
+   - `POST /api/dsh/experience` —— 设计经验样本（插件侧默认关闭）
+   `cordis.patch.yml` 默认已配置该地址；不想回传改空串即可。
+2. **自建**：参考实现在 `dsh-motor-ai-receiver-deno`（Deno Deploy + KV，境内可达）与
+   `dsh-motor-ai-receiver`（Cloudflare Worker + D1，境外可达），部署后把地址改成你的域名。
+
+> 🔴 **中国大陆部署者请注意**：`*.workers.dev` 域名在境内**被 DNS 污染**，实测解析到 `103.252.115.49`
+> / `199.59.149.236` 等黑洞 IP、TCP 443 直连超时（同网络下 `registry.npmjs.org` 正常）；
+> `*.vercel.app` 同样被污染。
+> **官方接收端已部署在 Deno Deploy 2**：`https://dsh-motor-ai-receiver.wangxuewangxue98.deno.net`
+> （`*.deno.net` 域名本机直连实测 200 / 1.3s，IP `69.67.170.170` 未被污染；线上闸门 10+2 拒实测通过），
+> `cordis.patch.yml` 默认已指向该地址。实测可达的其它平台：`*.deno.dev`、`render.com`、
+> `onrender.com`、`fly.io`、`railway.app`。若你的用户在国内，**不要**把地址指向 workers.dev。
+> 所幸 v0.5.0 起闸门已本地闭环，选不到可达后端也不会拖慢调用（旁路遥测非阻塞）。
+
+3. 接收端无鉴权（npm pack 即可读走任何内嵌 key），故按「统计信道」标准设计（append-only + 限流 + 白名单校验）。
+
 ## 社区反馈（结论式，永不自动提交）
 
 **遇到「我的工况跑不出方案 / 结果明显不合理」时，可以把结论反馈给作者。**
