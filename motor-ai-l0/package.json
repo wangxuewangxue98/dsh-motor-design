@@ -1,6 +1,6 @@
 {
   "name": "dsh-motor-ai-l0",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "type": "module",
   "main": "./index.mjs",
   "description": "电机AI辅助设计软件插件 · L0 层（毫秒级广筛）；共享核心逻辑 @wangxue98/dsh-motor-ai-core",

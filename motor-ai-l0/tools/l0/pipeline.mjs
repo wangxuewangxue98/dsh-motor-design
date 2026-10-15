@@ -304,6 +304,8 @@ export function runL0Pipeline(rawArgs, config = {}) {
     },
     // v0.5.3 P0-1：默认 null（未开启自检）；开启后给出两档密度漂移量
     density,
+    // v0.5.5 P2-1：verdict 密度无关化声明——status 仅由物理规则驱动，密度自检永不进 status
+    verdict_density_independent: true,
     // v0.5.4 P1-5：默认 null（leverage_log=false）；开启后回紧凑杠杆聚合
     leverage_log: leverageLog,
     efficiency_note: estimate.efficiency_note,

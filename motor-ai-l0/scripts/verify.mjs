@@ -58,6 +58,8 @@ import {
   getExperienceSink, logExperience, gcExperience, readPendingRecords,
 } from '@wangxue98/dsh-motor-ai-core'
 import { tempCalibPath, appendTempCalibration } from '../lib/temp-calib-log.mjs'
+import { SLOT_FAMILIES, slotFamilyInfo } from '@wangxue98/dsh-motor-ai-core'
+import { getLeverageHint } from '../lib/leverage-knowledge.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -2281,6 +2283,74 @@ check('v0.5.4 P1-6 temp-calib-log 运行时：默认关闭 + 失败静默', () =
     || appendTempCalibration({ stator_od: 1 }, { temp_rise: 1 }, join(tmpdir(), 'no-such-dir-xyz', 'a', 'b.jsonl')) === false,
   '非法路径必须静默 false（钩子失败绝不影响主流程）')
   return '默认关闭 + env/config 通道 + 失败静默 全部符合'
+})
+
+// ---------- 53. v0.5.5 P2 杠杆验证增强（verdict 密度无关化 / 槽形族 / 杠杆知识库） ----------
+check('v0.5.5 P2-1 verdict 密度无关化：core verdict_basis + pipeline 声明 + density 不进 status', () => {
+  const base = { stator_od: 210, stator_id: 136, rotor_od: 134.4, core_length: 160, air_gap: 0.8,
+    poles: 4, slots_stator: 36, tooth_width: 6.8, yoke_thickness: 14, turns_per_coil: 11,
+    parallel_circuits: 2, peak_current: 25, voltage: 380, speed: 1480, power_kw: 15, motor_type: 'induction' }
+  // ① core：verdict_basis.density_independent 必须为 true，drivers 全是物理规则
+  const r = validateDesign(base, {})
+  must(r.verdict_basis && r.verdict_basis.density_independent === true, 'verdict_basis.density_independent 必须为 true')
+  for (const d of r.verdict_basis.drivers) {
+    must(/^V\d+$/.test(d.rule), `driver ${d.rule} 必须是物理规则 Vxx，不得含 density 伪规则`)
+  }
+  // ② pipeline：声明字段存在
+  const pl = runL0Pipeline({ power_kw: 15, voltage: 380, speed: 1480, poles: 4, count: 8, top_n: 1 }, { freeQuotaEnabled: false })
+  must(pl.verdict_density_independent === true, 'pipeline 必须声明 verdict_density_independent=true')
+  // ③ 反向：density 自检开/关，failed 计数不变（density 只 warning 不翻转 status）
+  const plOff = runL0Pipeline({ power_kw: 15, voltage: 380, speed: 1480, poles: 4, count: 8, top_n: 1, density_check: false }, { freeQuotaEnabled: false })
+  const plOn = runL0Pipeline({ power_kw: 15, voltage: 380, speed: 1480, poles: 4, count: 8, top_n: 1, density_check: true }, { freeQuotaEnabled: false })
+  must(plOff.summary.failed === plOn.summary.failed, 'density 自检不得改变 failed 计数（status 与密度解耦）')
+  return 'core verdict_basis 透明 + pipeline 声明 + density 不进 status 全部符合'
+})
+
+check('v0.5.5 P2-2 槽形族：常量结构 + 回显 + 多族异值（防合并假绿）', () => {
+  const keys = Object.keys(SLOT_FAMILIES)
+  must(keys.length >= 5, `至少 5 个槽形族，实得 ${keys.length}`)
+  for (const k of keys) {
+    const f = SLOT_FAMILIES[k]
+    must(f.id === k, `${k}.id 必须自洽`)
+    must(Array.isArray(f.tooth_width_ratio) && f.tooth_width_ratio.length === 2, `${k} 齿宽比必须二元`)
+    must(f.tooth_width_ratio[0] < f.tooth_width_ratio[1], `${k} 齿宽比区间必须有序`)
+    must(typeof f.label === 'string' && f.label.length > 0, `${k}.label 必填`)
+  }
+  // 回显：传入 slot_family 必须正确回显
+  const base = { stator_od: 210, stator_id: 136, rotor_od: 134.4, core_length: 160, air_gap: 0.8,
+    poles: 4, slots_stator: 36, tooth_width: 6.8, yoke_thickness: 14, turns_per_coil: 11,
+    parallel_circuits: 2, peak_current: 25, voltage: 380, speed: 1480, power_kw: 15, motor_type: 'induction', slot_family: 'pear' }
+  const r = validateDesign(base, {})
+  must(r.metrics?.slot?.slot_family === 'pear', 'slot_family 回显错误')
+  must(r.metrics?.slot?.slot_family_label === '梨形半闭口槽', 'slot_family_label 回显错误')
+  // 反向破坏防线：多个族必须返回不同 label（若 KB 被改写成全同值，此断言变红）
+  const labels = keys.map((k) => slotFamilyInfo(k)?.label)
+  must(new Set(labels).size === labels.length, '各槽形族 label 必须互异（同值=被错误合并）')
+  return `槽形族 ${keys.length} 个结构自洽 + 回显正确 + 多族异值`
+})
+
+check('v0.5.5 P2-3 杠杆知识库：查询 + 注入 + 多杠杆异值（防合并假绿）', () => {
+  // ① 全表查询
+  const all = runDesignValidate({ leverage_kb: true }, { freeQuotaEnabled: false })
+  must(all.mode === 'leverage_kb' && all.count >= 12, `leverage_kb 全表至少 12 条，实得 ${all.count}`)
+  // ② 单杠杆查询 label 正确
+  const one = runDesignValidate({ leverage_kb: 'yoke_thickness' }, { freeQuotaEnabled: false })
+  must(one.found === true && one.entry?.label === '轭厚' && one.entry?.risk_rules?.includes('V08'),
+    'leverage_kb 单杠杆查询 label/risk 错误')
+  // ③ 注入：leverage_audit 的 actionable 必须带 kb_hint，issue 必须带 rule_to_levers
+  const la = runDesignValidate({ leverage_audit: { stator_od: 210, stator_id: 136, rotor_od: 134.4,
+    core_length: 160, air_gap: 0.8, poles: 4, slots_stator: 36, tooth_width: 6.8, yoke_thickness: 3,
+    turns_per_coil: 11, parallel_circuits: 2, peak_current: 25, voltage: 380, speed: 1480, power_kw: 15,
+    motor_type: 'induction', slot_family: 'pear' } }, { freeQuotaEnabled: false })
+  must(la.actionable.every((a) => a.kb_hint && a.kb_hint.lever), 'actionable 缺 kb_hint')
+  must(Object.keys(la.rule_to_levers).length > 0, 'rule_to_levers 必须非空')
+  must(la.slot_family === 'pear' && la.slot_family_label === '梨形半闭口槽', 'leverage_audit slot_family 回显错误')
+  // ④ 反向破坏防线：多个杠杆查询必须返回不同 label（同值=KB 被错误合并/改写）
+  const sample = ['yoke_thickness', 'tooth_width', 'turns_per_coil', 'air_gap', 'slot_family', 'speed']
+  const labs = sample.map((k) => getLeverageHint(k)?.label)
+  must(labs.every((x) => typeof x === 'string' && x.length > 0), 'KB 查询存在空 label')
+  must(new Set(labs).size === labs.length, '各杠杆 label 必须互异（同值=KB 被错误合并，假绿灯）')
+  return 'KB 全表/单查/注入 + 多杠杆异值防线 全部符合'
 })
 
 // ---------- 输出 ----------

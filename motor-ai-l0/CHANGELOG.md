@@ -5,6 +5,26 @@
 
 版本三重一致性：`package.json.version` = `SKILL.md` 的 `metadata.version` = `CHANGELOG.md` 最新条目。
 
+## [0.5.5] - 2026-10-15 — P2：密度无关化声明 / 槽形族回显 / 杠杆知识库
+
+> **性质：能力新增（P2-1/2/3，与 core 1.3.1 配套发布）。规则引擎改动在 core 侧，l0 为工具层接线。**
+
+1. **P2-1 verdict 密度无关化声明**（`motor_l0_pipeline`）：返回块新增
+   `verdict_density_independent: true`（位于 density 自检之后、leverage_log 之前），
+   与 core `verdict_basis.density_independent` 呼应——density_check 自检只产生 warning，
+   绝不翻转 status。
+2. **P2-2 槽形族回显**（`motor_design_validate`）：`leverage_audit` 输出新增
+   `slot_family` / `slot_family_label` / `slot_family_kb`（族经验提示），依赖 core 1.3.1
+   的 `slotFamilyInfo`。
+3. **P2-3 杠杆知识库**（`lib/leverage-knowledge.mjs`，纯数据模块，零外部依赖、不 import core
+   避免循环依赖）：固化 12 条杠杆（轭厚/齿宽/匝数/气隙/铁心长/槽数/槽形/并联路数/峰值电流/
+   电压/转速/定子外径）的 `affects`/`direction`/`coupling`/`risk_rules`；新增查询模式
+   `leverage_kb`（字符串查单条 / true 查全表）+ `leverage_audit` 注入 `kb_hint`
+   （每条 actionable 附建议）+ `rule_to_levers`（按 Vxx 反查受影响杠杆）。
+- 新探针 `tests/probe/p2_leverage_probe.mjs`；`scripts/verify.mjs` 门禁新增 3 项断言
+  （P2-1/2/3 + 多族/多杠杆异值防线），含反向破坏验证（KB 被错误合并时 P2-3 准确变红）。
+  全套 129/129 通过。
+
 ## [0.5.4] - 2026-10-15 — 设计杠杆验证原语：估算器对比 / 规则裕度 / 单变量扫描 / 匝数反解 / 杠杆审计
 
 > **性质：能力新增（P0×2 + P1×4，与 core 1.3.0 配套发布；规则引擎改动在 core 侧，l0 为工具层接线）。**

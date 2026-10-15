@@ -24,6 +24,8 @@ import { DEFAULT_LINE_FREQ_HZ } from '@wangxue98/dsh-motor-ai-core'
 import { quickL0Estimate, solveTurnsPerCoil } from '@wangxue98/dsh-motor-ai-core'
 import { getUsageSink, logUsage } from '@wangxue98/dsh-motor-ai-core'
 import { assertFreeQuota, QuotaExceededError } from '../../lib/quota.mjs'
+import { LEVERAGE_KB, getLeverageHint, listLeverageKb } from '../../lib/leverage-knowledge.mjs'
+import { slotFamilyInfo } from '@wangxue98/dsh-motor-ai-core'
 
 /** 工具入参声明 */
 export const TOOL_PARAMS = {
@@ -71,7 +73,15 @@ export const TOOL_PARAMS = {
   leverage_audit: {
     type: 'object', additionalProperties: true,
     description: 'v0.5.4 P1-5 杠杆审计：传入单对象参数，输出「哪里坏（issue+margin）、差多少（margin 数值）、往哪拧」'
-      + '——V07 齿宽/V08 轭厚/V15 匝数给精确反解（headroom），其余规则按 margin 与文案判读',
+      + '——V07 齿宽/V08 轭厚/V15 匝数给精确反解（headroom），其余规则按 margin 与文案判读。'
+      + 'v0.5.5 P2：入参可含 slot_family（梨形/梯形/开口矩形/斜肩梨形/闭口）触发族感知；'
+      + '每条 actionable 附 kb_hint（见 leverage_kb），每个 issue 附 rule_to_levers（哪些杠杆能影响它）',
+  },
+  leverage_kb: {
+    type: ['string', 'boolean'],
+    description: 'v0.5.5 P2-3 杠杆知识库查询：传 true 返回全表；传杠杆名（如 yoke_thickness/turns_per_coil/'
+      + 'slot_family）返回该杠杆的「影响指标/调节方向/耦合提示/关联规则 Vxx」。纯本地数据查询，'
+      + '用于「想拧 X 之前先知道它会动哪些指标」',
   },
 }
 
@@ -229,7 +239,20 @@ export function runLeverageAudit(params, opts) {
     adjust_to: h.min_for_target_mm ?? h.min_for_saturation_mm ?? h.max_for_slot_fill,
     adjustable: h.adjustable_mm ?? h.adjustable,
     note: h.note,
+    // v0.5.5 P2-3：每个可执行杠杆附知识库提示（影响指标/方向/耦合）
+    kb_hint: getLeverageHint(h.field) ?? null,
   }))
+  // v0.5.5 P2-3：规则 → 相关杠杆（从 KB 反查 risk_rules 命中该 rule 的杠杆）
+  const ruleToLevers = {}
+  for (const i of issues) {
+    const levers = Object.values(LEVERAGE_KB)
+      .filter((k) => (k.risk_rules ?? []).includes(i.rule))
+      .map((k) => k.lever)
+    if (levers.length) ruleToLevers[i.rule] = levers
+  }
+  // v0.5.5 P2-2：槽形族回显（族感知，不新增门禁）
+  const slotFamilyRaw = params?.slot_family ?? null
+  const fam = slotFamilyRaw != null ? slotFamilyInfo(slotFamilyRaw) : null
   return {
     mode: 'leverage_audit',
     status: rep.status,
@@ -237,6 +260,10 @@ export function runLeverageAudit(params, opts) {
     issues,
     leverage_headroom: headroom,
     actionable,
+    rule_to_levers: ruleToLevers,
+    slot_family: fam?.id ?? (slotFamilyRaw ?? null),
+    slot_family_label: fam?.label ?? null,
+    slot_family_kb: getLeverageHint('slot_family'),
     flux: rep.metrics?.flux ?? {},
     thermal: rep.metrics?.thermal ?? {},
     temp_rise_is_proxy: rep.metrics?.thermal?.is_proxy ?? true,
@@ -244,6 +271,22 @@ export function runLeverageAudit(params, opts) {
       ? `${actionable.length} 条规则给出精确反解（V07 齿宽/V08 轭厚/V15 匝数），其余按 margin 与 message 判读`
       : '本次无 headroom 级反解（问题规则不在 V07/V08/V15，或设计本身已通过）',
   }
+}
+
+/**
+ * v0.5.5 P2-3：杠杆知识库查询（纯本地数据，零估算开销）
+ * @param {boolean|string} lever true=全表；字符串=单杠杆名
+ */
+export function runLeverageKb(lever) {
+  if (lever === true || lever == null) {
+    return { mode: 'leverage_kb', scope: 'all', count: Object.keys(LEVERAGE_KB).length, entries: listLeverageKb() }
+  }
+  const key = String(lever)
+  const hit = getLeverageHint(key)
+  if (!hit) {
+    return { mode: 'leverage_kb', scope: key, found: false, entries: [] }
+  }
+  return { mode: 'leverage_kb', scope: key, found: true, entry: hit }
 }
 
 /**
@@ -272,6 +315,11 @@ export function runDesignValidate(rawArgs, config = {}) {
     includeThermal: args.include_thermal === false ? false : true,
     efficiencyCap: config.efficiencyCap,
     maxTempClamp: config.tempRiseRange,
+  }
+
+  // ---- v0.5.5 P2-3 杠杆知识库查询（纯本地数据；优先级最高，一次调用=一次额度）----
+  if (args.leverage_kb != null) {
+    return runLeverageKb(args.leverage_kb)
   }
 
   // ---- v0.5.4 P1 杠杆三原语（互斥模式，优先级高于 single/batch；一次调用=一次额度）----
