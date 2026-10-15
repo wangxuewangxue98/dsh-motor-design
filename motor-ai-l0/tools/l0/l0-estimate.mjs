@@ -24,6 +24,7 @@ import {
 } from '@wangxue98/dsh-motor-ai-core'
 import { quickL0Estimate } from '@wangxue98/dsh-motor-ai-core'
 import { resolveMotorType } from '@wangxue98/dsh-motor-ai-core'
+import { validateDesign } from '@wangxue98/dsh-motor-ai-core'
 import {
   loadSurrogateModel,
   predictBatch,
@@ -54,6 +55,14 @@ export const TOOL_PARAMS = {
   mc_ci_level: {
     type: 'number',
     description: 'v0.4.0 P2：置信水平，默认 0.95（可选 0.90/0.99），仅 mc_samples>0 时生效',
+  },
+  baseline_params: {
+    type: 'object',
+    additionalProperties: true,
+    description: 'v0.5.4 P0-1 杠杆对比基线（改前参数）。提供后进入 compare 模式：'
+      + 'params（改后，单对象）与 baseline_params（改前）分别估算并直接输出 Δ 表'
+      + '（效率 Δpp / 总损 Δ% / 温升 ΔK / 齿轭磁密 ΔT / 槽满率 Δ / verdict 变化 / 规则 failed→passed 清单）。'
+      + '不提供时行为与旧版完全一致。',
   },
 }
 
@@ -142,6 +151,128 @@ function sortKey(row, sortBy) {
 }
 
 /**
+ * v0.5.4 P0-1：杠杆对比（改前 vs 改后）—— 杠杆验证的「最后一公里」
+ * ---------------------------------------------------------------------------
+ * 此前的断链：改前改后两版结果要调用方自己 diff，Δ 不可信（口径漂移无从发现）。
+ * 本函数同口径估算两版 + 同判据校验两版，直接输出 Δ 表：
+ *   efficiency_raw Δpp / total_loss Δ% / temp_rise ΔK / 齿轭磁密 ΔT / 槽满率 Δ /
+ *   verdict 变化 / 规则 failed→passed 清单 / 被改动的字段清单。
+ *
+ * @param {object} current 改后参数（单对象）
+ * @param {object} baseline 改前参数（单对象）
+ * @param {object} config 插件配置（efficiencyCap/tempRiseRange/insulationClass/line_freq_hz）
+ * @returns {object} compare 模式结果
+ */
+function compareWithBaseline(current, baseline, config = {}) {
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+  const r2 = (v) => Math.round(v * 100) / 100
+  const r1 = (v) => Math.round(v * 10) / 10
+  const efficiencyCap = config.efficiencyCap ?? 96
+  const maxTempClamp = config.tempRiseRange ?? [45, 130]
+
+  const estimateOpts = (row) => ({
+    efficiencyCap,
+    maxTempClamp,
+    ...(row?.insulation_class ? { insulationClass: String(row.insulation_class).toUpperCase() } : {}),
+    ...(Number.isFinite(Number(row?.line_freq_hz)) ? { lineFreqHz: Number(row.line_freq_hz) } : {}),
+    ...(!row?.insulation_class && config.insulationClass
+      ? { insulationClass: String(config.insulationClass).toUpperCase() } : {}),
+    ...(!Number.isFinite(Number(row?.line_freq_hz)) && Number.isFinite(Number(config.line_freq_hz))
+      ? { lineFreqHz: Number(config.line_freq_hz) } : {}),
+  })
+  const validateOpts = (row) => ({
+    insulationClass: estimateOpts(row).insulationClass,
+    lineFreqHz: estimateOpts(row).lineFreqHz,
+    includeThermal: true,
+  })
+
+  const safeEstimate = (row) => {
+    try { return quickL0Estimate(row, estimateOpts(row)) } catch (err) { return { error: String(err?.message ?? err) } }
+  }
+  const safeValidate = (row) => {
+    try { return validateDesign(row, validateOpts(row)) } catch (err) { return null }
+  }
+
+  const before = safeEstimate(baseline)
+  const after = safeEstimate(current)
+  const beforeRep = safeValidate(baseline)
+  const afterRep = safeValidate(current)
+
+  const pick = (row, rep) => ({
+    efficiency_raw: num(row?.efficiency_raw) ?? num(row?.efficiency),
+    total_loss: num(row?.total_loss),
+    temp_rise: num(row?.temp_rise),
+    tooth_flux_density: num(row?.tooth_flux_density),
+    yoke_flux_density: num(row?.yoke_flux_density),
+    slot_fill_ratio: num(row?.slot_fill_ratio),
+    feasible: row?.feasible ?? null,
+    verdict: row?.verdict ?? null,
+    rule_status: rep?.status ?? null,
+  })
+  const b = pick(before, beforeRep)
+  const a = pick(after, afterRep)
+
+  // ---- Δ 表（同口径，宁缺毋滥：任一侧无数值即该维度为 null，不伪造 0）----
+  const dPP = (x, y) => (num(x) !== null && num(y) !== null ? r2(x - y) : null)
+  const dPct = (x, y) => (num(x) !== null && num(y) !== null && y !== 0 ? r1(((x - y) / Math.abs(y)) * 100) : null)
+  const delta = {
+    efficiency_raw_pp: dPP(a.efficiency_raw, b.efficiency_raw),
+    total_loss_pct: dPct(a.total_loss, b.total_loss),
+    temp_rise_k: dPP(a.temp_rise, b.temp_rise),
+    tooth_flux_density_dt: dPP(a.tooth_flux_density, b.tooth_flux_density),
+    yoke_flux_density_dt: dPP(a.yoke_flux_density, b.yoke_flux_density),
+    slot_fill_ratio_delta: dPP(a.slot_fill_ratio, b.slot_fill_ratio),
+    verdict_change: a.verdict !== b.verdict ? `${b.verdict} → ${a.verdict}` : null,
+  }
+
+  // ---- 规则级变化（failed→passed 是杠杆奏效的最直接证据）----
+  const levelOf = (rep, rule) => {
+    if (!rep) return null
+    const issue = (rep.issues ?? []).find((i) => i.rule === rule)
+    if (issue) return issue.level
+    return (rep.skipped ?? []).includes(rule) ? 'skipped' : 'passed'
+  }
+  const allRules = new Set([
+    ...(beforeRep?.issues ?? []).map((i) => i.rule),
+    ...(afterRep?.issues ?? []).map((i) => i.rule),
+  ])
+  const ruleChanges = []
+  for (const rule of [...allRules].sort()) {
+    const beforeLv = levelOf(beforeRep, rule)
+    const afterLv = levelOf(afterRep, rule)
+    if (beforeLv !== afterLv) ruleChanges.push({ rule, before: beforeLv, after: afterLv })
+  }
+
+  // ---- 被改动的字段（杠杆审计：这一版到底动了什么）----
+  const keys = new Set([...Object.keys(baseline ?? {}), ...Object.keys(current ?? {})])
+  const changedFields = [...keys].filter((k) => JSON.stringify(baseline?.[k]) !== JSON.stringify(current?.[k]))
+
+  const parts = []
+  if (delta.efficiency_raw_pp !== null) parts.push(`效率 ${delta.efficiency_raw_pp >= 0 ? '+' : ''}${delta.efficiency_raw_pp}pp`)
+  if (delta.total_loss_pct !== null) parts.push(`总损 ${delta.total_loss_pct >= 0 ? '+' : ''}${delta.total_loss_pct}%`)
+  if (delta.temp_rise_k !== null) parts.push(`温升 ${delta.temp_rise_k >= 0 ? '+' : ''}${delta.temp_rise_k}K`)
+  if (delta.verdict_change) parts.push(`verdict ${delta.verdict_change}`)
+  if (ruleChanges.length) parts.push(`规则变化 ${ruleChanges.map((r) => `${r.rule}:${r.before}→${r.after}`).join(', ')}`)
+
+  return {
+    mode: 'compare',
+    comparison: {
+      changed_fields: changedFields,
+      baseline: b,
+      current: a,
+      delta,
+      rule_changes: ruleChanges,
+      summary: parts.length ? parts.join('；') : '两版参数完全一致或无数值差异',
+    },
+    // P1-6：温升是热负荷法代理值（与 core V12 同口径标注）
+    temp_rise_is_proxy: true,
+    temp_rise_note: 'temp_rise 为热负荷法代理值（散热面积未计散热筋、损耗三项欠标定），'
+      + '仅作量级判断；杠杆的温升收益须过 L1/L2 热模型才算数',
+    fields: { native: L0_NATIVE_FIELDS, mirror: L1_MIRROR_FIELDS },
+  }
+}
+
+/**
  * L0 批量估算（纯函数，零依赖，可单测）
  * @param {object} rawArgs
  * @param {object} [config] 插件配置：{ efficiencyCap, tempRiseRange, topNPreview, l0Mode, surrogatePath, surrogateConfidenceThreshold }
@@ -151,6 +282,17 @@ export function runL0Estimate(rawArgs, config = {}) {
   // v0.5.1 P0-门1：纯函数入口过闸（详见 lib/quota.mjs assertFreeQuota 注释）
   assertFreeQuota('l0-estimate', config)
   const { spec: args } = normalizeSpec(rawArgs)
+  // v0.5.4 P0-1：杠杆对比模式（显式提供 baseline_params 时启用；不提供则行为与旧版逐字节一致）
+  if (args.baseline_params && typeof args.baseline_params === 'object'
+      && !Array.isArray(args.baseline_params)) {
+    const current = (args.params && typeof args.params === 'object' && !Array.isArray(args.params))
+      ? args.params
+      : (Array.isArray(args.params_list) && args.params_list.length ? args.params_list[0] : null)
+    if (!current) {
+      throw new Error('[motor_l0_estimate] compare 模式需提供 params（改后单对象）或 params_list[0]')
+    }
+    return compareWithBaseline(current, args.baseline_params, config)
+  }
   const paramsList = Array.isArray(args.params_list) ? args.params_list : []
   const sortBy = SORTABLE_FIELDS.includes(args.sort_by) ? args.sort_by : 'efficiency'
   // C 方案（根治 2000 行截断）：默认不再回吐全量，封顶 Top10；
@@ -401,6 +543,10 @@ export function runL0Estimate(rawArgs, config = {}) {
     efficiency_cap: efficiencyCap,
     efficiency_capped_count: cappedCount,
     efficiency_note: efficiencyNote,
+    // v0.5.4 P1-6：温升代理值显式标注（与 core V12 同口径）
+    temp_rise_is_proxy: true,
+    temp_rise_note: 'temp_rise 为热负荷法代理值（散热面积未计散热筋、损耗三项欠标定），'
+      + '仅作量级判断；杠杆的温升收益须过 L1/L2 热模型才算数',
     // v0.4.0 P2：MC/CI 水位线（仅在 mc_samples>0 时有意义）
     mc_enabled: mcSamples > 0,
     mc_samples: mcSamples > 0 ? mcSamples : undefined,
@@ -518,6 +664,18 @@ export async function registerL0Estimate(ctx, config = {}) {
           if (sink) {
             for (const row of result?.results ?? []) {
               logExperience(sink, buildDesignExp(row, {}))
+            }
+          }
+        }
+        // v0.5.4 P1-6：温升标定数据钩子（默认关闭；env L0_TEMP_CALIB_LOG 或
+        //   config.tempCalibLog 给路径才落盘 JSONL，失败静默不影响主流程）
+        {
+          const { tempCalibPath, appendTempCalibration } =
+            await import('../../lib/temp-calib-log.mjs')
+          const calibFile = tempCalibPath(config)
+          if (calibFile) {
+            for (const row of result?.results ?? []) {
+              appendTempCalibration(row.params, row, calibFile)
             }
           }
         }

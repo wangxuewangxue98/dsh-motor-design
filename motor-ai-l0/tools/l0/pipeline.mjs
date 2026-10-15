@@ -55,6 +55,12 @@ export const TOOL_PARAMS = {
     description: '是否把 TopN + L1 交接载荷写入文件（默认 true）。强烈建议开启：' +
       '模型读文件即可拿到完整候选，无需在上下文里搬运 120 行矩阵',
   },
+  leverage_log: {
+    type: 'boolean',
+    description: 'v0.5.4 P1-5：是否聚合「杠杆审计」摘要（默认 false）。开启后按规则聚合可调余量分布' +
+      '（V07 齿宽/V08 轭厚/V15 匝数的精确反解量 min/median/max），并给出 Top1 行的杠杆建议；' +
+      '上下文只回紧凑聚合，明细在 handoff 文件',
+  },
 }
 
 /**
@@ -106,7 +112,9 @@ export function runL0Pipeline(rawArgs, config = {}) {
   const requestedCount = Math.max(1, Math.floor(args.count ?? 20))
 
   // ---- 第 2 步：批量物理校验 ----
-  const validated = runDesignValidate({ params_list: allRows }, chainCfg)
+  // include_reports: true —— v0.5.4 P1-5 leverage_log 需要逐行 headroom；
+  // 报告只在插件进程内消费，不会回吐上下文（pipeline 自建紧凑摘要）。
+  const validated = runDesignValidate({ params_list: allRows, include_reports: true }, chainCfg)
   const failedSet = new Set(validated.failed_indices ?? [])
   // 剔除 failed（物理不成立），保留 passed + warning
   const feasibleRows = allRows.filter((_, i) => !failedSet.has(i))
@@ -162,6 +170,59 @@ export function runL0Pipeline(rawArgs, config = {}) {
     }
   }
 
+  // ---- v0.5.4 P1-5：杠杆审计聚合（默认 OFF）----
+  // 存在理由：广筛产出 120 行候选后，「下一步该拧哪个杠杆」仍然靠人猜。
+  // 本段把全批的 headroom（V07 齿宽/V08 轭厚/V15 匝数精确反解）按规则聚合成
+  // min/median/max 分布 + Top1 行的逐条杠杆建议，上下文只回紧凑摘要，明细进 handoff。
+  // 内部复用同一调用链（freeQuotaEnabled:false 派生），不额外扣免费额度。
+  let leverageLog = null
+  if (args.leverage_log === true) {
+    const reports = validated.reports ?? []
+    const byRule = {}
+    for (const r of reports) {
+      const headroom = r?.metrics?.leverage_headroom ?? {}
+      for (const [rule, h] of Object.entries(headroom)) {
+        const adj = h.adjustable_mm ?? h.adjustable
+        const slot = byRule[rule] ?? (byRule[rule] = { rule, field: h.field, n: 0, adjustable: [] })
+        slot.n += 1
+        if (typeof adj === 'number' && Number.isFinite(adj)) slot.adjustable.push(adj)
+      }
+    }
+    const median = (a) => {
+      if (!a.length) return null
+      const s = [...a].sort((x, y) => x - y)
+      const m = Math.floor(s.length / 2)
+      return s.length % 2 ? s[m] : Math.round(((s[m - 1] + s[m]) / 2) * 100) / 100
+    }
+    const byRuleOut = Object.fromEntries(Object.entries(byRule).map(([k, v]) => [k, {
+      rule: v.rule, field: v.field, n: v.n,
+      adjustable_min: v.adjustable.length ? Math.round(Math.min(...v.adjustable) * 100) / 100 : null,
+      adjustable_median: median(v.adjustable),
+      adjustable_max: v.adjustable.length ? Math.round(Math.max(...v.adjustable) * 100) / 100 : null,
+    }]))
+    // Top1 行杠杆建议：复用 leverage_audit 模式（innerCfg 不另扣额度）。
+    // 注意 estimate.recommended 是紧凑展示对象（无 .params），必须从 results 取完整行。
+    const topRow = (estimate.results ?? []).find((r) => r?.params) ?? null
+    let top1 = null
+    if (topRow?.params) {
+      try {
+        const audit = runDesignValidate({ leverage_audit: topRow.params },
+          { ...chainCfg, freeQuotaEnabled: false })
+        top1 = {
+          status: audit.status,
+          actionable: audit.actionable,
+          issues_n: audit.issues?.length ?? 0,
+        }
+      } catch { /* 审计失败不阻断主链 */ }
+    }
+    leverageLog = {
+      by_rule: byRuleOut,
+      top1,
+      note: 'adjustable>0 表示还有下调/上调余量；median 接近 0 说明该规则在本批已普遍贴限，'
+        + '继续在该维度发力收益有限。Top1 的 actionable 是「拧到多少」的精确反解。',
+    }
+  }
+
   // ---- 计数自洽校验（让模型一眼确认没有丢行）----
   const sumStatus = (validated.summary?.passed ?? 0)
     + (validated.summary?.warning ?? 0)
@@ -193,6 +254,7 @@ export function runL0Pipeline(rawArgs, config = {}) {
           returned_feasible_count: estimate.returned_feasible_count,
           count_ok: countOk,
           density,
+          leverage_log: leverageLog,
           sort_by: sortBy,
         },
         recommended: estimate.recommended,
@@ -242,6 +304,8 @@ export function runL0Pipeline(rawArgs, config = {}) {
     },
     // v0.5.3 P0-1：默认 null（未开启自检）；开启后给出两档密度漂移量
     density,
+    // v0.5.4 P1-5：默认 null（leverage_log=false）；开启后回紧凑杠杆聚合
+    leverage_log: leverageLog,
     efficiency_note: estimate.efficiency_note,
     recommended: estimate.recommended,
     results: estimate.results,
@@ -273,7 +337,9 @@ export async function registerL0Pipeline(ctx, config = {}) {
       '结果内置计数自检 summary.count_ok：passed+warning+failed 必须等于 generated（= 请求数，除非截断），\n' +
       '一眼确认没有丢行。\n' +
       '⚠️ 仅在需要单独调试某一步（如查看完整校验报告、手调 failed 阈值）时，才拆开用三个独立工具；\n' +
-      '常规广筛请直接用本工具，不要亲手把 120 行矩阵在对话里传来传去。',
+      '常规广筛请直接用本工具，不要亲手把 120 行矩阵在对话里传来传去。\n' +
+      'v0.5.4：leverage_log=true 可在同一次调用里拿到全批杠杆审计聚合\n' +
+      '（V07 齿宽/V08 轭厚/V15 匝数的可调余量分布 + Top1 精确反解），为设计杠杆验证供料。',
     parameters: TOOL_PARAMS,
     output: {
       schema: { type: 'string' },

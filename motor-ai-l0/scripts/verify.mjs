@@ -57,6 +57,7 @@ import {
   DESIGN_EXP_FORBIDDEN, DESIGN_EXP_SPEC_CORE,
   getExperienceSink, logExperience, gcExperience, readPendingRecords,
 } from '@wangxue98/dsh-motor-ai-core'
+import { tempCalibPath, appendTempCalibration } from '../lib/temp-calib-log.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -2110,6 +2111,176 @@ check('v0.4.1 过滤开关: DSH_L0_FILTER_UNDERSIZED 默认 OFF 零回归，ON �
     if (saved === undefined) delete process.env.DSH_L0_FILTER_UNDERSIZED
     else process.env.DSH_L0_FILTER_UNDERSIZED = saved
   }
+})
+
+// ---------- 52. v0.5.4 设计杠杆验证原语（P0-1 / P1-3~P1-6） ----------
+// 静态形态门：防「判据被改写但文案还在」—— 关键判据同时配运行时断言。
+check('v0.5.4 静态：杠杆原语落点齐备（estimate compare / validate 三模式 / pipeline 聚合）', () => {
+  const est = readFileSync(join(ROOT, 'tools', 'l0', 'l0-estimate.mjs'), 'utf8')
+  const dv = readFileSync(join(ROOT, 'tools', 'l0', 'design-validate.mjs'), 'utf8')
+  const pl = readFileSync(join(ROOT, 'tools', 'l0', 'pipeline.mjs'), 'utf8')
+  // P0-1 对比原语
+  must(est.includes('function compareWithBaseline'), 'l0-estimate.mjs 缺 compareWithBaseline（P0-1 被回退）')
+  must(est.includes('baseline_params'), 'l0-estimate.mjs 缺 baseline_params 入参（P0-1 被回退）')
+  must(est.includes('mode: \'compare\'') || est.includes("mode: 'compare'"), 'l0-estimate.mjs compare 模式缺 mode 标记')
+  must(est.includes('rule_changes'), 'compare 缺规则翻转清单 rule_changes（P0-1 核心产出）')
+  // P1-3/4/5 三模式
+  for (const token of ['export function runSweep', 'export function runSolveTurns',
+    'export function runLeverageAudit', 'sweep_param', 'solve_turns', 'leverage_audit']) {
+    must(dv.includes(token), `design-validate.mjs 缺 ${token}（v0.5.4 P1 被回退）`)
+  }
+  must(dv.includes('solveTurnsPerCoil'), 'design-validate.mjs 未接 core solveTurnsPerCoil（匝数反解必须与规则引擎同源）')
+  // P1-5 pipeline 聚合 + P1-6 标定钩子
+  must(pl.includes('leverage_log'), 'pipeline.mjs 缺 leverage_log 聚合（P1-5 被回退）')
+  must(existsSync(join(ROOT, 'lib', 'temp-calib-log.mjs')), 'lib/temp-calib-log.mjs 不存在（P1-6 标定钩子缺失）')
+  must(est.includes('temp-calib-log.mjs'), 'l0-estimate.mjs execute 未接入温升标定钩子（P1-6 被回退）')
+  must(est.includes('temp_rise_is_proxy'), 'l0-estimate.mjs 缺温升 proxy 标注（P1-6 被回退）')
+  return 'estimate compare / validate 三原语 / pipeline leverage_log / temp-calib 钩子 静态形态齐备'
+})
+
+check('v0.5.4 P0-1 运行时：compare Δ 表同口径 + 旧路径零回归', () => {
+  const cfg = { freeQuotaEnabled: false, efficiencyCap: 96, tempRiseRange: [45, 130] }
+  const base = {
+    stator_od: 210, stator_id: 136, rotor_od: 134.4, core_length: 160, air_gap: 0.8,
+    poles: 4, slots_stator: 36, tooth_width: 6.8, yoke_thickness: 20,
+    turns_per_coil: 22, parallel_circuits: 2, peak_current: 25, voltage: 380,
+    speed: 1480, power_kw: 15, motor_type: 'induction',
+  }
+  const cmp = runL0Estimate({ params: { ...base, yoke_thickness: 26 }, baseline_params: base }, cfg)
+  must(cmp.mode === 'compare', 'compare 模式未生效')
+  must(Array.isArray(cmp.comparison?.rule_changes), 'compare 缺 rule_changes 数组')
+  must(Array.isArray(cmp.comparison?.changed_fields)
+    && cmp.comparison.changed_fields.includes('yoke_thickness'),
+  'compare 缺 changed_fields 或未识别被改字段')
+  // Δ 必须来自同口径估算：同侧 estimate 与 baseline 侧字段结构一致
+  must(cmp.comparison?.baseline && cmp.comparison?.current, 'compare 缺两侧快照')
+  must(cmp.temp_rise_is_proxy === true, 'compare 模式必须带温升 proxy 标注（P1-6 同口径）')
+  // Δ 同口径自证（破坏验证实证：恒返 0 的假 Δ 骗得过往返展示，骗不过重算）：
+  // delta.efficiency_raw_pp 必须等于两侧快照效率真值之差（round2），否则判据被改写。
+  const bEff = cmp.comparison.baseline.efficiency_raw
+  const aEff = cmp.comparison.current.efficiency_raw
+  if (bEff != null && aEff != null) {
+    const dExpect = Math.round((aEff - bEff) * 100) / 100
+    must(cmp.comparison.delta.efficiency_raw_pp === dExpect,
+      `Δ 表与两侧快照不一致（同口径被破坏）：${cmp.comparison.delta.efficiency_raw_pp} ≠ 重算 ${dExpect}`)
+  }
+  // 旧路径：不传 baseline_params 时行为与旧版一致（出 handoff / total，不走 compare）
+  const old = runL0Estimate({ params_list: [base] }, cfg)
+  must(old.mode === undefined && 'handoff' in old && old.total === 1,
+    '旧路径被 compare 分支污染（不传 baseline_params 必须与旧版一致）')
+  return `changed=${cmp.comparison.changed_fields.join('/')}，eff Δ=${cmp.comparison.delta.efficiency_raw_pp}pp；旧路径兼容`
+})
+
+check('v0.5.4 P1-3 sweep 运行时：逐点同口径 + best 选择 + 形态守卫', () => {
+  const cfg = { freeQuotaEnabled: false, efficiencyCap: 96, tempRiseRange: [45, 130] }
+  const base = {
+    stator_od: 210, stator_id: 136, rotor_od: 134.4, core_length: 160, air_gap: 0.8,
+    poles: 4, slots_stator: 36, tooth_width: 6.8, yoke_thickness: 14,
+    turns_per_coil: 22, parallel_circuits: 2, peak_current: 25, voltage: 380,
+    speed: 1480, power_kw: 15, motor_type: 'induction',
+  }
+  const sw = runDesignValidate({
+    sweep_param: 'yoke_thickness', sweep_values: [12, 16, 20, 24, 28], base_params: base,
+  }, cfg)
+  must(sw.mode === 'sweep' && sw.swept === 5 && sw.rows?.length === 5, 'sweep 行数不符')
+  must(sw.rows.every((r) => 'efficiency_raw' in r && 'status' in r), 'sweep 行缺指标/校验结论')
+  must(sw.temp_rise_is_proxy === true, 'sweep 必须带温升 proxy 标注')
+  if (sw.best) must(sw.best.status !== 'failed', 'best 不得选 failed 行')
+  // 形态守卫：缺参必须显式报错，不静默吞
+  let threw = false
+  try { runDesignValidate({ sweep_param: 'yoke_thickness', base_params: base }, cfg) } catch { threw = true }
+  must(threw, 'sweep 缺 sweep_values 必须报错')
+  threw = false
+  try { runDesignValidate({ sweep_param: 'yoke_thickness', sweep_values: [10, 20] }, cfg) } catch { threw = true }
+  must(threw, 'sweep 缺 base_params 必须报错')
+  return `5 点扫描 OK，best=${sw.best ? sw.best.yoke_thickness : 'null'}`
+})
+
+check('v0.5.4 P1-4 solve_turns 运行时：与规则引擎同源 + 候选匝带整行结论', () => {
+  const cfg = { freeQuotaEnabled: false, efficiencyCap: 96, tempRiseRange: [45, 130] }
+  const params = {
+    stator_od: 210, stator_id: 136, rotor_od: 134.4, core_length: 160, air_gap: 0.8,
+    poles: 4, slots_stator: 36, tooth_width: 6.8, yoke_thickness: 20,
+    turns_per_coil: 22, parallel_circuits: 2, peak_current: 25, voltage: 380,
+    speed: 1480, power_kw: 15, motor_type: 'induction',
+  }
+  const st = runDesignValidate({ solve_turns: params }, cfg)
+  must(st.mode === 'solve_turns', 'solve_turns 模式未生效')
+  must(Number.isFinite(st.electrical?.turns_ideal) && st.electrical.turns_ideal > 0,
+    'solve_turns 缺理想匝 turns_ideal')
+  must(st.recommendation === Math.round(st.electrical.turns_ideal),
+    'recommendation 必须等于理想匝取整（与 core 同源口径）')
+  must(Array.isArray(st.integer_options) && st.integer_options.length > 0,
+    'solve_turns 缺可取整域 integer_options')
+  must(st.integer_options.every((o) => 'status' in o && 'dev_pct' in o),
+    '候选匝必须带整行校验结论 status 与反电势偏差')
+  // 键名回归（1.3.0 实证坑）：返回必须是 snake_case，camelCase 解构会 NaN 静默跳过
+  must(st.electrical.turns_int >= 1 && Number.isFinite(st.electrical.turns_int),
+    'turns_int 非有限数（snake_case 键名回归）')
+  // 形态守卫：字段不足必须报错
+  let threw = false
+  try { runDesignValidate({ solve_turns: { voltage: 380 } }, cfg) } catch { threw = true }
+  must(threw, 'solve_turns 字段不足必须报错（不得静默）')
+  return `ideal=${st.electrical.turns_ideal} → rec=${st.recommendation}，候选 ${st.integer_options.length} 匝`
+})
+
+check('v0.5.4 P1-5 leverage_audit 运行时：headroom 精确反解 + margin 结构化', () => {
+  const cfg = { freeQuotaEnabled: false, efficiencyCap: 96, tempRiseRange: [45, 130] }
+  const thin = {
+    stator_od: 210, stator_id: 136, rotor_od: 134.4, core_length: 160, air_gap: 0.8,
+    poles: 4, slots_stator: 36, tooth_width: 6.8, yoke_thickness: 14,
+    turns_per_coil: 22, parallel_circuits: 2, peak_current: 25, voltage: 380,
+    speed: 1480, power_kw: 15, motor_type: 'induction',
+  }
+  const la = runDesignValidate({ leverage_audit: thin }, cfg)
+  must(la.mode === 'leverage_audit' && la.status, 'leverage_audit 模式未生效')
+  must(Array.isArray(la.issues) && la.issues.some((i) => i.margin && typeof i.margin === 'object'),
+    'issues 未携带结构化 margin（core 1.3.0 P0-2 被回退或未接线）')
+  must(Array.isArray(la.actionable) && la.actionable.some((a) => a.rule === 'V08'),
+    '薄轭样本必须给出 V08 轭厚精确反解（headroom 未透出）')
+  const v08 = la.actionable.find((a) => a.rule === 'V08')
+  must(Number.isFinite(v08.adjust_to) && Number.isFinite(v08.adjustable),
+    'V08 反解缺 adjust_to/adjustable 数值')
+  must(la.temp_rise_is_proxy === true, 'audit 温升必须标 proxy')
+  // 形态守卫
+  let threw = false
+  try { runDesignValidate({ leverage_audit: 'bad' }, cfg) } catch { threw = true }
+  must(threw, 'leverage_audit 非对象入参必须报错')
+  return `actionable=[${la.actionable.map((a) => a.rule).join(',')}]，V08 反解 ${v08.current}→≥${v08.adjust_to}`
+})
+
+check('v0.5.4 P1-5 pipeline leverage_log 运行时：聚合分布 + Top1 建议 + 旧路径 null', () => {
+  const cfg = { freeQuotaEnabled: false, handoffDir: join(tmpdir(), `l0-verify-lev-${process.pid}`) }
+  const on = runL0Pipeline({
+    power_kw: 15, speed_rpm: 1480, voltage_v: 380, count: 12,
+    leverage_log: true, write_handoff: false,
+  }, cfg)
+  must(on.leverage_log && typeof on.leverage_log === 'object', 'leverage_log=true 未产出聚合')
+  must(Object.keys(on.leverage_log.by_rule ?? {}).length > 0, 'by_rule 聚合为空（批量报告未透传）')
+  for (const v of Object.values(on.leverage_log.by_rule)) {
+    must(typeof v.adjustable_median === 'number' || v.adjustable_median === null,
+      'by_rule 缺 adjustable_median 分布统计')
+  }
+  must(on.leverage_log.top1 !== null && Array.isArray(on.leverage_log.top1?.actionable),
+    'top1 杠杆建议缺失（estimate.recommended 是紧凑对象，必须从 results 取带 params 的行）')
+  const off = runL0Pipeline({
+    power_kw: 15, speed_rpm: 1480, voltage_v: 380, count: 6, write_handoff: false,
+  }, cfg)
+  must(off.leverage_log === null, '不传 leverage_log 必须为 null（旧路径零回归）')
+  return `by_rule=[${Object.keys(on.leverage_log.by_rule).join(',')}]，top1 建议 ${on.leverage_log.top1.actionable.length} 条；OFF=null`
+})
+
+check('v0.5.4 P1-6 temp-calib-log 运行时：默认关闭 + 失败静默', () => {
+  must(tempCalibPath({}, {}) === null, '未配置时 tempCalibPath 必须返回 null（默认完全关闭）')
+  must(tempCalibPath({ tempCalibLog: '/tmp/x.jsonl' }, {}) === '/tmp/x.jsonl', 'config 路径未生效')
+  must(tempCalibPath({}, { L0_TEMP_CALIB_LOG: ' /tmp/y.jsonl ' }) === '/tmp/y.jsonl',
+    'env 路径未生效或未 trim')
+  must(tempCalibPath({}, { L0_TEMP_CALIB_LOG: '' }) === null, 'env 空串必须回落 null')
+  // 失败静默：非法路径返回 false 不抛
+  must(appendTempCalibration({ stator_od: 1 }, { temp_rise: 1 }, 'Z:\\\\nonexistent\\\\x\\\\y.jsonl') === false
+    || appendTempCalibration({ stator_od: 1 }, { temp_rise: 1 }, join(tmpdir(), 'no-such-dir-xyz', 'a', 'b.jsonl')) === false,
+  '非法路径必须静默 false（钩子失败绝不影响主流程）')
+  return '默认关闭 + env/config 通道 + 失败静默 全部符合'
 })
 
 // ---------- 输出 ----------

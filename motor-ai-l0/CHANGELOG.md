@@ -5,6 +5,34 @@
 
 版本三重一致性：`package.json.version` = `SKILL.md` 的 `metadata.version` = `CHANGELOG.md` 最新条目。
 
+## [0.5.4] - 2026-10-15 — 设计杠杆验证原语：估算器对比 / 规则裕度 / 单变量扫描 / 匝数反解 / 杠杆审计
+
+> **性质：能力新增（P0×2 + P1×4，与 core 1.3.0 配套发布；规则引擎改动在 core 侧，l0 为工具层接线）。**
+
+1. **P0-1 估算器对比原语**（`motor_l0_estimate`）：新增 `baseline_params`（改前参数，单对象），
+   提供后进入 compare 模式——改前改后同口径估算+同判据校验，直接输出 Δ 表
+   （效率 Δpp / 总损 Δ% / 温升 ΔK / 齿轭磁密 ΔT / 槽满率 Δ / verdict 变化 / 规则 failed→passed
+   清单 / 被改动字段清单）。不提供时行为与旧版一致（零回归）。
+2. **P0-2 规则裕度透出**（依赖 core 1.3.0）：每条规则 issue 附结构化 `margin`
+   （value/limit/margin_abs/margin_pct），V07 齿宽/V08 轭厚/V15 匝数另有 `metrics.leverage_headroom`
+   精确反解（「拧到多少」有唯一答案）。
+3. **P1-3 单变量扫描**（`motor_design_validate`）：`sweep_param + sweep_values + base_params`，
+   对扫描域逐点做同口径「校验+估算」，输出可行域、效率曲线与 best（无 failed 中效率真值最高者）。
+4. **P1-4 绕组匝数反解**（`motor_design_validate`）：`solve_turns` 入参——电气闭环理想匝、
+   可取整域（反电势偏差容差内）及每个候选匝的整行校验结论与估算指标
+   （电偏差最小的匝数可能撞 V08 饱和，必须看 status）。
+5. **P1-5 杠杆审计 + 聚合**：`motor_design_validate` 新增 `leverage_audit`（哪里坏/差多少/往哪拧）；
+   `motor_l0_pipeline` 新增 `leverage_log: true`——全批 headroom 按规则聚合
+   adjustable min/median/max 分布 + Top1 行逐条精确反解（默认 OFF，OFF 时输出为 null）。
+6. **P1-6 温升诚实化**：三工具输出统一 `temp_rise_is_proxy: true` 标注（热负荷法代理值，
+   须过 L1/L2 热模型才算数）；新增 opt-in 标定钩子 `lib/temp-calib-log.mjs`
+   （env `L0_TEMP_CALIB_LOG` 或 config.tempCalibLog 给路径才落 JSONL，失败静默），
+   为 (参数, L0预测温升, L1真值) 标定数据积累供料。
+
+- `package.json` 依赖 core 升至 `^1.3.0`（solveTurnsPerCoil/margin/headroom 为 1.3.0 新导出）。
+- 新探针 `tests/probe/p0_1_compare_probe.mjs`、`tests/probe/p1_leverage_probe.mjs`；
+  `scripts/verify.mjs` 门禁新增 7 项断言（静态形态 + 运行时 + 形态守卫 + 旧路径零回归）。
+
 ## [0.5.3] - 2026-10-15 — L0 四项修复：截断可见化 / 冷却回退显式化 / 极数提示 / 密度自检
 
 > **性质：缺陷修复（对齐 full rc.16 同款改动；l0 侧 P0-2 此前已有部分修复，本轮补齐其余三项）。**
