@@ -5,6 +5,24 @@
 
 版本三重一致性：`package.json.version` = `SKILL.md` 的 `metadata.version` = `CHANGELOG.md` 最新条目。
 
+## [0.5.6] - 2026-10-16 — P1-6 槽深公式径向空间守恒修复（RUN88 建议 #9）
+
+> **性质：缺陷修复（formula-engine.mjs:134 / design-rules.mjs:156）。fail-open 兼容：yoke 缺省回退旧 0.60 比例口径，老调用方零回归。**
+
+1. **根因**：`slotGeometryDerived()` / `slotGeometry()` 的槽深恒为 `0.6·half`，
+   **与 yoke_thickness 完全无关** ⇒ 径向空间守恒未建模。实证（Y160L-4，Dso 260/Dsi 170）：
+   真实槽深 hs0+hs1+hs2 = 14.88mm，yoke 29.767mm，合计 44.65 ≈ half 45.0mm（余量 0.35mm）；
+   而旧公式 0.6·half = 27.0mm，27.0+29.767 = 56.8mm **超出 half 达 11.8mm** ⇒
+   「加轭厚」杠杆显示全绿但物理不可下线（假阳性）。
+2. **修复口径**：yoke 有效时 `slotDepth = max(0, half − yoke)`（不乘 0.6；
+   half−yoke = 15.23mm 与真值差仅 2.3%）。yoke 缺省时回退 `0.6·half` ——
+   与 `motor-constants.yokeThickness()` 的 0.40 轭厚比例互补（0.40+0.60=1.00），数值恒等。
+3. **接线**：`estimateCopperLoss()` 签名新增可选 `yokeThickness` 并透传；
+   `deriveElectricalClosure()` 透传 `params.yoke_thickness`；
+   `validateDesign()` V09/V15 调用处传入已解构的 `row.yoke_thickness`。
+   V09 槽形几何 / V15 槽满率从「比例假想值」变为「径向真实可用值」，
+   「轭厚放大」不再与「槽深恒定」矛盾。
+
 ## [0.5.5] - 2026-10-15 — P2：密度无关化声明 / 槽形族回显 / 杠杆知识库
 
 > **性质：能力新增（P2-1/2/3，与 core 1.3.1 配套发布）。规则引擎改动在 core 侧，l0 为工具层接线。**

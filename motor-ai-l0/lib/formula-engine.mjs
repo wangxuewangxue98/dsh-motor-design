@@ -130,10 +130,18 @@ export function estimateIronLoss({
 /**
  * 槽几何派生（与设计规则一致口径）
  * 返回槽面积 mm² 与平均半匝长度 m（供铜损与槽满率共用）。
+ *
+ * v0.5.6 P1-6 径向空间守恒：槽深 = half − 轭厚（RUN88 建议 #9 验证：
+ * Y160L-4 真值槽深 14.88mm vs half−yoke=15.23mm 差 2.3%，而 0.6·half=27mm
+ * 叠加轭厚 29.77mm 超出 half 45mm 达 11.8mm ⇒ 径向冲突假阳性）。
+ * yokeThickness 缺省时回退 0.60 比例口径 —— 与 motor-constants.yokeThickness()
+ * 的 0.40 轭厚比例互补（0.40+0.60=1.00），数值恒等，老调用方零回归。
  */
-export function slotGeometryDerived({ statorOd, statorId, coreLength, slotsStator, poles }) {
+export function slotGeometryDerived({ statorOd, statorId, coreLength, slotsStator, poles, yokeThickness: yokeT = null }) {
   const half = (statorOd - statorId) / 2
-  const slotDepth = round1(half * 0.60)
+  const slotDepth = (yokeT && yokeT > 0)
+    ? round1(Math.max(0, half - yokeT))
+    : round1(half * 0.60)
   const meanDia = statorId + slotDepth
   const toothPitch = (Math.PI * meanDia) / slotsStator
   const toothWidth = (Math.PI * statorId) / (2 * slotsStator)
@@ -162,9 +170,10 @@ export function estimateCopperLoss({
   statorOd, statorId, coreLength, slotsStator, poles,
   peakCurrent, turnsPerCoil, parallelCircuits = 1, airGap = 0.6,
   currentDensityRef = J_DESIGN, windingFactor = WINDING_FACTOR,
+  yokeThickness: yokeT = null,
 }) {
   const a = Math.max(1, parallelCircuits)
-  const geo = slotGeometryDerived({ statorOd, statorId, coreLength, slotsStator, poles })
+  const geo = slotGeometryDerived({ statorOd, statorId, coreLength, slotsStator, poles, yokeThickness: yokeT })
   if (geo.slotAreaMm2 <= 0) {
     return {
       copper_loss: 0, slot_fill_ratio: 0, slot_area_mm2: 0, conductor_area_mm2: 0,
@@ -425,6 +434,7 @@ export function quickL0Estimate(params, opts = {}) {
   const cu = estimateCopperLoss({
     statorOd, statorId, coreLength, slotsStator, poles,
     peakCurrent: effCurrent, turnsPerCoil: effTurns, parallelCircuits, airGap,
+    yokeThickness: params.yoke_thickness ?? null,
   })
   // 铜耗分档系数（v3 标定 2026-10-08）：档内模型形状正确（R² 0.92~0.97），
   // 档间幅度差 3.8× ⇒ 按额定功率查档修正。k 修正「公式+输入口径」总偏差，

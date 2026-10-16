@@ -152,10 +152,18 @@ export function airGapFluxActual({
   return Number.isFinite(bg) && bg > 0 ? bg : null
 }
 
-/** 槽形派生：槽深按 physics_kernel.py:601 的 0.60 系数，槽宽 = 齿距 - 齿宽 */
-export function slotGeometry({ statorOd, statorId, toothWidth, slotsStator }) {
+/**
+ * 槽形派生：槽宽 = 齿距 - 齿宽。
+ * v0.5.6 P1-6 径向空间守恒：槽深 = half − 轭厚（yokeThickness 有效时），
+ * 与 formula-engine.slotGeometryDerived 同口径；RUN88 建议 #9 实证
+ * （Y160L-4 真值 14.88mm vs half−yoke=15.23mm 差 2.3%）。缺省时回退
+ * 0.60 比例口径（与 yokeThickness() 的 0.40 轭厚比例互补，数值恒等，零回归）。
+ */
+export function slotGeometry({ statorOd, statorId, toothWidth, slotsStator, yokeThickness }) {
   const half = (statorOd - statorId) / 2
-  const slotDepth = round1(half * 0.60)
+  const slotDepth = (yokeThickness && yokeThickness > 0)
+    ? round1(Math.max(0, half - yokeThickness))
+    : round1(half * 0.60)
   const toothPitch = (Math.PI * statorId) / slotsStator
   const slotWidth = round2(toothPitch - toothWidth)
   return {
@@ -418,7 +426,7 @@ export function validateDesign(row, opts = {}) {
 
   // ---- V09 槽形几何 ----
   if (statorOd !== null && statorId !== null && toothWidth !== null && slotsStator !== null) {
-    const geo = slotGeometry({ statorOd, statorId, toothWidth, slotsStator })
+    const geo = slotGeometry({ statorOd, statorId, toothWidth, slotsStator, yokeThickness })
     metrics.slot = geo
     if (!(geo.slot_depth > 0)) {
       fail('V09', `槽深 ${geo.slot_depth}mm 非正（内外径差过小）`)
@@ -587,6 +595,7 @@ export function validateDesign(row, opts = {}) {
     const cu = estimateCopperLoss({
       statorOd, statorId, coreLength: coreLength ?? 80, slotsStator, poles,
       peakCurrent, turnsPerCoil: turns, parallelCircuits: parallel, airGap: airGap ?? 0.6,
+      yokeThickness,
     })
     metrics.slot_fill = { ratio: cu.slot_fill_ratio, area_mm2: cu.slot_area_mm2, max: SLOT_FILL_MAX }
     if (cu.slot_fill_ratio > SLOT_FILL_MAX) {
