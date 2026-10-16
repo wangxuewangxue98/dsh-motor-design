@@ -619,12 +619,23 @@ def get_download_stats(plugin_id: str, days: int = 30,
 
     series_all = [{"day": r["day"], "downloads": int(r["downloads"] or 0)} for r in rows]
     nonzero = [s for s in series_all if s["downloads"] > 0]
+
+    # rc.18 修复：d7/d30 原按「最后 N 行」切片（series_all[-N:]），采集缺日时会把 >N 个
+    # 自然日误算成「近 N 日」；改为以序列末日为锚的**日期窗口**，日期不可解析时退回行切片。
+    def _sum_days_window(n: int) -> int:
+        try:
+            anchor = datetime.fromisoformat(str(series_all[-1]["day"]))
+        except (ValueError, TypeError):
+            return sum(s["downloads"] for s in series_all[-n:])
+        lo = (anchor - timedelta(days=n - 1)).strftime("%Y-%m-%d")
+        return sum(s["downloads"] for s in series_all if s["day"] >= lo)
+
     return {
         "reported": True,
         "package": pkg_row["package"] if pkg_row else "",
         "total": sum(s["downloads"] for s in series_all),
-        "d7": sum(s["downloads"] for s in series_all[-7:]),
-        "d30": sum(s["downloads"] for s in series_all[-30:]),
+        "d7": _sum_days_window(7),
+        "d30": _sum_days_window(30),
         "series": series_all[-days_n:],
         "peak": max(series_all, key=lambda s: s["downloads"]),
         # npm 当天数据不完整（常为 0），「最新有效日」取最后一个非零日
