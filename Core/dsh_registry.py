@@ -207,8 +207,9 @@ PASSCODE_PLANS = {
     "yearly":    {"days": 365, "price": 699, "label": "年付"},
 }
 
-# 每日免费调用次数（方案 2.2：每日免费 5 次；可被环境变量 DSH_FREE_DAILY_LIMIT 覆盖）
-FREE_DAILY_LIMIT_DEFAULT = 5
+# 每日免费调用次数（每日免费 10 次；可被环境变量 DSH_FREE_DAILY_LIMIT 覆盖）
+# 口径对齐：与插件侧 lib/quota.mjs:DEFAULT_FREE_DAILY_LIMIT 必须一致（当前均为 10）。
+FREE_DAILY_LIMIT_DEFAULT = 10
 
 # 口令字符集：去掉易混淆的 0/O/1/I/L
 _CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -1154,7 +1155,11 @@ def _gen_passcode(conn: sqlite3.Connection) -> str:
 
 
 def free_daily_limit() -> int:
-    """每日免费调用上限（环境变量 DSH_FREE_DAILY_LIMIT 可覆盖，默认 5）。"""
+    """每日免费调用上限（环境变量 DSH_FREE_DAILY_LIMIT 可覆盖，默认 10）。
+
+    口径须与插件侧 lib/quota.mjs:DEFAULT_FREE_DAILY_LIMIT 保持一致；
+    插件为本地权威，本值仅影响服务端遥测计数与 /api/dsh/free-call 返回值。
+    """
     try:
         return max(0, int(os.getenv("DSH_FREE_DAILY_LIMIT", str(FREE_DAILY_LIMIT_DEFAULT))))
     except ValueError:
