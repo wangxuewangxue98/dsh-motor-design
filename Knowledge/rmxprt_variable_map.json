@@ -1,0 +1,423 @@
+{
+  "_meta": {
+    "version": "1.0.0",
+    "description": "Motor-AI 规格参数 ↔ Ansys RMxprt 变量名映射表",
+    "machine_type_default": "Induction Motor (Three-Phase Induction)",
+    "created": "2026-07-30",
+    "notes": [
+      "input: physics_kernel.focused_scan() 输出的参数字典 key → RMxprt Design Property 变量名",
+      "output: RMxprt 求解结果 → motor_tools 统一结果格式",
+      "PyAEDT 中通过 design.set_variable(name, value) 设置这些变量",
+      "RMxprt 结果通过 oDesign.GetOutputVariable() 或 design.results 读取"
+    ]
+  },
+
+  "input_map": {
+    "stator_od": {
+      "rmxprt_var": "Stator_Outside_Diameter",
+      "unit": "mm",
+      "description": "定子外径",
+      "required": true
+    },
+    "stator_id": {
+      "rmxprt_var": "Stator_Inside_Diameter",
+      "unit": "mm",
+      "description": "定子内径",
+      "required": true
+    },
+    "core_length": {
+      "rmxprt_var": "Stack_Length",
+      "unit": "mm",
+      "description": "铁心叠长",
+      "required": true
+    },
+    "poles": {
+      "rmxprt_var": "Number_of_Poles",
+      "unit": "-",
+      "description": "极数",
+      "required": true
+    },
+    "voltage": {
+      "rmxprt_var": "Line_Voltage",
+      "unit": "V",
+      "description": "线电压",
+      "required": true
+    },
+    "speed": {
+      "rmxprt_var": "Rated_Speed",
+      "unit": "rpm",
+      "description": "额定转速",
+      "required": true
+    },
+    "slots_stator": {
+      "rmxprt_var": "Number_of_Stator_Slots",
+      "unit": "-",
+      "description": "定子槽数",
+      "required": true
+    },
+    "slots_rotor": {
+      "rmxprt_var": "Number_of_Rotor_Slots",
+      "unit": "-",
+      "description": "转子槽数",
+      "required": true
+    },
+    "turns_per_coil": {
+      "rmxprt_var": "Turns_per_Coil",
+      "unit": "-",
+      "description": "每线圈匝数",
+      "required": true
+    },
+    "peak_current": {
+      "rmxprt_var": "Rated_Current",
+      "unit": "A",
+      "description": "额定电流",
+      "required": false,
+      "default": 80
+    },
+    "air_gap": {
+      "rmxprt_var": "Air_Gap_Length",
+      "unit": "mm",
+      "description": "气隙长度",
+      "required": true
+    },
+    "tooth_width": {
+      "rmxprt_var": "Stator_Tooth_Width",
+      "unit": "mm",
+      "description": "定子齿宽",
+      "required": false
+    },
+    "yoke_thickness": {
+      "rmxprt_var": "Stator_Yoke_Thickness",
+      "unit": "mm",
+      "description": "定子轭厚",
+      "required": false
+    },
+    "shaft_dia": {
+      "rmxprt_var": "Shaft_Diameter",
+      "unit": "mm",
+      "description": "轴径",
+      "required": false
+    },
+    "rotor_od": {
+      "rmxprt_var": "Rotor_Outside_Diameter",
+      "unit": "mm",
+      "description": "转子外径 (由 stator_id - 2*air_gap 推算)",
+      "required": false,
+      "auto_compute": "stator_id - 2 * air_gap"
+    },
+    "parallel_circuits": {
+      "rmxprt_var": "Parallel_Branches",
+      "unit": "-",
+      "description": "并联支路数",
+      "required": false,
+      "default": 1
+    },
+    "pole_arc": {
+      "rmxprt_var": "PoleArc",
+      "unit": "-",
+      "description": "极弧系数 α_p (0~1; 永磁/同步机为极弧系数, 异步机作等效极弧系数)",
+      "required": false,
+      "default": 0.70
+    }
+  },
+
+  "output_map": {
+    "efficiency": {
+      "rmxprt_var": "Efficiency",
+      "unit": "%",
+      "description": "效率",
+      "scale": 100,
+      "default": 0
+    },
+    "torque": {
+      "rmxprt_var": "Output_Torque",
+      "unit": "N.m",
+      "description": "输出转矩",
+      "scale": 1,
+      "default": 0
+    },
+    "power": {
+      "rmxprt_var": "Output_Power",
+      "unit": "W",
+      "description": "输出功率",
+      "scale": 0.001,
+      "scale_unit": "kW",
+      "default": 0
+    },
+    "input_power": {
+      "rmxprt_var": "Input_Power",
+      "unit": "W",
+      "description": "输入功率",
+      "scale": 0.001,
+      "scale_unit": "kW",
+      "default": 0
+    },
+    "power_factor": {
+      "rmxprt_var": "Power_Factor",
+      "unit": "-",
+      "description": "功率因数",
+      "scale": 1,
+      "default": 0
+    },
+    "stator_tooth_flux_density": {
+      "rmxprt_var": "Stator_Tooth_Flux_Density",
+      "unit": "T",
+      "description": "定子齿磁密",
+      "scale": 1,
+      "default": 0
+    },
+    "stator_yoke_flux_density": {
+      "rmxprt_var": "Stator_Yoke_Flux_Density",
+      "unit": "T",
+      "description": "定子轭磁密",
+      "scale": 1,
+      "default": 0
+    },
+    "rotor_yoke_flux_density": {
+      "rmxprt_var": "Rotor_Yoke_Flux_Density",
+      "unit": "T",
+      "description": "转子轭磁密",
+      "scale": 1,
+      "default": 0
+    },
+    "rotor_tooth_flux_density": {
+      "rmxprt_var": "Rotor_Tooth_Flux_Density",
+      "unit": "T",
+      "description": "转子齿磁密 (RUN86 #3 修复: 原缺项致恒为 null; RMxprt 实测标签 Rotor-Teeth Flux Density)",
+      "scale": 1,
+      "default": 0
+    },
+    "air_gap_flux_density": {
+      "rmxprt_var": "Air_Gap_Flux_Density",
+      "unit": "T",
+      "description": "气隙磁密",
+      "scale": 1,
+      "default": 0
+    },
+    "current_density": {
+      "rmxprt_var": "Stator_Current_Density",
+      "unit": "A/mm^2",
+      "description": "定子电密",
+      "scale": 1,
+      "default": 0
+    },
+    "slip": {
+      "rmxprt_var": "Slip",
+      "unit": "-",
+      "description": "转差率",
+      "scale": 1,
+      "default": 0
+    },
+    "stator_current": {
+      "rmxprt_var": "Stator_Current",
+      "unit": "A",
+      "description": "定子电流",
+      "scale": 1,
+      "default": 0
+    },
+    "copper_loss": {
+      "rmxprt_var": "Copper_Loss",
+      "unit": "W",
+      "description": "铜耗",
+      "scale": 1,
+      "default": 0
+    },
+    "iron_loss": {
+      "rmxprt_var": "Iron_Loss",
+      "unit": "W",
+      "description": "铁耗",
+      "scale": 1,
+      "default": 0
+    },
+    "total_loss": {
+      "rmxprt_var": "Total_Loss",
+      "unit": "W",
+      "description": "总损耗",
+      "scale": 1,
+      "default": 0
+    },
+    "harmonic_loss": {
+      "rmxprt_var": "Harmonic_Loss",
+      "unit": "W",
+      "description": "谐波损耗 (P2b 深度求解扩展, 需模板支持, 缺失时取 0)",
+      "scale": 1,
+      "default": 0,
+      "optional": true
+    },
+    "starting_torque": {
+      "rmxprt_var": "Locked_Rotor_Torque",
+      "unit": "N.m",
+      "description": "启动/堵转转矩 (.res 标签 Locked-Rotor Torque; 旧写 Starting_Torque 与真实标签不符导致恒 0)",
+      "scale": 1,
+      "default": 0,
+      "optional": true
+    },
+    "breakdown_torque": {
+      "rmxprt_var": "Breakdown_Torque",
+      "unit": "N.m",
+      "description": "最大/崩溃转矩 (.res 标签 Break-Down Torque, 异步机转矩-转差曲线峰值; 供客户端「最大扭矩」列)",
+      "scale": 1,
+      "default": 0,
+      "optional": true
+    },
+    "starting_current_ratio": {
+      "rmxprt_var": "Locked_Rotor_Current_Ratio",
+      "unit": "-",
+      "description": "堵转(启动)电流/额定电流 倍数 (.res 标签 Locked-Rotor Current Ratio; P2 转矩真值集异步机启动电流标定)",
+      "scale": 1,
+      "default": 0,
+      "optional": true
+    },
+    "radial_force_wave": {
+      "rmxprt_var": "Radial_Force_Wave",
+      "unit": "N",
+      "description": "径向力波幅值 (P2b NVH 代理指标, 缺失时取 0)",
+      "scale": 1,
+      "default": 0,
+      "optional": true
+    },
+    "max_temp": {
+      "rmxprt_var": "Max_Temperature",
+      "unit": "°C",
+      "description": "绕组最高温升 (P2b 热验算, 缺失时取 0)",
+      "scale": 1,
+      "default": 0,
+      "optional": true
+    },
+    "slot_fill_rate": {
+      "rmxprt_var": "Slot_Fill_Rate",
+      "unit": "-",
+      "description": "槽满率 (P2b 工艺约束, 缺失时取 0)",
+      "scale": 1,
+      "default": 0,
+      "optional": true
+    }
+  },
+
+  "machine_types": {
+    "induction": {
+      "rmxprt_type": "Three Phase Induction Motor",
+      "template_file": "indm3/yz200-6.aedt",
+      "description": "三相异步电动机 (默认)"
+    },
+    "induction_single_phase": {
+      "rmxprt_type": "Single Phase Induction Motor",
+      "template_file": "indm1/3hp.aedt",
+      "description": "单相感应电动机"
+    },
+    "pmsm": {
+      "rmxprt_type": "Three Phase Permanent Magnet Synchronous Motor",
+      "template_file": "manual/PMSG_4p50Hz550W.aedt",
+      "description": "三相永磁同步电动机"
+    },
+    "bldc": {
+      "rmxprt_type": "Brushless Permanent-Magnet DC Motor",
+      "template_file": "manual/BLDC_4p1500rpm550W.aedt",
+      "description": "无刷直流电动机"
+    },
+    "pmdc": {
+      "rmxprt_type": "Permanent-Magnet DC Motor",
+      "template_file": "manual/PMDC_2p2400rpm75W.aedt",
+      "description": "永磁直流电动机"
+    },
+    "srm": {
+      "rmxprt_type": "Switched Reluctance Motor",
+      "template_file": "manual/SRM_8-6p1500rpm550W.aedt",
+      "description": "开关磁阻电动机"
+    },
+    "synrm": {
+      "rmxprt_type": "Synchronous Reluctance Motor",
+      "template_file": "hysm/ipm_HysRotor.aedt",
+      "description": "同步磁阻电动机"
+    },
+    "wound_sync": {
+      "rmxprt_type": "Wound Synchronous Motor",
+      "template_file": "synm3/Bjs7_mot.aedt",
+      "description": "电励磁同步电动机"
+    },
+    "sync_generator": {
+      "rmxprt_type": "Three Phase Synchronous Generator",
+      "template_file": "syng3/bjs10-61.aedt",
+      "description": "三相同步发电机"
+    },
+    "lssm": {
+      "rmxprt_type": "Line-Start Permanent Magnet Synchronous Motor",
+      "template_file": "manual/LSSM_4p50Hz550W.aedt",
+      "description": "自启动永磁同步电动机"
+    },
+    "universal": {
+      "rmxprt_type": "Universal Motor",
+      "template_file": "manual/UniM_2p12500rpm100W.aedt",
+      "description": "通用电动机 (交直流通用串励)"
+    },
+    "claw_pole": {
+      "rmxprt_type": "Claw Pole Generator",
+      "template_file": "manual/CPSG_4p50Hz550VA.aedt",
+      "description": "爪极发电机"
+    },
+    "afpm": {
+      "rmxprt_type": "Permanent-Magnet Brushless Linear Motor",
+      "template_file": "afpm/afbldc_1.aedt",
+      "description": "永磁无刷直线电动机"
+    },
+    "flux_switching": {
+      "rmxprt_type": "Flux-Switching Permanent Magnet Motor",
+      "template_file": "afpm/afassm_1.aedt",
+      "description": "磁通切换永磁电动机"
+    },
+    "sync_relay": {
+      "rmxprt_type": "Synchronous Reluctance Motor",
+      "template_file": "hysm/ipm_HysRotor.aedt",
+      "description": "磁阻同步电动机 (sync_relay 别名)"
+    }
+  },
+
+  "type_output_overrides": {
+    "pmsm": {
+      "back_emf": {"rmxprt_var": "Back_EMF", "scale": 1, "default": 0},
+      "torque_ripple": {"rmxprt_var": "Torque_Ripple", "scale": 1, "default": 0},
+      "cogging_torque": {"rmxprt_var": "Cogging_Torque", "scale": 1, "default": 0}
+    },
+    "bldc": {
+      "back_emf": {"rmxprt_var": "Back_EMF", "scale": 1, "default": 0},
+      "torque_ripple": {"rmxprt_var": "Torque_Ripple", "scale": 1, "default": 0}
+    },
+    "srm": {
+      "average_torque": {"rmxprt_var": "Average_Torque", "scale": 1, "default": 0},
+      "torque_ripple": {"rmxprt_var": "Torque_Ripple", "scale": 1, "default": 0},
+      "inductance_ratio": {"rmxprt_var": "Inductance_Ratio", "scale": 1, "default": 0}
+    },
+    "sync_generator": {
+      "voltage_regulation": {"rmxprt_var": "Voltage_Regulation", "scale": 1, "default": 0},
+      "short_circuit_ratio": {"rmxprt_var": "Short_Circuit_Ratio", "scale": 1, "default": 0}
+    },
+    "universal": {
+      "efficiency_ac": {"rmxprt_var": "Efficiency_(AC)", "scale": 1, "default": 0},
+      "efficiency_dc": {"rmxprt_var": "Efficiency_(DC)", "scale": 1, "default": 0}
+    }
+  },
+
+  "result_categories": {
+    "performance": ["efficiency", "torque", "power", "input_power", "power_factor", "slip"],
+    "electromagnetic": [
+      "stator_tooth_flux_density", "stator_yoke_flux_density",
+      "rotor_tooth_flux_density", "rotor_yoke_flux_density",
+      "air_gap_flux_density",
+      "current_density", "stator_current"
+    ],
+    "losses": ["copper_loss", "iron_loss", "total_loss"]
+  },
+
+  "compute_rules": {
+    "efficiency_from_powers": {
+      "formula": "Output_Power / Input_Power * 100",
+      "condition": "if efficiency direct read fails and both powers available",
+      "description": "效率备选计算: 输出功率/输入功率*100"
+    },
+    "total_loss_from_powers": {
+      "formula": "Input_Power - Output_Power",
+      "condition": "if total_loss direct read fails and both powers available",
+      "description": "总损耗备选计算: 输入功率-输出功率"
+    }
+  }
+}
